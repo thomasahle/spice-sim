@@ -162,18 +162,27 @@ export default function App() {
           >
             <svg
               className="app-header-logo"
-              viewBox="0 0 24 24"
+              viewBox="0 0 32 32"
               fill="none"
               stroke="currentColor"
+              strokeWidth={2.2}
               strokeLinecap="round"
               strokeLinejoin="round"
               aria-hidden="true"
             >
-              <line x1="4" y1="9" x2="20" y2="9" strokeWidth={1.8} />
-              <line x1="12" y1="9" x2="12" y2="19" strokeWidth={1.8} />
-              <circle cx="4" cy="9" r="1.9" strokeWidth={1.5} />
-              <circle cx="20" cy="9" r="1.9" strokeWidth={1.5} />
-              <circle cx="12" cy="19" r="1.9" strokeWidth={1.5} />
+              {/* Top horizontal bar. */}
+              <line x1="5" y1="5" x2="27" y2="5" />
+              {/* Central vertical: top bar → bottom terminal. */}
+              <line x1="16" y1="5" x2="16" y2="28" />
+              {/* Left and right mid arms — broken at the centre so the
+                 horizontal wire reads as passing behind the T rather than
+                 connecting to it. */}
+              <line x1="6" y1="15" x2="13" y2="15" />
+              <line x1="19" y1="15" x2="26" y2="15" />
+              {/* Three hollow terminals. */}
+              <circle cx="4" cy="15" r="2" />
+              <circle cx="28" cy="15" r="2" />
+              <circle cx="16" cy="29" r="2" />
             </svg>
             <span className="app-header-name">Spice Sim</span>
           </a>
