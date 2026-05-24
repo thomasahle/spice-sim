@@ -5406,7 +5406,6 @@ export function Editor() {
             Pan: {naturalPan ? "Natural" : "Reverse"}
           </button>
           <span>Zoom: {Math.round(zoom * 100)}%</span>
-          {cursor && <span>X {formatCoord(cursor.x)} · Y {formatCoord(cursor.y)}</span>}
           <button
             type="button"
             onClick={fitToContent}
