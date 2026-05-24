@@ -4559,39 +4559,31 @@ export function Editor() {
             })}
           </div>
 
-          <div className="tb-title">
-            <span className="tb-title-icon">
-              <IconGlyph kind="page" />
-            </span>
-            <span className="tb-title-text">
-              {filePath
-                ? trimPath(filePath)
-                : (() => {
-                    const proj = workspace.projects.find((p) => p.id === workspace.active);
-                    const projName = proj?.name?.trim() || "Untitled";
-                    const isMain = doc.pages[0]?.id === page.id;
-                    return isMain ? projName : `${projName} · ${page.name}`;
-                  })()}
-            </span>
-            <span className="tb-title-chevron">▾</span>
-          </div>
-
-          <label
-            className={`tb-auto ${autoRunPaused ? "paused" : ""}`}
-            title={
-              autoRunPaused
-                ? "Auto-run is paused while a drawing tool is active. Press Run or switch to Select to resume."
-                : "Re-run automatically when the circuit changes"
-            }
+          <a
+            className="tb-brand"
+            href="https://github.com/thomasahle/spice-sim"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Spice Sim on GitHub"
           >
-            <input
-              type="checkbox"
-              checked={autoRun}
-              onChange={(e) => setAutoRun(e.target.checked)}
-              aria-label="Auto-run simulation"
-            />
-            <span>{autoRunPaused ? "Auto-run paused" : "Auto-run"}</span>
-          </label>
+            <svg
+              className="tb-brand-logo"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="11" strokeWidth={1.6} />
+              <line x1="5" y1="10" x2="19" y2="10" strokeWidth={1.7} />
+              <line x1="12" y1="10" x2="12" y2="18" strokeWidth={1.7} />
+              <circle cx="5" cy="10" r="1.7" strokeWidth={1.4} />
+              <circle cx="19" cy="10" r="1.7" strokeWidth={1.4} />
+              <circle cx="12" cy="18" r="1.7" strokeWidth={1.4} />
+            </svg>
+            <span className="tb-brand-text">Spice Sim</span>
+          </a>
           {!IS_TAURI && (
             <button
               className={`tb-icon-btn tb-pane-toggle ${inspectorCollapsed ? "collapsed" : ""}`}
@@ -5501,6 +5493,22 @@ export function Editor() {
             aria-pressed={snapToGrid}
           >
             Snap: {snapToGrid ? "On" : "Off"}
+          </button>
+          <button
+            type="button"
+            className={autoRun ? "active" : ""}
+            onClick={() => setAutoRun((v) => !v)}
+            title={
+              autoRunPaused
+                ? "Auto-run is paused while a drawing tool is active. Press Run or switch to Select to resume."
+                : autoRun
+                  ? "Re-run automatically when the circuit changes"
+                  : "Click to re-run automatically when the circuit changes"
+            }
+            aria-label="Toggle auto-run"
+            aria-pressed={autoRun}
+          >
+            Auto: {autoRunPaused ? "Paused" : autoRun ? "On" : "Off"}
           </button>
           <button
             type="button"

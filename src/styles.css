@@ -2511,6 +2511,36 @@ button[disabled] {
   max-width: 320px;
 }
 .tb-title-chevron { color: var(--ink-muted); font-size: 10px; }
+/* Brand link in the canvas toolbar — logo + wordmark, links to GitHub. */
+.tb-brand {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  user-select: none;
+  -webkit-user-select: none;
+  padding: 4px 8px;
+  border-radius: var(--r-md);
+  transition: color 0.12s, background 0.12s;
+}
+.tb-brand:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.tb-brand-logo {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
+.tb-brand-text {
+  white-space: nowrap;
+}
 .tb-auto {
   display: inline-flex;
   align-items: center;
@@ -3740,6 +3770,7 @@ button[disabled] {
   .toolbar::-webkit-scrollbar { display: none; }
   .toolbar .tb-title,
   .toolbar .tb-auto,
+  .toolbar .tb-brand-text,
   .toolbar .tb-group[aria-label="File actions"],
   .toolbar .tb-group[aria-label="Export and share"],
   .toolbar .tb-group[aria-label="Edit history"],
@@ -3747,6 +3778,8 @@ button[disabled] {
     display: none;
   }
   .toolbar { gap: 6px; }
+  /* Brand shrinks to just the logo on phones. */
+  .toolbar .tb-brand { padding: 4px; flex: 0 0 auto; }
   /* Status bar can shrink — allow horizontal scroll so chips don't wrap. */
   .statusbar {
     font-size: 10.5px;
