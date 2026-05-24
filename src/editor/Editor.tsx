@@ -3353,7 +3353,12 @@ export function Editor() {
       setPagesCollapsed(true);
       setInspectorCollapsed(true);
     }
+    // Fit once immediately, then again after layout settles — on mobile the
+    // drawer-close + waveform-pane appearing both change the canvas size, so
+    // a single fit at t=0 lands at the wrong zoom and the schematic gets
+    // clipped on the right.
     window.setTimeout(fitToContent, 0);
+    window.setTimeout(fitToContent, 220);
   }
 
   useEffect(() => {

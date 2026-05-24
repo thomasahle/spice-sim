@@ -3715,9 +3715,12 @@ button[disabled] {
   .toolbar .tb-title,
   .toolbar .tb-auto,
   .toolbar .tb-group[aria-label="File actions"],
-  .toolbar .tb-group[aria-label="Export and share"] {
+  .toolbar .tb-group[aria-label="Export and share"],
+  .toolbar .tb-group[aria-label="Edit history"],
+  .toolbar .tb-sep {
     display: none;
   }
+  .toolbar { gap: 6px; }
   /* Status bar can shrink — allow horizontal scroll so chips don't wrap. */
   .statusbar {
     font-size: 10.5px;
