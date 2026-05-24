@@ -3428,13 +3428,27 @@ export function Editor() {
         `${coordKey(lastSelectedProbe.x)},${coordKey(lastSelectedProbe.y)}`,
       )
     : undefined;
-  const wireJunctionDots = useMemo(() => buildWireJunctionDots(page), [page]);
-  const componentValueLabelOffsets = useMemo(
-    () =>
-      valueLabelOffsets(page, (component) => canvasValueLabel(component.kind, component.value) || null),
-    [page],
-  );
+  // Same drag-gate as pinAnnotations above — these layout helpers walk every
+  // component/wire/label and produce hints (junction dots, value-label
+  // offsets, net-label placement) that don't usefully update mid-drag.
+  // Reuse the last computation while a drag is in flight.
+  const lastWireJunctionDotsRef = useRef<ReturnType<typeof buildWireJunctionDots> | null>(null);
+  const wireJunctionDots = useMemo(() => {
+    if (isDragging && lastWireJunctionDotsRef.current) return lastWireJunctionDotsRef.current;
+    const v = buildWireJunctionDots(page);
+    lastWireJunctionDotsRef.current = v;
+    return v;
+  }, [page, isDragging]);
+  const lastComponentValueLabelOffsetsRef = useRef<ReturnType<typeof valueLabelOffsets> | null>(null);
+  const componentValueLabelOffsets = useMemo(() => {
+    if (isDragging && lastComponentValueLabelOffsetsRef.current) return lastComponentValueLabelOffsetsRef.current;
+    const v = valueLabelOffsets(page, (component) => canvasValueLabel(component.kind, component.value) || null);
+    lastComponentValueLabelOffsetsRef.current = v;
+    return v;
+  }, [page, isDragging]);
+  const lastNetLabelLayoutMapRef = useRef<ReturnType<typeof netLabelLayouts> | null>(null);
   const netLabelLayoutMap = useMemo(() => {
+    if (isDragging && lastNetLabelLayoutMapRef.current) return lastNetLabelLayoutMapRef.current;
     const occupied: { x1: number; y1: number; x2: number; y2: number }[] = [];
     for (const c of page.components) {
       if (c.kind === "LABEL") continue;
@@ -3442,8 +3456,10 @@ export function Editor() {
       const offset = componentValueLabelOffsets.get(c.id);
       if (text && offset) occupied.push(valueLabelBounds(c, offset, text));
     }
-    return netLabelLayouts(page, occupied);
-  }, [componentValueLabelOffsets, page]);
+    const v = netLabelLayouts(page, occupied);
+    lastNetLabelLayoutMapRef.current = v;
+    return v;
+  }, [componentValueLabelOffsets, page, isDragging]);
   const sweepableSources = useMemo(() => {
     const out: string[] = [];
     for (const c of page.components) {
