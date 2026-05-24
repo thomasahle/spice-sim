@@ -3650,3 +3650,140 @@ button[disabled] {
 .error-boundary-actions button.danger:hover {
   background: color-mix(in srgb, var(--danger, #ff3b30) 10%, transparent);
 }
+
+/* --------------------------------------------------------------------- */
+/* Mobile / narrow viewport overrides.                                   */
+/*                                                                       */
+/* On a phone the three-column desktop layout is unusable: 220 + 320 =   */
+/* 540 px of side panels eats the canvas and the page ends up wider     */
+/* than the viewport. Collapse to a single canvas column and make the   */
+/* side panels slide-in drawers with a tap-to-dismiss backdrop.          */
+/* --------------------------------------------------------------------- */
+.mobile-backdrop {
+  display: none;
+}
+@media (max-width: 900px), (max-height: 540px) and (max-width: 1024px) {
+  .editor-root,
+  .editor-root.pages-collapsed,
+  .editor-root.inspector-collapsed,
+  .editor-root.pages-collapsed.inspector-collapsed {
+    grid-template-columns: 1fr;
+    grid-template-areas: "canvas";
+    position: relative;
+  }
+  .editor-root > .side-nav,
+  .editor-root > .right-pane {
+    grid-area: auto;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: min(280px, 84vw);
+    z-index: 12;
+    transition: transform 0.22s ease;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.18);
+    will-change: transform;
+  }
+  .editor-root > .side-nav { left: 0; }
+  .editor-root.pages-collapsed > .side-nav { transform: translateX(-100%); }
+  .editor-root > .right-pane { right: 0; }
+  .editor-root.inspector-collapsed > .right-pane { transform: translateX(100%); }
+  /* Backdrop: only active when at least one drawer is open. */
+  .mobile-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.32);
+    z-index: 11;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease;
+  }
+  .editor-root:not(.pages-collapsed) .mobile-backdrop,
+  .editor-root:not(.inspector-collapsed) .mobile-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  /* The toolbar has many groups — let it scroll horizontally instead of
+     clipping, and hide the lowest-priority items so the essentials fit. */
+  .toolbar {
+    overflow-x: auto;
+    overflow-y: visible;
+    scrollbar-width: none;
+    padding: 0 8px;
+  }
+  .toolbar::-webkit-scrollbar { display: none; }
+  .toolbar .tb-title,
+  .toolbar .tb-auto,
+  .toolbar .tb-group[aria-label="File actions"],
+  .toolbar .tb-group[aria-label="Export and share"] {
+    display: none;
+  }
+  /* Status bar can shrink — allow horizontal scroll so chips don't wrap. */
+  .statusbar {
+    font-size: 10.5px;
+    padding: 0 8px;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    white-space: nowrap;
+  }
+  .statusbar::-webkit-scrollbar { display: none; }
+  .statusbar .group.selection { display: none; }
+  /* Off-screen drawers (translateX -100%/100%) extend the document scroll
+     width by default. Clip them at the editor-root so the page doesn't
+     gain a horizontal scroll bar. */
+  .editor-root {
+    overflow: hidden;
+  }
+  /* Empty-canvas hint card: shrink to fit narrow screens and push past
+     the floating tool strip on the left so they don't overlap. */
+  .empty-canvas {
+    align-items: flex-start;
+    justify-content: flex-end;
+    padding: 12px 12px 12px 60px;
+  }
+  .empty-canvas-card {
+    width: 100%;
+    max-width: 100%;
+    padding: 14px 16px;
+  }
+  /* The tool strip overlaps the canvas; tighten it so it eats less of
+     the visible canvas on a phone. */
+  .tool-strip {
+    top: 8px;
+    left: 8px;
+    width: 40px;
+    padding: 4px 3px;
+  }
+  /* Hide the canvas HUD chips (Grid / Snap / Pan / Zoom) — they overlap
+     the waveform pane on narrow screens and aren't essential controls. */
+  .canvas-hud {
+    display: none;
+  }
+  /* Waveform pane: the desktop 220px trace-list column eats most of a
+     phone's width. Stack the legend above the plot and cap its height
+     so the chart actually has room to render. */
+  .wf-pane {
+    height: clamp(220px, 36vh, 320px);
+    max-height: 56vh;
+  }
+  .wf-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .wf-trace-list {
+    max-height: 96px;
+    border-right: none;
+    border-bottom: 1px solid var(--hairline);
+    padding: 6px 8px;
+  }
+  /* Waveform header tabs and buttons need to wrap / scroll cleanly. */
+  .wf-header {
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+  }
+  .wf-header::-webkit-scrollbar { display: none; }
+}

@@ -364,6 +364,17 @@ const DEMO: CircuitDoc = (DEMOS.find((d) => d.id === "rc_step") ?? DEMOS[0]).bui
 const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+// Match the responsive breakpoint in styles.css: phones (portrait + landscape)
+// and short tablets get the overlay-drawer layout instead of the three-column
+// grid.
+function isNarrowViewport(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    window.innerWidth < 900 ||
+    (window.innerHeight <= 540 && window.innerWidth <= 1024)
+  );
+}
+
 export function Editor() {
   // Workspace: tracks multiple projects, each holding its own CircuitDoc in
   // localStorage. Loaded lazily on first render; if empty, we bootstrap with
@@ -534,14 +545,20 @@ export function Editor() {
   const [mosVariant, setMosVariant] = useState<"NMOS" | "PMOS">("NMOS");
   const [pagesCollapsed, setPagesCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem("spicesim.pagesCollapsed") === "1";
+      const stored = localStorage.getItem("spicesim.pagesCollapsed");
+      if (stored != null) return stored === "1";
+      // Default to collapsed on narrow viewports so the canvas is visible
+      // when a first-time visitor opens the site on a phone.
+      return isNarrowViewport();
     } catch {
       return false;
     }
   });
   const [inspectorCollapsed, setInspectorCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem("spicesim.inspectorCollapsed") === "1";
+      const stored = localStorage.getItem("spicesim.inspectorCollapsed");
+      if (stored != null) return stored === "1";
+      return isNarrowViewport();
     } catch {
       return false;
     }
@@ -3330,6 +3347,12 @@ export function Editor() {
     clearSimulationState();
     setWaveformVisible(true);
     setStatus(`Loaded: ${demo.name}`);
+    // On narrow viewports the side panels are overlay drawers; close them
+    // after loading a demo so the user immediately sees the schematic.
+    if (isNarrowViewport()) {
+      setPagesCollapsed(true);
+      setInspectorCollapsed(true);
+    }
     window.setTimeout(fitToContent, 0);
   }
 
@@ -3704,6 +3727,18 @@ export function Editor() {
         inspectorCollapsed ? " inspector-collapsed" : ""
       }`}
     >
+      {/* On mobile the side panels become overlay drawers; this backdrop
+         dismisses them on tap. Pointer events are toggled in CSS so the
+         backdrop is inert at desktop widths and when both panels are
+         collapsed. */}
+      <div
+        className="mobile-backdrop"
+        aria-hidden="true"
+        onClick={() => {
+          setPagesCollapsed(true);
+          setInspectorCollapsed(true);
+        }}
+      />
       {/* Sidebar always rendered so the grid-column transition can animate
          the collapse. When `pagesCollapsed`, the column goes to 0 and the
          aside is clipped via overflow:hidden — see styles.css. */}
