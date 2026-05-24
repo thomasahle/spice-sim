@@ -412,6 +412,7 @@ export function WaveformViewer({
               className={`seg-btn ${yMode === "linear" ? "active" : ""}`}
               aria-pressed={yMode === "linear"}
               onClick={() => setYMode("linear")}
+              title="Linear amplitude (raw magnitude)"
             >
               Linear
             </button>
@@ -419,6 +420,7 @@ export function WaveformViewer({
               className={`seg-btn ${yMode === "db" ? "active" : ""}`}
               aria-pressed={yMode === "db"}
               onClick={() => setYMode("db")}
+              title="Decibels: 20·log10(|H|) — Bode-style amplitude axis"
             >
               dB
             </button>
