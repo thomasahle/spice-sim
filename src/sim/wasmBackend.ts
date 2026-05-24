@@ -295,7 +295,53 @@ export async function simulateWithWasm(netlist: string, analysis: Analysis): Pro
     const log = [cleanNgspiceStartupLog(reply.stderr), cleanNgspiceStartupLog(reply.stdout)].filter(Boolean).join("\n");
     throw new Error(log ? `${reply.error}\n${log}` : reply.error);
   }
-  const result = parseAsciiRaw(reply.raw);
-  result.log = [cleanNgspiceStartupLog(reply.stdout), cleanNgspiceStartupLog(reply.stderr)].filter(Boolean).join("\n");
-  return result;
+  try {
+    const result = parseAsciiRaw(reply.raw);
+    result.log = [cleanNgspiceStartupLog(reply.stdout), cleanNgspiceStartupLog(reply.stderr)].filter(Boolean).join("\n");
+    return result;
+  } catch (e) {
+    // The worker reported success (ngspice exited 0) but the RAW file
+    // didn't parse — almost always because ngspice printed an error and
+    // refused to run the analysis (singular matrix, missing model,
+    // undefined source in `.dc`, …). Surface ngspice's own stderr/stdout
+    // as the primary message so the user sees the diagnostic that tells
+    // them what to fix, not the parser's downstream complaint.
+    const wrapper = e instanceof Error ? e.message : String(e);
+    const ngspiceLog = [
+      cleanNgspiceStartupLog(reply.stderr),
+      cleanNgspiceStartupLog(reply.stdout),
+    ]
+      .filter(Boolean)
+      .join("\n");
+    const ngspiceError = extractNgspiceError(ngspiceLog);
+    if (ngspiceError) {
+      throw new Error(`${ngspiceError}\n\nEngine details:\n${wrapper}${ngspiceLog ? "\n" + ngspiceLog : ""}`);
+    }
+    throw new Error(ngspiceLog ? `${wrapper}\n\n${ngspiceLog}` : wrapper);
+  }
+}
+
+/**
+ * Pull the first meaningful diagnostic line out of an ngspice log so the
+ * failure banner can show "could not find model 'NCH'" or "singular matrix"
+ * instead of the wrapper's "Invalid ngspice RAW output …" message. We
+ * scan for the first line that looks like an error (matches `Error:` /
+ * `Fatal:` / starts with `*` / contains `singular matrix` / …).
+ */
+function extractNgspiceError(log: string): string | null {
+  if (!log) return null;
+  const lines = log.split(/\r?\n/);
+  const errorPattern =
+    /(error|fatal|aborted|cannot|singular matrix|could not find|undefined|unknown|missing|no such|invalid|^\*\s*error)/i;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (errorPattern.test(line)) return line;
+  }
+  // Nothing obviously errory — return the last non-blank line as a hint.
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].trim();
+    if (line) return line;
+  }
+  return null;
 }
