@@ -479,6 +479,15 @@ button[disabled] {
      with the .side-nav top padding (14 px). */
   padding-top: 14px;
 }
+/* Tighten the gap between a section header and its content so it matches
+   the right-pane `.sidebar-section` internal spacing. .side-nav uses
+   flex `gap: 18px` between siblings; this pulls header→content close
+   without affecting the inter-section spacing. */
+.side-nav-section-head + .side-nav-projects,
+.side-nav-section-head + .side-nav-actions,
+.side-nav-section-head + .side-nav-examples {
+  margin-top: -10px;
+}
 .side-nav-section-head > span {
   font-size: 10.5px;
   font-weight: 700;
