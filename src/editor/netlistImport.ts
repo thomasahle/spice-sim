@@ -1,3 +1,9 @@
+import type {
+  ELK,
+  ElkExtendedEdge,
+  ElkNode,
+  ElkPort,
+} from "elkjs/lib/elk.bundled.js";
 import {
   type AnalysisSpec,
   type CircuitComponent,
@@ -9,7 +15,14 @@ import {
   makeId,
   pinWorldPos,
 } from "./model.ts";
-import { normalizeCoord, normalizePoint, samePoint } from "./geometry.ts";
+import {
+  componentBounds,
+  componentVisualBoundsFor,
+  normalizeCoord,
+  normalizePoint,
+  samePoint,
+  wireIntersectsRect,
+} from "./geometry.ts";
 
 interface ImportedPart {
   kind: ComponentKind;
@@ -35,14 +48,14 @@ export interface NetlistImportResult {
   warnings: string[];
 }
 
-export function importNetlist(text: string): NetlistImportResult {
+export async function importNetlist(text: string): Promise<NetlistImportResult> {
   const warnings: string[] = [];
   const { mainLines, subckts, structureDirectives } = splitSubcircuits(text, warnings);
   const main = parseNetlistLines(mainLines, warnings, true);
   const analysis: AnalysisSpec = main.analysis ?? { kind: "op" };
   const directives = [...structureDirectives, ...main.directives];
 
-  const { components, wires } = layoutImportedParts(main.parts);
+  const { components, wires } = await layoutImportedParts(main.parts);
   if (!components.some((c) => c.kind === "GND")) {
     warnings.push("Imported netlist has no node 0 reference in supported elements.");
   }
@@ -57,7 +70,8 @@ export function importNetlist(text: string): NetlistImportResult {
     probes: [],
   };
 
-  const subPages = subckts.map((subckt) => {
+  const subPages = [];
+  for (const subckt of subckts) {
     const subWarnings: string[] = [];
     const parsed = parseNetlistLines(subckt.lines, subWarnings, false);
     warnings.push(...subWarnings.map((warning) => `${subckt.name}: ${warning}`));
@@ -68,8 +82,8 @@ export function importNetlist(text: string): NetlistImportResult {
       directives.push(`* directives from .subckt ${subckt.name}`);
       directives.push(...parsed.directives);
     }
-    const layout = layoutImportedParts(parsed.parts, { externalPins: subckt.pins });
-    return {
+    const layout = await layoutImportedParts(parsed.parts, { externalPins: subckt.pins });
+    subPages.push({
       ...emptyDoc.pages[0],
       id: makeId("page"),
       name: sanitizeSubcktName(subckt.name),
@@ -77,8 +91,8 @@ export function importNetlist(text: string): NetlistImportResult {
       components: layout.components,
       wires: layout.wires,
       probes: [],
-    };
-  });
+    });
+  }
 
   return {
     doc: {
@@ -318,15 +332,32 @@ function parseParams(tokens: string[]): Record<string, string> | undefined {
   return Object.keys(params).length > 0 ? params : undefined;
 }
 
-function layoutImportedParts(
+const ELK_SCALE = 48;
+
+let elkPromise: Promise<ELK> | null = null;
+
+function getElk(): Promise<ELK> {
+  elkPromise ??= import("elkjs/lib/elk.bundled.js").then(({ default: ElkConstructor }) => new ElkConstructor({
+    defaultLayoutOptions: {
+      "elk.algorithm": "layered",
+      "elk.direction": "RIGHT",
+      "elk.edgeRouting": "ORTHOGONAL",
+      "elk.spacing.nodeNode": "64",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "96",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "48",
+      "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+    },
+  }));
+  return elkPromise;
+}
+
+async function layoutImportedParts(
   parts: ImportedPart[],
   options: { externalPins?: string[] } = {},
-) {
+): Promise<{ components: CircuitComponent[]; wires: { id: string; points: [number, number][] }[] }> {
   const components: CircuitComponent[] = [];
   const wires: { id: string; points: [number, number][] }[] = [];
   const netPins = new Map<string, ImportedPin[]>();
-  const rowGap = 7;
-  const cols = Math.max(1, Math.ceil(Math.sqrt(parts.length || 1)));
   const seededLabels = new Set<string>();
 
   options.externalPins?.forEach((pin, idx) => {
@@ -347,14 +378,12 @@ function layoutImportedParts(
   });
 
   parts.forEach((part, idx) => {
-    const col = idx % cols;
-    const row = Math.floor(idx / cols);
     const rotation = defaultRotation(part.kind);
     const component: CircuitComponent = {
       id: makeId(part.kind.toLowerCase()),
       kind: part.kind,
-      x: col * 12,
-      y: row * rowGap,
+      x: idx * 8,
+      y: 0,
       rotation,
       value: normalizeImportedValue(part),
       params: part.params,
@@ -368,6 +397,13 @@ function layoutImportedParts(
     }
   });
 
+  const routingPlan = classifyNets(netPins);
+  await applyElkLayout(
+    components.filter((component) => component.kind !== "LABEL"),
+    routingPlan.localNets,
+    routingPlan.junctions,
+  );
+
   for (const [node, pins] of netPins) {
     if (node === "0") {
       for (const pin of pins.filter((p) => p.component.kind !== "LABEL")) {
@@ -377,18 +413,19 @@ function layoutImportedParts(
     }
 
     const connectablePins = pins.filter((pin) => pin.component.kind !== "LABEL");
-    const hasExternalPort = pins.some((pin) => pin.component.kind === "LABEL" && pin.component.params?.port === "1");
-    if (hasExternalPort || isGlobalNet(node) || connectablePins.length > 4) {
+    if (routingPlan.labelNets.has(node)) {
       for (const pin of connectablePins) addNetLabelStub(components, wires, node, pin);
       continue;
     }
 
-    const routePins = connectablePins;
-    if (routePins.length === 2) {
-      addWireRoute(wires, routePins[0].point, routePins[1].point);
-    } else if (routePins.length > 2 && routePins.length <= 5) {
-      const junction = netJunctionPoint(routePins.map((pin) => pin.point));
-      for (const pin of routePins) addWireRoute(wires, pin.point, junction);
+    if (connectablePins.length === 2) {
+      addWireRoute(wires, pinPoint(connectablePins[0]), pinPoint(connectablePins[1]), components, [
+        connectablePins[0].component,
+        connectablePins[1].component,
+      ]);
+    } else if (connectablePins.length > 2 && connectablePins.length <= 5) {
+      const junction = routingPlan.junctions.get(node) ?? netJunctionPoint(connectablePins.map(pinPoint));
+      for (const pin of connectablePins) addWireRoute(wires, pinPoint(pin), junction, components, [pin.component]);
     } else {
       for (const pin of connectablePins) addNetLabelStub(components, wires, node, pin);
     }
@@ -400,7 +437,18 @@ function layoutImportedParts(
 interface ImportedPin {
   component: CircuitComponent;
   pinIdx: number;
-  point: { x: number; y: number };
+}
+
+interface LocalNet {
+  node: string;
+  pins: ImportedPin[];
+  junctionId?: string;
+}
+
+interface RoutingPlan {
+  localNets: LocalNet[];
+  labelNets: Set<string>;
+  junctions: Map<string, { x: number; y: number }>;
 }
 
 function addNetPin(
@@ -409,10 +457,149 @@ function addNetPin(
   component: CircuitComponent,
   pinIdx: number,
 ): void {
-  const point = pinWorldPos(component, pinIdx);
   const pins = netPins.get(node) ?? [];
-  pins.push({ component, pinIdx, point });
+  pins.push({ component, pinIdx });
   netPins.set(node, pins);
+}
+
+function classifyNets(netPins: Map<string, ImportedPin[]>): RoutingPlan {
+  const localNets: LocalNet[] = [];
+  const labelNets = new Set<string>();
+  const junctions = new Map<string, { x: number; y: number }>();
+
+  for (const [node, pins] of netPins) {
+    if (node === "0") continue;
+    const connectablePins = pins.filter((pin) => pin.component.kind !== "LABEL");
+    const hasExternalPort = pins.some((pin) => pin.component.kind === "LABEL" && pin.component.params?.port === "1");
+    if (hasExternalPort || isGlobalNet(node) || connectablePins.length > 5) {
+      labelNets.add(node);
+      continue;
+    }
+    if (connectablePins.length === 2) {
+      localNets.push({ node, pins: connectablePins });
+    } else if (connectablePins.length > 2 && connectablePins.length <= 5) {
+      localNets.push({ node, pins: connectablePins, junctionId: `junction:${node}` });
+    } else if (connectablePins.length > 0) {
+      labelNets.add(node);
+    }
+  }
+
+  return { localNets, labelNets, junctions };
+}
+
+async function applyElkLayout(
+  components: CircuitComponent[],
+  localNets: LocalNet[],
+  junctions: Map<string, { x: number; y: number }>,
+): Promise<void> {
+  if (components.length === 0) return;
+
+  const junctionNets = localNets.filter((net) => net.junctionId);
+  const graph: ElkNode = {
+    id: "import-root",
+    layoutOptions: {
+      "elk.algorithm": "layered",
+      "elk.direction": "RIGHT",
+      "elk.edgeRouting": "ORTHOGONAL",
+      "elk.spacing.nodeNode": "64",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "108",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "48",
+    },
+    children: [
+      ...components.map(componentToElkNode),
+      ...junctionNets.map((net) => ({
+        id: net.junctionId!,
+        width: 10,
+        height: 10,
+      })),
+    ],
+    edges: localNets.flatMap(netToElkEdges),
+  };
+
+  const laidOut = await (await getElk()).layout(graph);
+  const children = laidOut.children ?? [];
+  const byId = new Map(children.map((child) => [child.id, child]));
+  const componentById = new Map(components.map((component) => [component.id, component]));
+
+  for (const component of components) {
+    const node = byId.get(component.id);
+    if (!node || node.x == null || node.y == null || node.width == null || node.height == null) continue;
+    component.x = snapImportedCoord((node.x + node.width / 2) / ELK_SCALE);
+    component.y = snapImportedCoord((node.y + node.height / 2) / ELK_SCALE);
+  }
+
+  const xs = components.map((component) => component.x);
+  const ys = components.map((component) => component.y);
+  const shiftX = xs.length ? snapImportedCoord(-Math.min(...xs)) : 0;
+  const shiftY = ys.length ? snapImportedCoord(-Math.min(...ys)) : 0;
+  for (const component of components) {
+    component.x = normalizeCoord(component.x + shiftX);
+    component.y = normalizeCoord(component.y + shiftY);
+  }
+
+  for (const net of junctionNets) {
+    const node = byId.get(net.junctionId!);
+    if (!node || node.x == null || node.y == null || node.width == null || node.height == null) continue;
+    const x = snapImportedCoord((node.x + node.width / 2) / ELK_SCALE + shiftX);
+    const y = snapImportedCoord((node.y + node.height / 2) / ELK_SCALE + shiftY);
+    const livePins = net.pins.filter((pin) => componentById.has(pin.component.id));
+    const fallback = netJunctionPoint(livePins.map(pinPoint));
+    const cleanX = Number.isFinite(x) ? x : fallback.x;
+    const cleanY = Number.isFinite(y) ? y : fallback.y;
+    // Store by net name; routing later renders the junction as wire bends, not a visible component.
+    junctions.set(net.node, { x: cleanX, y: cleanY });
+  }
+}
+
+function componentToElkNode(component: CircuitComponent): ElkNode {
+  const bounds = componentBounds(component.kind);
+  return {
+    id: component.id,
+    width: bounds.w * ELK_SCALE,
+    height: bounds.h * ELK_SCALE,
+    layoutOptions: {
+      "elk.portConstraints": "FIXED_SIDE",
+    },
+    ports: getPinLayout(component).map((pin, idx): ElkPort => ({
+      id: elkPortId(component, idx),
+      width: 6,
+      height: 6,
+      layoutOptions: {
+        "elk.port.side": elkPortSide(pin),
+      },
+    })),
+  };
+}
+
+function netToElkEdges(net: LocalNet): ElkExtendedEdge[] {
+  if (net.junctionId) {
+    return net.pins.map((pin, idx) => ({
+      id: `edge:${net.node}:${idx}`,
+      sources: [elkPortId(pin.component, pin.pinIdx)],
+      targets: [net.junctionId!],
+    }));
+  }
+  if (net.pins.length !== 2) return [];
+  return [
+    {
+      id: `edge:${net.node}`,
+      sources: [elkPortId(net.pins[0].component, net.pins[0].pinIdx)],
+      targets: [elkPortId(net.pins[1].component, net.pins[1].pinIdx)],
+    },
+  ];
+}
+
+function elkPortId(component: CircuitComponent, pinIdx: number): string {
+  return `${component.id}:pin:${pinIdx}`;
+}
+
+function elkPortSide(pin: { x: number; y: number }): string {
+  if (Math.abs(pin.x) >= Math.abs(pin.y)) return pin.x < 0 ? "WEST" : "EAST";
+  return pin.y < 0 ? "NORTH" : "SOUTH";
+}
+
+function snapImportedCoord(value: number): number {
+  return normalizeCoord(Math.round(value * 2) / 2);
 }
 
 function addGroundReference(
@@ -421,7 +608,7 @@ function addGroundReference(
   pin: ImportedPin,
 ): void {
   const anchor = labelAnchor(pin.component, pin.pinIdx);
-  addWireRoute(wires, pin.point, tuplePoint(anchor));
+  addWireRoute(wires, pinPoint(pin), tuplePoint(anchor), components, [pin.component]);
   components.push({
     id: makeId("gnd"),
     kind: "GND",
@@ -439,7 +626,7 @@ function addNetLabelStub(
   pin: ImportedPin,
 ): void {
   const anchor = labelAnchor(pin.component, pin.pinIdx);
-  addWireRoute(wires, pin.point, tuplePoint(anchor));
+  addWireRoute(wires, pinPoint(pin), tuplePoint(anchor), components, [pin.component]);
   components.push({
     id: makeId("lbl"),
     kind: "LABEL",
@@ -454,22 +641,66 @@ function addWireRoute(
   wires: { id: string; points: [number, number][] }[],
   from: { x: number; y: number },
   to: { x: number; y: number },
+  obstacles: CircuitComponent[] = [],
+  allowedIntersections: CircuitComponent[] = [],
 ): void {
-  const points = orthogonalRoute(from, to);
+  const points = bestOrthogonalRoute(from, to, obstacles, allowedIntersections);
   if (points.length >= 2) wires.push({ id: makeId("w"), points });
 }
 
-function orthogonalRoute(
+function bestOrthogonalRoute(
   from: { x: number; y: number },
   to: { x: number; y: number },
+  obstacles: CircuitComponent[],
+  allowedIntersections: CircuitComponent[],
 ): [number, number][] {
+  const candidates = orthogonalRouteCandidates(from, to);
+  let best = candidates[0] ?? [];
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    const score = scoreRoute(candidate, obstacles, allowedIntersections);
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function orthogonalRouteCandidates(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+): [number, number][][] {
   const start = normalizePoint(from);
   const end = normalizePoint(to);
   if (samePoint(start, end)) return [];
-  const points: [number, number][] = [[start.x, start.y]];
-  if (start.x !== end.x && start.y !== end.y) points.push([end.x, start.y]);
-  points.push([end.x, end.y]);
-  return compactWirePoints(points);
+  if (start.x === end.x || start.y === end.y) return [[[start.x, start.y], [end.x, end.y]]];
+  const midX = snapImportedCoord((start.x + end.x) / 2);
+  const midY = snapImportedCoord((start.y + end.y) / 2);
+  return [
+    compactWirePoints([[start.x, start.y], [end.x, start.y], [end.x, end.y]]),
+    compactWirePoints([[start.x, start.y], [start.x, end.y], [end.x, end.y]]),
+    compactWirePoints([[start.x, start.y], [midX, start.y], [midX, end.y], [end.x, end.y]]),
+    compactWirePoints([[start.x, start.y], [start.x, midY], [end.x, midY], [end.x, end.y]]),
+  ];
+}
+
+function scoreRoute(
+  points: [number, number][],
+  obstacles: CircuitComponent[],
+  allowedIntersections: CircuitComponent[],
+): number {
+  const allowedIds = new Set(allowedIntersections.map((component) => component.id));
+  let score = 0;
+  for (let idx = 0; idx < points.length - 1; idx++) {
+    score += Math.abs(points[idx + 1][0] - points[idx][0]) + Math.abs(points[idx + 1][1] - points[idx][1]);
+  }
+  score += Math.max(0, points.length - 2) * 2;
+  for (const obstacle of obstacles) {
+    if (allowedIds.has(obstacle.id) || obstacle.kind === "LABEL" || obstacle.kind === "GND") continue;
+    if (wireIntersectsRect(points, componentVisualBoundsFor(obstacle, 0.25))) score += 500;
+  }
+  return score;
 }
 
 function compactWirePoints(points: [number, number][]): [number, number][] {
@@ -491,6 +722,10 @@ function netJunctionPoint(points: { x: number; y: number }[]): { x: number; y: n
     x: normalizeCoord(average.x / points.length),
     y: normalizeCoord(average.y / points.length),
   };
+}
+
+function pinPoint(pin: ImportedPin): { x: number; y: number } {
+  return pinWorldPos(pin.component, pin.pinIdx);
 }
 
 function tuplePoint(point: [number, number]): { x: number; y: number } {

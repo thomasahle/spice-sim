@@ -25,7 +25,10 @@
 - [ ] Keep net labels visually distinct when attached, floating, or near-missing a net.
 - [ ] Only show label boxes when a label value exists.
 - [ ] Continue reducing label/value overlap around dense components.
-- [ ] Add direct in-canvas editing for notes and eventually net labels/value labels.
+- [ ] Make notes and labels editable directly in the canvas (double-click to edit in place), not only via the right panel.
+- [ ] Render all label text (net labels, value labels, note bodies) through KaTeX so users can write `W_-`, `\Delta`, etc. — KaTeX is the fastest of the LaTeX-on-web options.
+- [ ] Inspector action row: drop the destructive `Delete` button (already available via Delete/Backspace and right-click); add a `Mirror` button alongside `Rotate` / `Duplicate` to horizontally flip the selected component.
+- [ ] Live flow shouldn't animate when the circuit can't simulate. With floating pins / unfinished nets the floating-pin banner appears but the dashed flow lines still keep moving — should freeze (and ideally dim) until the schematic is valid again.
 - [ ] Preserve note colors and sizes through share URLs, import/export, and SVG export.
 - [ ] Add optional colored section annotation presets for notes, matching engineering diagram usage.
 

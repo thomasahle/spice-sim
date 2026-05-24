@@ -4,8 +4,8 @@ import test from "node:test";
 import { buildNetlist } from "../src/editor/netlist.ts";
 import { importNetlist } from "../src/editor/netlistImport.ts";
 
-test("imports a basic divider netlist with local nets as direct wires", () => {
-  const imported = importNetlist(`
+test("imports a basic divider netlist with local nets as direct wires", async () => {
+  const imported = await importNetlist(`
 * divider
 V1 in 0 DC 5
 R1 in out 10k
@@ -28,8 +28,8 @@ R2 out 0 5k
   assert.match(regenerated, /R2\s+\S+\s+0\s+5k/);
 });
 
-test("preserves unsupported and model lines in directives", () => {
-  const imported = importNetlist(`
+test("preserves unsupported and model lines in directives", async () => {
+  const imported = await importNetlist(`
 .model DMOD D
 D1 a 0 DMOD
 E1 out 0 a 0 10
@@ -40,8 +40,8 @@ E1 out 0 a 0 10
   assert.equal(imported.doc.pages[0].components.filter((c) => c.kind === "D").length, 1);
 });
 
-test("imports MOSFETs with explicit body as four-terminal parts", () => {
-  const imported = importNetlist(`
+test("imports MOSFETs with explicit body as four-terminal parts", async () => {
+  const imported = await importNetlist(`
 .model NMOS_LEVEL1_FAST NMOS LEVEL=1 VTO=0.7 KP=180e-6
 M1 vdd gate src vss NMOS_LEVEL1_FAST L=2u W=8u
 .op
@@ -57,8 +57,8 @@ M1 vdd gate src vss NMOS_LEVEL1_FAST L=2u W=8u
   assert.match(regenerated, /^M1\s+\S+\s+\S+\s+\S+\s+\S+\s+NMOS_LEVEL1_FAST L=2u W=8u$/m);
 });
 
-test("imports subcircuits as schematic pages and X instances", () => {
-  const imported = importNetlist(`
+test("imports subcircuits as schematic pages and X instances", async () => {
+  const imported = await importNetlist(`
 .subckt and2 A B Y VDD VSS
 B1 Y VSS V=V(A)*V(B)
 .ends and2

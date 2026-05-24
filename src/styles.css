@@ -224,6 +224,41 @@ button[disabled] {
   color: var(--ink-muted);
 }
 .app-header-stars:hover .app-header-stars-count { color: var(--accent); }
+/* Pane-toggle icons at the ends of the header — these live here on web
+   (Tauri keeps its own copies in the native titlebar). Pressed state =
+   pane visible, mirroring the prior `.tb-pane-toggle` styling. */
+.app-header-pane-toggle {
+  width: 32px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  box-shadow: none;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.08s ease;
+  flex-shrink: 0;
+}
+.app-header-pane-toggle:hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+.app-header-pane-toggle:active { transform: scale(0.94); }
+.app-header-pane-toggle[aria-pressed="true"] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.app-header-pane-toggle[aria-pressed="true"]:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.app-header-pane-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 
 /* Floating Run + analysis-pills cluster anchored to the top-center of the
    canvas. Positioned absolutely so it overlays the schematic without
@@ -2230,8 +2265,10 @@ button[disabled] {
 .canvas-area {
   position: relative;
   display: grid;
-  /* 44px toolbar · canvas (flex) · play bar (auto) · waveform pane (auto) */
-  grid-template-rows: 44px minmax(0, 1fr) auto auto;
+  /* canvas (flex) · play bar (auto) · waveform pane (auto) — no toolbar
+     row, since brand / Run / pane toggles all live in the app header or
+     float over the canvas. */
+  grid-template-rows: minmax(0, 1fr) auto auto;
   min-height: 0;
   background: var(--bg-canvas);
   overflow: hidden;

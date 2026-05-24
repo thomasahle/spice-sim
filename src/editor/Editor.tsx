@@ -469,11 +469,6 @@ const TOOL_GROUPS: ToolGroup[] = [
 // which only renders a flat-line 5V scope.
 const DEMO: CircuitDoc = (DEMOS.find((d) => d.id === "rc_step") ?? DEMOS[0]).build();
 
-// Web build has no native window chrome, so the global title bar is dropped
-// and the pane toggles are rendered inline at the toolbar ends instead.
-const IS_TAURI =
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
 // Match the responsive breakpoint in styles.css: phones (portrait + landscape)
 // and short tablets get the overlay-drawer layout instead of the three-column
 // grid.
@@ -1376,7 +1371,7 @@ export function Editor() {
         if (!confirmDiscardIfDirty()) return;
         const r = await openNetlist();
         if (!r) return;
-        const imported = importNetlist(r.text);
+        const imported = await importNetlist(r.text);
         commit(() => normalizeDoc(imported.doc));
         setFilePath(null);
         setDiskDirty(true);
@@ -5103,39 +5098,10 @@ export function Editor() {
       </aside>
 
       <main className="canvas-area">
-        <div className="toolbar" role="toolbar" aria-label="Main toolbar">
-          {!IS_TAURI && (
-            <button
-              className={`tb-icon-btn tb-pane-toggle ${pagesCollapsed ? "collapsed" : ""}`}
-              onClick={() => setPagesCollapsed((c) => !c)}
-              aria-pressed={!pagesCollapsed}
-              title={pagesCollapsed ? "Show sidebar (⌘\\)" : "Hide sidebar (⌘\\)"}
-              aria-label="Toggle sidebar"
-            >
-              <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-                <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
-                <path d="M5.75 2.75v10.5" />
-              </svg>
-            </button>
-          )}
-          {/* Run button + analysis pills are rendered as a floating cluster
-             on the canvas (see `.canvas-actions` below) so they stay
-             reachable without taking permanent toolbar real estate. */}
-          {!IS_TAURI && (
-            <button
-              className={`tb-icon-btn tb-pane-toggle ${inspectorCollapsed ? "collapsed" : ""}`}
-              onClick={() => setInspectorCollapsed((c) => !c)}
-              aria-pressed={!inspectorCollapsed}
-              title={inspectorCollapsed ? "Show inspector (⇧⌘\\)" : "Hide inspector (⇧⌘\\)"}
-              aria-label="Toggle inspector"
-            >
-              <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-                <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
-                <path d="M10.25 2.75v10.5" />
-              </svg>
-            </button>
-          )}
-        </div>
+        {/* Pane toggles + brand + Run + analysis pills all live outside the
+           canvas now (app header + floating cluster). Canvas-area's first
+           grid row is therefore empty for web builds — the canvas takes the
+           top slot directly. */}
         <div className="canvas-wrap" tabIndex={-1}>
         {/* Floating Run + analysis-type cluster — sits over the canvas at the
            top so it's always reachable without dedicating toolbar space. */}

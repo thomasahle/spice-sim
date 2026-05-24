@@ -132,6 +132,27 @@ export default function App() {
     <div className={`app${IS_TAURI ? "" : " website"}`}>
       {!IS_TAURI && (
         <header className="app-header">
+          <button
+            className={`app-header-pane-toggle left ${sidebarCollapsed ? "collapsed" : ""}`}
+            onClick={toggleSidebar}
+            aria-pressed={!sidebarCollapsed}
+            title={sidebarCollapsed ? "Show sidebar (⌘\\)" : "Hide sidebar (⌘\\)"}
+            aria-label="Toggle sidebar"
+          >
+            <svg
+              width={17}
+              height={17}
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
+              <path d="M5.75 2.75v10.5" />
+            </svg>
+          </button>
           <a
             className="app-header-brand"
             href={`https://github.com/${REPO_SLUG}`}
@@ -178,6 +199,27 @@ export default function App() {
               <span className="app-header-stars-count">{formatStarCount(stars)}</span>
             )}
           </a>
+          <button
+            className={`app-header-pane-toggle right ${inspectorCollapsed ? "collapsed" : ""}`}
+            onClick={toggleInspector}
+            aria-pressed={!inspectorCollapsed}
+            title={inspectorCollapsed ? "Show inspector (⇧⌘\\)" : "Hide inspector (⇧⌘\\)"}
+            aria-label="Toggle inspector"
+          >
+            <svg
+              width={17}
+              height={17}
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
+              <path d="M10.25 2.75v10.5" />
+            </svg>
+          </button>
         </header>
       )}
       {IS_TAURI && (
