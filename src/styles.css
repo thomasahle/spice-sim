@@ -406,8 +406,9 @@ button[disabled] {
   -webkit-backdrop-filter: blur(40px) saturate(200%);
   display: flex;
   flex-direction: column;
-  padding: 14px 10px 18px;
-  gap: 14px;
+  /* Match `.right-pane` so both panels frame their content identically. */
+  padding: 14px;
+  gap: 18px;
   overflow-y: auto;
   /* Clip content while the grid column animates to 0 width on collapse so
      the panel doesn't visibly overflow into the canvas mid-transition. */
@@ -463,13 +464,13 @@ button[disabled] {
 
 /* Section header — visually unified with `.section-label` on the right
    pane so "PROJECTS" and "SIMULATION SETTINGS" read as the same kind of
-   header. Left padding 8 + .side-nav padding 10 = 18 px from pane left,
+   header. Left padding 4 + .side-nav padding 14 = 18 px from pane left,
    matching .right-pane padding 14 + .section-label padding-left 4 = 18. */
 .side-nav-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 8px 6px;
+  padding: 0 4px 6px;
 }
 .side-nav-section-head + .side-nav-section-head,
 .side-nav-projects + .side-nav-section-head,
