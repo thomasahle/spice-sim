@@ -317,10 +317,30 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
 
   const rootToName = new Map<string, string>();
   rootToName.set(dsu.find(GND_KEY), "0");
-  // Pre-assign label-named nodes.
-  for (const [sentinel, name] of labelNames) {
+  // Pre-assign label-named nodes. If two distinct labels sanitize to the
+  // same base SPICE name (after the LaTeX/punctuation-aware sanitizer)
+  // we suffix the later ones with `_2`, `_3`, … so they end up as
+  // distinct nets, and we warn the user — the auto-suffix is a safety
+  // net, not a substitute for clear labelling.
+  const usedBaseNames = new Map<string, string>(); // base name → first label text
+  for (const [sentinel, baseName] of labelNames) {
+    const original = sentinel.replace(/^__LABEL:/, "");
     const root = dsu.find(sentinel);
-    if (!rootToName.has(root)) rootToName.set(root, name);
+    if (rootToName.has(root)) continue;
+    let finalName = baseName;
+    if (usedBaseNames.has(baseName) && usedBaseNames.get(baseName) !== original) {
+      // Collision: invent a unique suffix that doesn't clash with anything
+      // already in rootToName.
+      let n = 2;
+      while ([...rootToName.values()].includes(`${baseName}_${n}`)) n += 1;
+      finalName = `${baseName}_${n}`;
+      warnings.push(
+        `Net labels "${usedBaseNames.get(baseName)}" and "${original}" both sanitize to "${baseName}" — using "${finalName}" for the second. Rename one to make the netlist unambiguous.`,
+      );
+    } else {
+      usedBaseNames.set(baseName, original);
+    }
+    rootToName.set(root, finalName);
   }
   let nodeCounter = 1;
   for (const cp of compPinKeys) {
@@ -577,7 +597,23 @@ function unionWirePointsOnWireSegments(wires: Wire[], dsu: DSU) {
 
 function sanitizeNodeName(s: string): string {
   // SPICE node names should avoid spaces and reserved punctuation.
-  return s.replace(/[^A-Za-z0-9_]/g, "_");
+  // Distinct user labels must map to distinct SPICE names — the generic
+  // catch-all alone would silently merge labels (e.g. `W+` and `W-` both
+  // → `W_`). LaTeX-aware cleanups first (so future KaTeX-rendered labels
+  // like `\Delta V` or `W_{+}` keep readable SPICE names), then map +/-
+  // to distinct sequences, then strip everything else.
+  let out = s
+    .replace(/\\([A-Za-z]+)/g, "$1") // LaTeX commands: \Delta → Delta
+    .replace(/[{}]/g, "") // drop braces from subscripts: W_{+} → W_+
+    .replace(/\^/g, "") // drop ^ superscript markers
+    .replace(/\+/g, "_p")
+    .replace(/-/g, "_n")
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .replace(/_+/g, "_") // collapse runs of underscores
+    .replace(/^_+|_+$/g, ""); // trim leading/trailing underscores
+  // SPICE doesn't like names starting with a digit; prefix one if so.
+  if (/^[0-9]/.test(out)) out = "n_" + out;
+  return out || "node";
 }
 
 function parsePowerLabelVoltage(label: string): string | null {

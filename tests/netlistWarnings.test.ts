@@ -303,8 +303,72 @@ test("power-like net labels emit an implicit DC rail source on the root schemati
 
   const result = buildNetlist(doc);
 
-  assert.match(result.netlist, /^V1 _5V 0 DC 5$/m);
-  assert.match(result.netlist, /^R1 _5V 0 1k$/m);
+  // After the LaTeX/punctuation-aware sanitizer: leading `+` → `_p`,
+  // trim leading underscores → `p5V`.
+  assert.match(result.netlist, /^V1 p5V 0 DC 5$/m);
+  assert.match(result.netlist, /^R1 p5V 0 1k$/m);
+});
+
+test("net labels W+ and W- get distinct SPICE names (regression)", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        probes: [],
+        components: [
+          { id: "lp", kind: "LABEL", x: 0, y: 0, rotation: 0, value: "W+" },
+          { id: "ln", kind: "LABEL", x: 4, y: 0, rotation: 0, value: "W-" },
+          // Two resistors driven from the two labels — if they collide
+          // the second R will route through the first label's net.
+          { id: "rp", kind: "R", x: 2, y: 0, rotation: 0, value: "1k" },
+          { id: "rn", kind: "R", x: 6, y: 0, rotation: 0, value: "2k" },
+          { id: "g1", kind: "GND", x: 4, y: 2, rotation: 0, value: "" },
+        ],
+        wires: [],
+      },
+    ],
+  };
+  const result = buildNetlist(doc);
+  // W+ and W- must map to distinct nodes; the resistor lines should
+  // reference different net names.
+  assert.match(result.netlist, /\bW_p\b/);
+  assert.match(result.netlist, /\bW_n\b/);
+  assert.notStrictEqual(
+    result.netlist.match(/^R1 (\S+) /m)?.[1],
+    result.netlist.match(/^R2 (\S+) /m)?.[1],
+    "W+ and W- collapsed to the same net — sanitizer regression",
+  );
+});
+
+test("LaTeX-style labels sanitize to readable SPICE names", () => {
+  // Standalone helper-style check via buildNetlist so this stays a
+  // black-box assertion through the public API.
+  const docFor = (label: string): CircuitDoc => ({
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        probes: [],
+        components: [
+          { id: "l1", kind: "LABEL", x: 0, y: 0, rotation: 0, value: label },
+          { id: "r1", kind: "R", x: 2, y: 0, rotation: 0, value: "1k" },
+          { id: "g1", kind: "GND", x: 4, y: 0, rotation: 0, value: "" },
+        ],
+        wires: [],
+      },
+    ],
+  });
+  const wPlus = buildNetlist(docFor("W_{+}")).netlist;
+  assert.match(wPlus, /\bW_p\b/);
+  const delta = buildNetlist(docFor("\\Delta V")).netlist;
+  assert.match(delta, /\bDelta_V\b/);
 });
 
 test("passive value expressions are normalized before netlist emission", () => {
