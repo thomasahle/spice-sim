@@ -359,6 +359,11 @@ const PALETTE_SECTIONS: { label: string; items: PaletteItem[] }[] = [
 // which only renders a flat-line 5V scope.
 const DEMO: CircuitDoc = (DEMOS.find((d) => d.id === "rc_step") ?? DEMOS[0]).build();
 
+// Web build has no native window chrome, so the global title bar is dropped
+// and the pane toggles are rendered inline at the toolbar ends instead.
+const IS_TAURI =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 export function Editor() {
   // Workspace: tracks multiple projects, each holding its own CircuitDoc in
   // localStorage. Loaded lazily on first render; if empty, we bootstrap with
@@ -4270,6 +4275,20 @@ export function Editor() {
 
       <main className="canvas-area">
         <div className="toolbar" role="toolbar" aria-label="Main toolbar">
+          {!IS_TAURI && (
+            <button
+              className={`tb-icon-btn tb-pane-toggle ${pagesCollapsed ? "collapsed" : ""}`}
+              onClick={() => setPagesCollapsed((c) => !c)}
+              aria-pressed={!pagesCollapsed}
+              title={pagesCollapsed ? "Show sidebar (⌘\\)" : "Hide sidebar (⌘\\)"}
+              aria-label="Toggle sidebar"
+            >
+              <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
+                <path d="M5.75 2.75v10.5" />
+              </svg>
+            </button>
+          )}
           <div className="tb-group" role="group" aria-label="File actions">
             <button
               className="tb-icon-btn"
@@ -4379,6 +4398,20 @@ export function Editor() {
             />
             <span>{autoRunPaused ? "Auto-run paused" : "Auto-run"}</span>
           </label>
+          {!IS_TAURI && (
+            <button
+              className={`tb-icon-btn tb-pane-toggle ${inspectorCollapsed ? "collapsed" : ""}`}
+              onClick={() => setInspectorCollapsed((c) => !c)}
+              aria-pressed={!inspectorCollapsed}
+              title={inspectorCollapsed ? "Show inspector (⇧⌘\\)" : "Hide inspector (⇧⌘\\)"}
+              aria-label="Toggle inspector"
+            >
+              <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
+                <path d="M10.25 2.75v10.5" />
+              </svg>
+            </button>
+          )}
         </div>
         <div className="canvas-wrap" tabIndex={-1}>
         {(canvasNotice || disconnectedProbeIds.size > 0 || runFloatingPins.length > 0) && (

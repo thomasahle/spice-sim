@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { Editor } from "./editor/Editor";
 import "./styles.css";
 
+const IS_TAURI =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 export default function App() {
   // Editor dispatches "spicesim:title" whenever the active project name
   // changes; we mirror that into the title bar without coupling state.
@@ -72,63 +75,61 @@ export default function App() {
   }
 
   return (
-    <div className="app">
-      {/* Tauri 2 drag-region: empty string is the canonical "drag here"
-         value. React's bare-prop shorthand renders as `"true"` which some
-         versions of the drag-handler don't match — be explicit. */}
-      <div className="titlebar" data-tauri-drag-region="">
-        <button
-          className={`titlebar-pane-toggle left ${sidebarCollapsed ? "collapsed" : ""}`}
-          data-tauri-drag-region="false"
-          onClick={toggleSidebar}
-          aria-pressed={!sidebarCollapsed}
-          title={
-            sidebarCollapsed ? "Show sidebar (⌘\\)" : "Hide sidebar (⌘\\)"
-          }
-          aria-label="Toggle sidebar"
-        >
-          <svg
-            width={17}
-            height={17}
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
+    <div className={`app${IS_TAURI ? "" : " website"}`}>
+      {IS_TAURI && (
+        /* Tauri 2 drag-region: empty string is the canonical "drag here"
+           value. React's bare-prop shorthand renders as `"true"` which some
+           versions of the drag-handler don't match — be explicit. */
+        <div className="titlebar" data-tauri-drag-region="">
+          <button
+            className={`titlebar-pane-toggle left ${sidebarCollapsed ? "collapsed" : ""}`}
+            data-tauri-drag-region="false"
+            onClick={toggleSidebar}
+            aria-pressed={!sidebarCollapsed}
+            title={sidebarCollapsed ? "Show sidebar (⌘\\)" : "Hide sidebar (⌘\\)"}
+            aria-label="Toggle sidebar"
           >
-            <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
-            <path d="M5.75 2.75v10.5" />
-          </svg>
-        </button>
-        <div className="titlebar-title">{title}</div>
-        <button
-          className={`titlebar-pane-toggle right ${inspectorCollapsed ? "collapsed" : ""}`}
-          data-tauri-drag-region="false"
-          onClick={toggleInspector}
-          aria-pressed={!inspectorCollapsed}
-          title={
-            inspectorCollapsed
-              ? "Show inspector (⇧⌘\\)"
-              : "Hide inspector (⇧⌘\\)"
-          }
-          aria-label="Toggle inspector"
-        >
-          <svg
-            width={17}
-            height={17}
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
+            <svg
+              width={17}
+              height={17}
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
+              <path d="M5.75 2.75v10.5" />
+            </svg>
+          </button>
+          <div className="titlebar-title">{title}</div>
+          <button
+            className={`titlebar-pane-toggle right ${inspectorCollapsed ? "collapsed" : ""}`}
+            data-tauri-drag-region="false"
+            onClick={toggleInspector}
+            aria-pressed={!inspectorCollapsed}
+            title={
+              inspectorCollapsed ? "Show inspector (⇧⌘\\)" : "Hide inspector (⇧⌘\\)"
+            }
+            aria-label="Toggle inspector"
           >
-            <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
-            <path d="M10.25 2.75v10.5" />
-          </svg>
-        </button>
-      </div>
+            <svg
+              width={17}
+              height={17}
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
+              <path d="M10.25 2.75v10.5" />
+            </svg>
+          </button>
+        </div>
+      )}
       <Editor />
     </div>
   );

@@ -156,6 +156,22 @@ button[disabled] {
     radial-gradient(1200px 800px at 50% -10%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
     var(--bg);
 }
+/* Web build: no native window chrome, so the title bar is dropped. The
+   sidebar / inspector toggles live at the ends of the canvas toolbar
+   instead (see `.tb-pane-toggle` in Editor.tsx). */
+.app.website {
+  grid-template-rows: 1fr 26px;
+}
+.tb-pane-toggle {
+  color: var(--ink-muted);
+}
+.tb-pane-toggle[aria-pressed="true"] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.tb-pane-toggle[aria-pressed="true"]:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
 
 .statusbar {
   display: flex;
