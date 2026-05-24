@@ -158,7 +158,14 @@ function labelCandidates(c: CircuitComponent): LabelOffset[] {
         ];
   }
   if (c.kind === "GND") return [{ x: 0, y: -0.4, anchor: "middle" }];
-  if (c.kind === "NPN" || c.kind === "PNP" || c.kind === "NMOS" || c.kind === "PMOS") {
+  if (
+    c.kind === "NPN" ||
+    c.kind === "PNP" ||
+    c.kind === "NMOS" ||
+    c.kind === "PMOS" ||
+    c.kind === "NMOS4" ||
+    c.kind === "PMOS4"
+  ) {
     return [
       { x: 1.55, y: 0.2, anchor: "start" },
       { x: -1.55, y: 0.2, anchor: "end" },

@@ -12,7 +12,7 @@ export function formatValueForKind(kind: ComponentKind, value: string): string {
 export function canvasValueLabel(kind: ComponentKind, value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
-  if (isCanvasModelKind(kind) || kind === "SUBX" || kind === "LABEL") return null;
+  if (isCanvasModelKind(kind) || kind === "SUBX" || kind === "LABEL" || kind === "NOTE") return null;
   return formatValueForKind(kind, trimmed);
 }
 
@@ -173,6 +173,8 @@ function isCanvasModelKind(kind: ComponentKind): boolean {
     kind === "PNP" ||
     kind === "NMOS" ||
     kind === "PMOS" ||
+    kind === "NMOS4" ||
+    kind === "PMOS4" ||
     kind === "OPAMP"
   );
 }

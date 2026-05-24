@@ -39,6 +39,7 @@ export interface CanvasInteractionActivity {
   drag?: unknown | null;
   wireDrag?: unknown | null;
   scopeDrag?: unknown | null;
+  noteResize?: unknown | null;
   placementDraft?: unknown | null;
   marquee?: unknown | null;
   panning?: unknown | null;
@@ -51,6 +52,7 @@ export function hasActiveCanvasInteraction(activity: CanvasInteractionActivity):
     activity.drag ||
       activity.wireDrag ||
       activity.scopeDrag ||
+      activity.noteResize ||
       activity.placementDraft ||
       activity.marquee ||
       activity.panning ||

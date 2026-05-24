@@ -9,8 +9,9 @@ export function isWaveformTabEnabled(
   kind: ViewTab,
   { plot, xyAvailable }: WaveformTabAvailability,
 ): boolean {
-  const isAc = plot.startsWith("ac");
-  const isDc = plot.startsWith("dc");
+  const normalizedPlot = plot.toLowerCase();
+  const isAc = normalizedPlot.startsWith("ac");
+  const isDc = normalizedPlot.startsWith("dc");
   if (kind === "xy") return xyAvailable;
   if (kind === "ac" || kind === "bode") return isAc;
   if (kind === "dc") return isDc;

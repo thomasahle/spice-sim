@@ -156,11 +156,97 @@ button[disabled] {
     radial-gradient(1200px 800px at 50% -10%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
     var(--bg);
 }
-/* Web build: no native window chrome, so the title bar is dropped. The
-   sidebar / inspector toggles live at the ends of the canvas toolbar
-   instead (see `.tb-pane-toggle` in Editor.tsx). */
+/* Web build: a thin Spice Sim header sits above the editor (brand link +
+   GitHub stars). The native window-chrome titlebar is dropped since the
+   browser already provides one. */
 .app.website {
-  grid-template-rows: 1fr 26px;
+  grid-template-rows: 44px 1fr 26px;
+}
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: var(--bg-toolbar);
+  backdrop-filter: blur(40px) saturate(200%);
+  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  border-bottom: 1px solid var(--hairline);
+  position: relative;
+  z-index: 5;
+}
+.app-header-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  padding: 6px 8px;
+  border-radius: var(--r-md);
+  transition: color 0.12s, background 0.12s;
+}
+.app-header-brand:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.app-header-logo {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.app-header-name { white-space: nowrap; }
+.app-header-spacer { flex: 1; }
+.app-header-stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--bg-window);
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+.app-header-stars:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--hairline));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-window));
+  color: var(--accent);
+}
+.app-header-stars svg { color: color-mix(in srgb, #f6c54f 90%, var(--ink) 10%); }
+.app-header-stars-label { font-weight: 600; }
+.app-header-stars-count {
+  padding-left: 8px;
+  margin-left: 2px;
+  border-left: 1px solid var(--hairline);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+.app-header-stars:hover .app-header-stars-count { color: var(--accent); }
+
+/* Floating Run + analysis-pills cluster anchored to the top-center of the
+   canvas. Positioned absolutely so it overlays the schematic without
+   eating editor real-estate. */
+.canvas-actions {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--bg-window) 92%, transparent);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-pill);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.6) inset,
+    0 8px 24px rgba(15, 23, 42, 0.10),
+    0 2px 6px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
 }
 .tb-pane-toggle {
   color: var(--ink-muted);
@@ -201,6 +287,8 @@ button[disabled] {
    tooltip can drop down. */
 .canvas-area:has(.tb-pill:hover),
 .canvas-area:has(.tb-pill:focus-visible),
+.canvas-wrap:has(.tb-pill:hover),
+.canvas-wrap:has(.tb-pill:focus-visible),
 .toolbar:has(.tb-pill:hover),
 .toolbar:has(.tb-pill:focus-visible) {
   overflow: visible;
@@ -461,33 +549,53 @@ button[disabled] {
 .side-nav-action:hover svg {
   color: var(--ink);
 }
+.side-nav-file-actions {
+  gap: 2px;
+}
+.side-nav-file-actions .side-nav-action {
+  padding: 6px 10px;
+}
+.side-nav-file-actions .side-nav-action span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-/* Section header — visually unified with `.section-label` on the right
-   pane so "PROJECTS" and "SIMULATION SETTINGS" read as the same kind of
-   header. Left padding 4 + .side-nav padding 14 = 18 px from pane left,
-   matching .right-pane padding 14 + .section-label padding-left 4 = 18. */
+/* Section header — "PROJECTS" muted label. */
 .side-nav-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* Left padding 4 px + .side-nav padding 14 = 18 px from pane left,
+     matching the right pane (14 px pane padding + 4 px section-label
+     padding). Top 0 means the first header lands flush with the pane top
+     padding — same y as the right pane's first `.section-label`. */
   padding: 0 4px 6px;
 }
 .side-nav-section-head + .side-nav-section-head,
 .side-nav-projects + .side-nav-section-head,
 .side-nav-actions + .side-nav-section-head {
-  /* Subsequent section headers need a gap above; the first one sits flush
-     with the .side-nav top padding (14 px). */
+  /* Add space between sections — first header has none, later ones do. */
   padding-top: 14px;
 }
 /* Tighten the gap between a section header and its content so it matches
    the right-pane `.sidebar-section` internal spacing. .side-nav uses
    flex `gap: 18px` between siblings; this pulls header→content close
-   without affecting the inter-section spacing. */
+   without affecting the inter-section spacing. The pull is large enough
+   to also absorb the .side-proj-head / .side-nav-action 7 px top
+   padding so the *visible* text-to-text gap matches the right pane. */
 .side-nav-section-head + .side-nav-projects,
 .side-nav-section-head + .side-nav-actions,
 .side-nav-section-head + .side-nav-examples {
   margin-top: -16px;
 }
+.side-nav-section-head-tight {
+  padding-top: 10px;
+}
+/* Unify section-header typography with the right pane's `.section-label`
+   so "Projects" and "SIMULATION SETTINGS" look like the same kind of
+   header instead of two different label styles. */
 .side-nav-section-head > span {
   font-size: 10.5px;
   font-weight: 700;
@@ -575,6 +683,7 @@ button[disabled] {
   border-radius: 4px;
   padding: 1px 4px;
 }
+.side-proj-add,
 .side-proj-del {
   width: 18px;
   height: 18px;
@@ -589,10 +698,22 @@ button[disabled] {
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
+}
+.side-proj-add {
+  opacity: 1;
+}
+.side-proj-del {
   opacity: 0;
 }
 .side-proj-head:hover .side-proj-del {
   opacity: 1;
+}
+.side-proj-add:hover,
+.side-proj-add:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  opacity: 1;
+  outline: none;
 }
 .side-proj-del:hover,
 .side-proj-del:focus-visible {
@@ -917,8 +1038,8 @@ button[disabled] {
   transition: background 0.12s, color 0.12s, border-color 0.12s, transform 0.08s;
 }
 .tool-icon svg {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
 }
 .tool-icon:hover {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
@@ -933,6 +1054,23 @@ button[disabled] {
 .tool-icon.active svg {
   color: white;
 }
+.tool-group-icon.open {
+  border-color: color-mix(in srgb, var(--accent) 46%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.tool-group-icon.active.open {
+  background: var(--accent);
+}
+.tool-group-corner {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-bottom: 4px solid currentColor;
+  opacity: 0.72;
+}
 .tool-hint {
   display: none;
 }
@@ -945,16 +1083,18 @@ button[disabled] {
   left: calc(100% + 10px);
   top: 50%;
   transform: translateY(-50%) translateX(-4px);
-  width: 240px;
-  padding: 9px 12px 10px;
-  background: var(--bg-window);
+  width: 278px;
+  padding: 14px 16px 13px;
+  background: rgba(255, 255, 255, 0.64);
   color: var(--ink);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-md);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: var(--r-lg);
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.5) inset,
-    0 8px 24px rgba(0, 0, 0, 0.12),
-    0 1px 4px rgba(0, 0, 0, 0.06);
+    0 1px 0 rgba(255, 255, 255, 0.72) inset,
+    0 18px 52px rgba(15, 23, 42, 0.24),
+    0 5px 18px rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(10px) saturate(170%);
+  -webkit-backdrop-filter: blur(10px) saturate(170%);
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.14s ease 0.25s, transform 0.14s ease 0.25s;
@@ -966,14 +1106,16 @@ button[disabled] {
   /* Small left-side triangle pointing at the button. */
   content: "";
   position: absolute;
-  left: -5px;
+  left: -8px;
   top: 50%;
-  width: 9px;
-  height: 9px;
+  width: 14px;
+  height: 14px;
   transform: translateY(-50%) rotate(45deg);
-  background: var(--bg-window);
-  border-left: 1px solid var(--hairline);
-  border-bottom: 1px solid var(--hairline);
+  background: rgba(255, 255, 255, 0.64);
+  border-left: 1px solid rgba(255, 255, 255, 0.72);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(10px) saturate(170%);
+  -webkit-backdrop-filter: blur(10px) saturate(170%);
 }
 .tool-icon:hover .tool-tip,
 .tool-icon:focus-visible .tool-tip {
@@ -982,30 +1124,23 @@ button[disabled] {
 }
 .tool-tip-head {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
 }
 .tool-tip-name {
-  font-size: 13px;
-  font-weight: 600;
+  min-width: 0;
+  font-size: 14.5px;
+  line-height: 1.2;
+  font-weight: 700;
   color: var(--ink);
   flex: 1;
 }
-.tool-tip-key {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--ink-muted);
-  background: color-mix(in srgb, var(--ink) 8%, transparent);
-  padding: 1px 6px;
-  border-radius: 4px;
-  letter-spacing: 0.02em;
-}
 .tool-tip-desc {
   display: block;
-  font-size: 11.5px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.42;
   color: var(--ink-muted);
 }
 .tool-tip-aux {
@@ -1044,6 +1179,200 @@ button[disabled] {
     transparent 100%
   );
 }
+.tool-popover {
+  position: absolute;
+  left: 72px;
+  top: 0;
+  width: 278px;
+  max-height: min(440px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  pointer-events: auto;
+  /* Above .tool-tip (50), below .modal (120). Without this the popover can
+     visually sit "behind" canvas content because of the semi-transparent
+     background — bumping the layer makes sure it's a strict overlay. */
+  z-index: 60;
+  /* Nearly opaque so the canvas isn't visible through the menu (the
+     previous 0.64 alpha let SUBX shapes ghost through). The backdrop
+     filter still gives the soft glassy feel. */
+  background: color-mix(in srgb, var(--bg-window) 96%, transparent);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.72) inset,
+    0 18px 52px rgba(15, 23, 42, 0.24),
+    0 5px 18px rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(10px) saturate(170%);
+  -webkit-backdrop-filter: blur(10px) saturate(170%);
+}
+.tool-popover::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 22px;
+  width: 14px;
+  height: 14px;
+  z-index: 0;
+  background: color-mix(in srgb, var(--bg-window) 96%, transparent);
+  border-left: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  transform: rotate(45deg);
+  backdrop-filter: blur(10px) saturate(170%);
+  -webkit-backdrop-filter: blur(10px) saturate(170%);
+}
+.tool-popover-list {
+  position: relative;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 0;
+  border-top: 1px solid color-mix(in srgb, var(--hairline) 72%, transparent);
+  border-radius: calc(var(--r-lg) - 1px);
+}
+.tool-popover-current {
+  position: relative;
+  width: 100%;
+  min-height: 0;
+  display: block;
+  padding: 14px 18px 15px;
+  border-radius: calc(var(--r-lg) - 1px) calc(var(--r-lg) - 1px) 0 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+.tool-popover-current-head {
+  margin-bottom: 7px;
+}
+.tool-popover-row {
+  width: 100%;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px 10px 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  box-shadow: none;
+}
+.tool-popover-row + .tool-popover-row {
+  border-top: 1px solid color-mix(in srgb, var(--hairline) 72%, transparent);
+}
+.tool-popover-row:hover,
+.tool-popover-row.active {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.tool-popover-empty {
+  padding: 18px 22px;
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.tool-popover-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+}
+.tool-popover-icon svg {
+  width: 32px;
+  height: 32px;
+}
+.tool-popover-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tool-popover-row .tool-popover-copy {
+  display: -webkit-box;
+  line-clamp: 3;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.35;
+}
+.tool-popover-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.tool-popover-row .tool-popover-name {
+  display: inline;
+  margin-right: 0.4em;
+  line-height: 1.35;
+}
+.tool-popover-row .tool-popover-name::after {
+  content: "-";
+  margin-left: 0.4em;
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+.tool-popover-desc {
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-popover-row .tool-popover-desc {
+  display: inline;
+  line-height: 1.35;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+.tool-popover-current .tool-popover-name {
+  font-size: 14.5px;
+  line-height: 1.2;
+}
+.tool-popover-current .tool-popover-desc {
+  display: block;
+  font-size: 13px;
+  line-height: 1.42;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+.tool-popover-row kbd,
+.tool-popover-current kbd,
+.tool-tip-key {
+  min-width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-window) 72%, rgba(0, 0, 0, 0.06));
+  color: var(--ink-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.preset-row-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.preset-default-chip {
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--hairline));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+}
 
 /* Keep .sidebar class as an alias for older snapshots. */
 .sidebar { display: none; }
@@ -1062,20 +1391,59 @@ button[disabled] {
   padding-left: 4px;
   opacity: 0.75;
 }
+.schematic-meta-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.meta-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.meta-field > span {
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+.schematic-description-input {
+  min-height: 68px;
+  resize: vertical;
+  line-height: 1.45;
+  font-family: inherit;
+}
 .sidebar-spacer {
   flex: 1;
 }
-.panel-action-grid {
+.panel-summary-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
 }
-.panel-action-grid button {
+.panel-summary-grid > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--bg-window) 82%, transparent);
+  color: var(--ink-muted);
+  font-size: 11.5px;
+}
+.panel-summary-grid code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+}
+.panel-row-action {
   display: inline-flex;
   align-items: center;
   justify-content: flex-start;
   gap: 7px;
   min-width: 0;
+  width: 100%;
   padding: 7px 9px;
   border-radius: var(--r-sm);
   background: var(--bg-window);
@@ -1083,16 +1451,16 @@ button[disabled] {
   font-size: 12px;
   font-weight: 550;
 }
-.panel-action-grid button svg {
+.panel-row-action svg {
   width: 16px;
   height: 16px;
   color: var(--ink-muted);
   flex: 0 0 auto;
 }
-.panel-action-grid button:hover svg {
+.panel-row-action:hover svg {
   color: var(--accent);
 }
-.panel-action-grid button span {
+.panel-row-action span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1194,6 +1562,38 @@ button[disabled] {
   font-family: var(--mono);
   font-size: 11.5px;
 }
+.preset-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mini-btn {
+  min-height: 24px;
+  padding: 4px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--bg-window);
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  box-shadow: none;
+}
+.mini-btn:hover {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--hairline));
+  color: var(--accent);
+}
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  color: var(--ink);
+  user-select: none;
+}
+.checkbox-row input {
+  margin: 0;
+  accent-color: var(--accent);
+}
 .value-input {
   width: 100%;
   font-family: inherit;
@@ -1210,6 +1610,11 @@ button[disabled] {
   outline: 2px solid var(--accent);
   outline-offset: 0;
   border-color: var(--accent);
+}
+.note-text-input {
+  resize: vertical;
+  min-height: 92px;
+  line-height: 1.35;
 }
 .xy-inputs {
   display: grid;
@@ -1692,32 +2097,12 @@ button[disabled] {
   border: 1px dashed var(--hairline-strong);
   border-radius: var(--r-md);
 }
-.sim-advanced-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: transparent;
-  border: none;
-  font-size: 11.5px;
-  color: var(--ink-muted);
-  padding: 4px 6px;
-  margin-top: 4px;
-  align-self: flex-start;
-  box-shadow: none;
-}
-.sim-advanced-toggle .chev {
-  display: inline-block;
-  width: 12px;
-  text-align: center;
-  font-size: 10px;
-}
-.sim-advanced-toggle:hover { color: var(--ink); }
-.sim-advanced { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
 .sim-advanced-area {
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1.5;
   resize: vertical;
+  min-height: 56px;
 }
 
 /* Old `.page-row` / `.page-add` / `.pages-list` styles replaced by the
@@ -1952,6 +2337,49 @@ button[disabled] {
   stroke: none;
   pointer-events: all;
 }
+.net-label-anchor-dot {
+  pointer-events: all;
+}
+.net-label-anchor-dot.connected {
+  fill: var(--pin);
+  stroke: var(--bg-canvas);
+  stroke-width: 0.055;
+}
+.net-label-anchor-dot.unconnected {
+  fill: var(--bg-canvas);
+  stroke: color-mix(in srgb, var(--accent) 70%, var(--hairline-strong));
+  stroke-width: 0.07;
+  stroke-dasharray: 0.11 0.08;
+}
+.net-label-anchor-dot.near-miss {
+  fill: color-mix(in srgb, var(--warn) 18%, var(--bg-canvas));
+  stroke: var(--warn);
+  stroke-width: 0.08;
+}
+.net-label-group.connected .net-label-stem {
+  stroke-width: 0.095;
+}
+.net-label-group.connected .net-label-chip {
+  stroke-color: color-mix(in srgb, var(--accent) 62%, var(--hairline));
+}
+.net-label-group.unconnected .net-label-stem {
+  stroke-dasharray: 0.18 0.14;
+  opacity: 0.72;
+}
+.net-label-group.unconnected .net-label-chip {
+  fill: color-mix(in srgb, var(--accent) 4%, var(--bg-window));
+  stroke-dasharray: 0.14 0.1;
+}
+.net-label-group.near-miss .net-label-stem {
+  stroke: var(--warn);
+  stroke-dasharray: 0.16 0.1;
+  opacity: 0.86;
+}
+.net-label-group.near-miss .net-label-chip {
+  fill: color-mix(in srgb, var(--warn) 10%, var(--bg-window));
+  stroke: color-mix(in srgb, var(--warn) 72%, var(--hairline));
+  stroke-dasharray: 0.16 0.1;
+}
 .net-label-chip {
   fill: color-mix(in srgb, var(--accent) 8%, var(--bg-window));
   stroke: color-mix(in srgb, var(--accent) 46%, var(--hairline));
@@ -1968,6 +2396,64 @@ button[disabled] {
   font-weight: 650;
   pointer-events: none;
 }
+.note-card {
+  fill: color-mix(in srgb, var(--bg-window) 54%, transparent);
+  stroke: color-mix(in srgb, var(--accent) 42%, var(--hairline));
+  stroke-width: 0.05;
+}
+.note-card.hovered,
+.note-card.selected {
+  fill: color-mix(in srgb, var(--bg-window) 64%, transparent);
+  stroke: var(--accent);
+  stroke-width: 0.075;
+}
+.note-text {
+  fill: var(--ink);
+  font-weight: 400;
+  pointer-events: none;
+}
+.note-color-picker {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+.note-color-input {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--bg-window);
+}
+.note-color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.note-color-swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--ink) 16%, transparent);
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 42%);
+  cursor: pointer;
+}
+.note-color-swatch[aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.note-resize-handle {
+  fill: var(--bg-window);
+  stroke: var(--accent);
+  stroke-width: 0.065;
+  cursor: nwse-resize;
+  pointer-events: all;
+}
+.note-resize-handle:hover {
+  fill: color-mix(in srgb, var(--accent) 14%, var(--bg-window));
+}
 .component-value-label {
   opacity: 0.94;
 }
@@ -1977,7 +2463,6 @@ button[disabled] {
   stroke-width: 0.055px;
   stroke-linejoin: round;
   paint-order: stroke fill;
-  font-size: 0.56px;
   font-weight: 600;
   dominant-baseline: alphabetic;
 }
@@ -2036,13 +2521,24 @@ button[disabled] {
   font-weight: 800;
   dominant-baseline: middle;
 }
+.net-label-near-miss-marker {
+  color: var(--warn);
+}
+.near-miss-guide {
+  stroke: var(--warn);
+  stroke-width: 0.07;
+  stroke-dasharray: 0.16 0.12;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.near-miss-target {
+  fill: color-mix(in srgb, var(--warn) 12%, transparent);
+  stroke: var(--warn);
+  stroke-width: 0.08;
+  vector-effect: non-scaling-stroke;
+}
 .placement-draft {
   opacity: 0.78;
-}
-.placement-draft-guide {
-  stroke: color-mix(in srgb, var(--accent) 44%, transparent);
-  stroke-width: 0.06;
-  stroke-dasharray: 0.26 0.18;
 }
 .placement-draft-axis {
   stroke: var(--accent);
@@ -2696,7 +3192,7 @@ button[disabled] {
 .playbar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding: 6px 12px;
   background: var(--bg-toolbar);
   backdrop-filter: saturate(180%) blur(20px);
@@ -2708,6 +3204,12 @@ button[disabled] {
   width: 100%;
   max-width: 100%;
   overflow: hidden;
+}
+.playbar-label {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--ink-muted);
 }
 .playbar .play-btn {
   width: 28px;
@@ -2751,6 +3253,17 @@ button[disabled] {
 }
 .playbar .speed-btn + .speed-btn {
   border-left: 1px solid var(--hairline);
+}
+.live-flow-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+.live-flow-toggle input {
+  accent-color: var(--accent);
 }
 
 .log-pane {
@@ -3028,6 +3541,7 @@ button[disabled] {
   padding: 8px 12px;
   border-bottom: 1px solid var(--hairline);
   background: color-mix(in srgb, var(--bg-toolbar) 80%, transparent);
+  min-width: 0;
 }
 .wf-title {
   font-size: 12px;
@@ -3113,14 +3627,19 @@ button[disabled] {
   align-items: center;
   gap: 4px;
   padding: 0 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
 }
 .wf-tab {
+  flex: 0 0 auto;
   background: transparent;
   border: none;
   font-size: 12px;
   padding: 4px 10px;
   border-radius: 6px;
   color: var(--ink-muted);
+  white-space: nowrap;
 }
 .wf-tab.active {
   background: color-mix(in srgb, var(--accent) 16%, var(--bg-window));
@@ -3130,7 +3649,7 @@ button[disabled] {
   opacity: 0.4;
   cursor: not-allowed;
 }
-.wf-tab[disabled] {
+.wf-tab[aria-disabled="true"] {
   cursor: not-allowed;
 }
 .wf-internal-toggle {
@@ -3511,10 +4030,11 @@ button[disabled] {
   font-family: var(--mono);
 }
 .wf-plot-tag {
-  font-family: var(--mono);
+  flex: 0 0 auto;
+  font-family: inherit;
   font-size: 11px;
   color: var(--ink-muted);
-  margin-left: 6px;
+  white-space: nowrap;
 }
 .wf-trace-vpp {
   margin-left: 6px;
@@ -3791,6 +4311,8 @@ button[disabled] {
     white-space: nowrap;
   }
   .statusbar::-webkit-scrollbar { display: none; }
+  /* Drop the noisier chips on mobile — engine label and chip groups still
+     show, but anything labelled "spacer" or repetitive gets hidden. */
   .statusbar .group.selection { display: none; }
   /* Off-screen drawers (translateX -100%/100%) extend the document scroll
      width by default. Clip them at the editor-root so the page doesn't

@@ -13,8 +13,11 @@ export type ComponentKind =
   | "PNP"
   | "NMOS"
   | "PMOS"
+  | "NMOS4"
+  | "PMOS4"
   | "OPAMP"
   | "LABEL"
+  | "NOTE"
   | "SUBX";
 
 export type Rotation = 0 | 90 | 180 | 270;
@@ -68,6 +71,8 @@ export interface SchematicPage {
   id: string;
   /** SPICE-safe identifier; root page is "main", others become .subckt names */
   name: string;
+  /** User-facing summary shown in places that list this schematic as a reusable block. */
+  description?: string;
   components: CircuitComponent[];
   wires: Wire[];
   probes: Probe[];
@@ -112,6 +117,7 @@ export function makePage(name: string): SchematicPage {
   return {
     id: makeId("page"),
     name,
+    description: "",
     components: [],
     wires: [],
     probes: [],
@@ -120,6 +126,7 @@ export function makePage(name: string): SchematicPage {
 
 // Pin coordinates relative to component origin (before rotation).
 // NPN/PNP/NMOS/PMOS pins are [collector|drain, base|gate, emitter|source].
+// NMOS4/PMOS4 add an explicit fourth body/bulk pin: [drain, gate, source, bulk].
 export const PIN_LAYOUTS: Record<ComponentKind, { x: number; y: number }[]> = {
   R: [
     { x: -2, y: 0 },
@@ -170,6 +177,18 @@ export const PIN_LAYOUTS: Record<ComponentKind, { x: number; y: number }[]> = {
     { x: -2, y: 0 },
     { x: 0, y: 2 },
   ],
+  NMOS4: [
+    { x: 0, y: -2 },
+    { x: -2, y: 0 },
+    { x: 0, y: 2 },
+    { x: 2, y: 0 },
+  ],
+  PMOS4: [
+    { x: 0, y: -2 },
+    { x: -2, y: 0 },
+    { x: 0, y: 2 },
+    { x: 2, y: 0 },
+  ],
   // Op-amp: pin[0]=V+ (non-inverting in), pin[1]=V- (inverting in), pin[2]=OUT
   OPAMP: [
     { x: -3, y: -1 },
@@ -178,9 +197,11 @@ export const PIN_LAYOUTS: Record<ComponentKind, { x: number; y: number }[]> = {
   ],
   // Label: a wire-net annotation. One pin (acts like a wire join).
   LABEL: [{ x: 0, y: 0 }],
+  // Note: visual-only canvas annotation. No electrical pins.
+  NOTE: [],
   // X-instance default = 4 pins. The actual pin count + positions are
   // overridden per-component via `getPinLayout` based on `params.npins`
-  // (so a single SUBX kind can host 1..8-pin subcircuits without needing
+  // (so a single SUBX kind can host 1..16-pin subcircuits without needing
   // a static map entry per arity).
   SUBX: [
     { x: -3, y: -1 },
@@ -191,14 +212,14 @@ export const PIN_LAYOUTS: Record<ComponentKind, { x: number; y: number }[]> = {
 };
 
 /** Per-instance pin layout. Falls back to the static PIN_LAYOUTS for normal
- *  components; SUBX uses its `params.npins` to lay out 1..8 pins around a
+ *  components; SUBX uses its `params.npins` to lay out 1..16 pins around a
  *  rectangle (left side first, then right side). */
 export function getPinLayout(
   c: CircuitComponent,
 ): { x: number; y: number }[] {
   if (c.kind !== "SUBX") return PIN_LAYOUTS[c.kind];
   const raw = parseInt(c.params?.npins ?? "4", 10);
-  const n = Math.max(1, Math.min(8, Number.isFinite(raw) ? raw : 4));
+  const n = Math.max(1, Math.min(16, Number.isFinite(raw) ? raw : 4));
   const leftCount = Math.ceil(n / 2);
   const rightCount = n - leftCount;
   const layout: { x: number; y: number }[] = [];
@@ -258,6 +279,9 @@ export function pinLabelForKind(kind: ComponentKind, idx: number): string | null
     case "NMOS":
     case "PMOS":
       return ["D", "G", "S"][idx] ?? null;
+    case "NMOS4":
+    case "PMOS4":
+      return ["D", "G", "S", "B"][idx] ?? null;
     case "SUBX":
       return `P${idx + 1}`;
     default:
@@ -294,13 +318,17 @@ export function defaultValue(kind: ComponentKind): string {
     case "PNP":
       return "BJTP";
     case "NMOS":
+    case "NMOS4":
       return "NCH";
     case "PMOS":
+    case "PMOS4":
       return "PCH";
     case "OPAMP":
       return "OPAMP";
     case "LABEL":
       return "VOUT";
+    case "NOTE":
+      return "Note";
     case "SUBX":
       return "";
     case "GND":
@@ -323,11 +351,14 @@ export function refdesPrefix(kind: ComponentKind): string {
       return "Q";
     case "NMOS":
     case "PMOS":
+    case "NMOS4":
+    case "PMOS4":
       return "M";
     case "OPAMP":
     case "SUBX":
       return "X";
     case "LABEL":
+    case "NOTE":
     case "GND":
       return "";
   }
@@ -346,8 +377,11 @@ export const COMPONENT_LABELS: Record<ComponentKind, string> = {
   PNP: "PNP BJT",
   NMOS: "NMOS",
   PMOS: "PMOS",
+  NMOS4: "NMOS 4-pin",
+  PMOS4: "PMOS 4-pin",
   OPAMP: "Op-amp",
   LABEL: "Net label",
+  NOTE: "Note",
   SUBX: "Subcircuit",
 };
 

@@ -105,6 +105,8 @@ export function normalizeTuple(point: [number, number]): [number, number] {
 
 export function componentBounds(kind: ComponentKind): { w: number; h: number } {
   switch (kind) {
+    case "NOTE":
+      return { w: 6.8, h: 3.2 };
     case "OPAMP":
     case "SUBX":
       return { w: 7.4, h: 5.6 };
@@ -112,6 +114,8 @@ export function componentBounds(kind: ComponentKind): { w: number; h: number } {
     case "PNP":
     case "NMOS":
     case "PMOS":
+    case "NMOS4":
+    case "PMOS4":
       return { w: 4.8, h: 5.2 };
     case "GND":
     case "LABEL":
@@ -135,6 +139,17 @@ export function componentBoundsFor(c: CircuitComponent, pad = 0): Bounds {
 }
 
 export function componentVisualBoundsFor(c: CircuitComponent, pad = 0): Bounds {
+  if (c.kind === "NOTE") {
+    const lines = noteTextLines(c.value);
+    const width = noteComponentWidth(c, lines);
+    const height = noteComponentHeight(c, lines);
+    return {
+      x1: c.x - pad,
+      y1: c.y - pad,
+      x2: c.x + width + pad,
+      y2: c.y + height + pad,
+    };
+  }
   const local = componentVisualBounds(c.kind);
   const corners = [
     rotateLocalPoint({ x: local.x1, y: local.y1 }, c.rotation),
@@ -191,17 +206,85 @@ function componentVisualBounds(kind: ComponentKind): Bounds {
       return { x1: -0.9, y1: 0, x2: 0.9, y2: 1.15 };
     case "LABEL":
       return { x1: -0.08, y1: -0.48, x2: 2.48, y2: 0.48 };
+    case "NOTE":
+      return { x1: 0, y1: 0, x2: 6.8, y2: 3.2 };
     case "NPN":
     case "PNP":
       return { x1: -2, y1: -2, x2: 1.05, y2: 2 };
     case "NMOS":
     case "PMOS":
       return { x1: -2, y1: -2, x2: 0.25, y2: 2 };
+    case "NMOS4":
+    case "PMOS4":
+      return { x1: -2, y1: -2, x2: 2, y2: 2 };
     case "OPAMP":
       return { x1: -3, y1: -2.4, x2: 3.4, y2: 2.4 };
     case "SUBX":
       return { x1: -3.2, y1: -2.4, x2: 3.2, y2: 2.4 };
   }
+}
+
+export function noteTextLines(value: string): string[] {
+  const text = value.trimEnd() || "Note";
+  const wrapped: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    if (!line) {
+      wrapped.push("");
+      continue;
+    }
+    wrapped.push(...wrapNoteLine(line, 20));
+  }
+  return wrapped.slice(0, 24);
+}
+
+export function noteWidth(lines: string[]): number {
+  const longest = Math.max(12, ...lines.map((line) => line.length));
+  return Math.min(10, Math.max(4.8, longest * 0.28 + 1.1));
+}
+
+export function noteHeight(lines: string[]): number {
+  return Math.max(1.55, lines.length * 0.45 + 0.85);
+}
+
+export function noteComponentWidth(c: CircuitComponent, lines = noteTextLines(c.value)): number {
+  const raw = Number(c.params?.w);
+  return Math.max(noteWidth(lines), Number.isFinite(raw) ? raw : 0);
+}
+
+export function noteComponentHeight(c: CircuitComponent, lines = noteTextLines(c.value)): number {
+  const raw = Number(c.params?.h);
+  return Math.max(noteHeight(lines), Number.isFinite(raw) ? raw : 0);
+}
+
+function wrapNoteLine(line: string, maxChars: number): string[] {
+  if (line.length <= maxChars) return [line];
+  const words = line.split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  let current = "";
+  for (const word of words) {
+    if (!current) {
+      current = word;
+      continue;
+    }
+    if (`${current} ${word}`.length <= maxChars) {
+      current = `${current} ${word}`;
+    } else {
+      out.push(current);
+      current = word;
+    }
+  }
+  if (current) out.push(current);
+  return out.flatMap((part) => hardWrapNotePart(part, maxChars));
+}
+
+function hardWrapNotePart(part: string, maxChars: number): string[] {
+  if (part.length <= maxChars) return [part];
+  const out: string[] = [];
+  for (let i = 0; i < part.length; i += maxChars) {
+    out.push(part.slice(i, i + maxChars));
+  }
+  return out;
 }
 
 function rotateLocalPoint(point: { x: number; y: number }, rotation: Rotation): { x: number; y: number } {

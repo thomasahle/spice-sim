@@ -1,5 +1,5 @@
-import type { CircuitComponent, ComponentKind, Probe, Wire } from "./model.ts";
-import { defaultValue, pinWorldPos } from "./model.ts";
+import type { CircuitComponent, ComponentKind, Probe, Rotation, Wire } from "./model.ts";
+import { defaultValue, getPinLayout, pinWorldPos, rotatePoint } from "./model.ts";
 import { normalizePoint, normalizeTuple, pointOnSegment } from "./geometry.ts";
 
 export interface TerminalContact {
@@ -64,12 +64,51 @@ export function componentFromTerminals(
   };
 }
 
+export function componentFromDrag(
+  kind: ComponentKind,
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  id: string,
+): CircuitComponent {
+  const pins = getPinLayout({
+    id,
+    kind,
+    x: 0,
+    y: 0,
+    rotation: 0,
+    value: defaultValue(kind),
+  });
+  if (pins.length === 2) return componentFromTerminals(kind, start, end, id);
+  if (kind === "NOTE") return noteFromDrag(start, end, id);
+  if (pins.length === 1) {
+    return {
+      id,
+      kind,
+      x: end.x,
+      y: end.y,
+      rotation: 0,
+      value: defaultValue(kind),
+    };
+  }
+  if (pins.length > 2) {
+    return multiPinComponentFromDrag(kind, pins, start, end, id);
+  }
+  return {
+    id,
+    kind,
+    x: end.x,
+    y: end.y,
+    rotation: 0,
+    value: defaultValue(kind),
+  };
+}
+
 export function componentFromClick(
   kind: ComponentKind,
   point: { x: number; y: number },
   id: string,
 ): CircuitComponent {
-  return componentFromTerminals(kind, point, point, id);
+  return componentFromDrag(kind, point, point, id);
 }
 
 export function connectedPlacementWires(
@@ -79,17 +118,27 @@ export function connectedPlacementWires(
   orthogonal: boolean,
   makeWireId: () => string,
 ): Wire[] {
-  const firstPin = pinWorldPos(c, 0);
-  const secondPin = pinWorldPos(c, 1);
+  const pins = getPinLayout(c);
   const wires: Wire[] = [];
 
-  if (!samePoint(firstPin, start)) {
-    wires.push({ id: makeWireId(), points: routeWireSegment(firstPin, start, orthogonal) });
-  }
-  if (!samePoint(secondPin, end)) {
-    wires.push({ id: makeWireId(), points: routeWireSegment(secondPin, end, orthogonal) });
+  if (pins.length === 1) {
+    const pin = pinWorldPos(c, 0);
+    if (!samePoint(pin, start)) {
+      wires.push({ id: makeWireId(), points: routeWireSegment(pin, start, orthogonal) });
+    }
+    return wires.filter((w) => w.points.length >= 2);
   }
 
+  if (pins.length >= 2) {
+    const firstPin = pinWorldPos(c, 0);
+    const secondPin = pinWorldPos(c, pins.length - 1);
+    if (!samePoint(firstPin, start)) {
+      wires.push({ id: makeWireId(), points: routeWireSegment(firstPin, start, orthogonal) });
+    }
+    if (!samePoint(secondPin, end)) {
+      wires.push({ id: makeWireId(), points: routeWireSegment(secondPin, end, orthogonal) });
+    }
+  }
   return wires.filter((w) => w.points.length >= 2);
 }
 
@@ -119,6 +168,9 @@ export function connectedInlinePlacementWires(
   orthogonal: boolean,
   makeWireId: () => string,
 ): Wire[] {
+  if (getPinLayout(c).length !== 2) {
+    return connectedPlacementWires(c, start, end, orthogonal, makeWireId);
+  }
   const firstPin = pinWorldPos(c, 0);
   const secondPin = pinWorldPos(c, 1);
   if (!pointsShareLine(firstPin, secondPin, [firstPin, secondPin, start, end])) {
@@ -133,6 +185,85 @@ export function connectedInlinePlacementWires(
     wires.push({ id: makeWireId(), points: routeWireSegment(secondPin, end, orthogonal) });
   }
   return wires.filter((w) => w.points.length >= 2);
+}
+
+function noteFromDrag(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  id: string,
+): CircuitComponent {
+  const moved = placementLength({ start, end }) >= 0.35;
+  if (!moved) {
+    return {
+      id,
+      kind: "NOTE",
+      x: start.x,
+      y: start.y,
+      rotation: 0,
+      value: defaultValue("NOTE"),
+    };
+  }
+  const x = Math.min(start.x, end.x);
+  const y = Math.min(start.y, end.y);
+  const w = Math.max(2.8, Math.abs(end.x - start.x));
+  const h = Math.max(1.4, Math.abs(end.y - start.y));
+  return {
+    id,
+    kind: "NOTE",
+    x,
+    y,
+    rotation: 0,
+    value: defaultValue("NOTE"),
+    params: {
+      w: String(normalizePoint({ x: w, y: 0 }).x),
+      h: String(normalizePoint({ x: 0, y: h }).y),
+    },
+  };
+}
+
+function multiPinComponentFromDrag(
+  kind: ComponentKind,
+  pins: { x: number; y: number }[],
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  id: string,
+): CircuitComponent {
+  if (placementLength({ start, end }) < 0.35) {
+    return {
+      id,
+      kind,
+      x: start.x,
+      y: start.y,
+      rotation: 0,
+      value: defaultValue(kind),
+    };
+  }
+  const first = pins[0];
+  const last = pins[pins.length - 1];
+  let best: { rotation: Rotation; center: { x: number; y: number }; error: number } | null = null;
+  for (const rotation of [0, 90, 180, 270] as Rotation[]) {
+    const firstRotated = rotatePoint(first, rotation);
+    const lastRotated = rotatePoint(last, rotation);
+    const centerFromFirst = { x: start.x - firstRotated.x, y: start.y - firstRotated.y };
+    const centerFromLast = { x: end.x - lastRotated.x, y: end.y - lastRotated.y };
+    const center = normalizePoint({
+      x: (centerFromFirst.x + centerFromLast.x) / 2,
+      y: (centerFromFirst.y + centerFromLast.y) / 2,
+    });
+    const firstError = Math.hypot(center.x + firstRotated.x - start.x, center.y + firstRotated.y - start.y);
+    const lastError = Math.hypot(center.x + lastRotated.x - end.x, center.y + lastRotated.y - end.y);
+    const error = firstError + lastError;
+    if (!best || error < best.error) best = { rotation, center, error };
+  }
+
+  return {
+    id,
+    kind,
+    x: best?.center.x ?? end.x,
+    y: best?.center.y ?? end.y,
+    rotation: best?.rotation ?? 0,
+    value: defaultValue(kind),
+  };
 }
 
 export function placementConnectionWires(

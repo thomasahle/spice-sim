@@ -219,6 +219,36 @@ const COMPONENT_HELP: Partial<
       </>
     ),
   },
+  NMOS4: {
+    title: "NMOS transistor, explicit bulk",
+    body: (
+      <>
+        <p>
+          Four-terminal NMOS for circuits where the body/bulk connection matters.
+          Netlists as drain, gate, source, bulk.
+        </p>
+        <p>
+          Use this for source followers, wells, body-bias experiments, and
+          subcircuits that should not silently tie bulk to source.
+        </p>
+      </>
+    ),
+  },
+  PMOS4: {
+    title: "PMOS transistor, explicit bulk",
+    body: (
+      <>
+        <p>
+          Four-terminal PMOS for circuits where the body/bulk connection matters.
+          Netlists as drain, gate, source, bulk.
+        </p>
+        <p>
+          Use this for CMOS cells, analog switches, and custom models where the
+          body node must be wired explicitly.
+        </p>
+      </>
+    ),
+  },
   OPAMP: {
     title: "Operational amplifier",
     body: (
@@ -249,6 +279,22 @@ const COMPONENT_HELP: Partial<
           keeping busy schematics readable.
         </p>
         <p>The label name becomes the node name in simulator output.</p>
+      </>
+    ),
+  },
+  NOTE: {
+    title: "Note",
+    body: (
+      <>
+        <p>
+          A canvas-only annotation for explaining circuit behavior,
+          assumptions, measurements, or TODOs. Notes do not connect to nets
+          and do not affect simulation.
+        </p>
+        <p>
+          Generated SPICE includes notes as comment lines so exported netlists
+          can carry the same context.
+        </p>
       </>
     ),
   },

@@ -66,6 +66,31 @@ export async function openDoc(): Promise<{ path: string; doc: CircuitDoc } | nul
   return { path: sel, doc: JSON.parse(text) };
 }
 
+export async function openNetlist(): Promise<{ path: string; text: string } | null> {
+  if (!isTauri()) {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".cir,.net,.sp,.spice,.ckt,text/plain";
+      input.onchange = async () => {
+        const f = input.files?.[0];
+        if (!f) return resolve(null);
+        resolve({ path: f.name, text: await f.text() });
+      };
+      input.click();
+    });
+  }
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { readTextFile } = await import("@tauri-apps/plugin-fs");
+  const sel = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "SPICE netlist", extensions: ["cir", "net", "sp", "spice", "ckt"] }],
+  });
+  if (!sel || typeof sel !== "string") return null;
+  return { path: sel, text: await readTextFile(sel) };
+}
+
 export async function exportCsv(
   filename: string,
   vectors: CsvVector[],

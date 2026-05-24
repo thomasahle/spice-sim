@@ -18,6 +18,7 @@ import {
   normalizeSourceValue,
 } from "./valueExpressions.ts";
 import { isAcStimulus } from "./sourceValues.ts";
+import { netLabelNearMisses, type NetLabelNearMiss } from "./netLabelConnections.ts";
 
 const GND_KEY = "__GND__";
 
@@ -112,6 +113,12 @@ interface PageBuild {
   externalPins: string[];
 }
 
+interface ExternalPinCandidate {
+  name: string;
+  x: number;
+  y: number;
+}
+
 interface PageOpts {
   isSubckt: boolean;
   /** Global model set (subcircuits add to it; emitted once at the top of root). */
@@ -135,7 +142,7 @@ export function buildNetlist(doc: CircuitDoc): NetlistResult {
   });
   warnings.push(...rootBuild.warnings);
   floatingPins.push(...rootBuild.floatingPins);
-  const nonGroundComponents = root.components.filter((c) => c.kind !== "GND" && c.kind !== "LABEL");
+  const nonGroundComponents = root.components.filter((c) => c.kind !== "GND" && c.kind !== "LABEL" && c.kind !== "NOTE");
   const nonGroundNodeCount = countNonGroundNodes(rootBuild.nodes);
   if (nonGroundComponents.length > 0 && hasGroundComponent(root) && nonGroundNodeCount === 0) {
     warnings.push(
@@ -279,12 +286,14 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
 
   // Net labels: union pin position with a sentinel keyed by the label value so
   // multiple LABEL components with the same value share a node and the chosen
-  // node name uses the label text. For subcircuit pages, label names also
-  // become the external (.subckt) pin names.
+  // node name uses the label text. For subcircuit pages, labels marked as ports
+  // become external (.subckt) pins; old schematics without explicit ports keep
+  // treating every label as external for compatibility.
   const labelSentinel = (name: string) => `__LABEL:${name.trim().toLowerCase()}`;
   const labelNames = new Map<string, string>(); // sentinel → display name
   const labelVoltages = new Map<string, string>(); // sentinel → DC voltage for power-label nets
-  const externalPinSet = new Set<string>(); // for subcircuit boundary pins
+  const externalPins = new Map<string, ExternalPinCandidate>(); // for subcircuit boundary pins
+  const hasExplicitPorts = isSubckt && page.components.some((c) => c.kind === "LABEL" && c.params?.port === "1");
   for (const c of page.components) {
     if (c.kind !== "LABEL") continue;
     const lbl = c.value.trim();
@@ -296,7 +305,14 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
     if (!isSubckt && labelVoltage) labelVoltages.set(sentinel, labelVoltage);
     const wp = pinWorldPos(c, 0);
     dsu.union(key(wp.x, wp.y), sentinel);
-    if (isSubckt) externalPinSet.add(sanitizeNodeName(lbl));
+    const isExternalPort = isSubckt && (!hasExplicitPorts || c.params?.port === "1");
+    if (isExternalPort && !externalPins.has(sentinel)) {
+      externalPins.set(sentinel, {
+        name: sanitizeNodeName(lbl),
+        x: wp.x,
+        y: wp.y,
+      });
+    }
   }
 
   const rootToName = new Map<string, string>();
@@ -343,11 +359,18 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
   }
 
   for (const c of page.components) {
+    if (c.kind !== "NOTE") continue;
+    for (const line of noteCommentLines(c.value)) {
+      lines.push(line);
+    }
+  }
+
+  for (const c of page.components) {
     if (c.kind === "GND") {
       hasGround = true;
       continue;
     }
-    if (c.kind === "LABEL") continue; // labels are pure annotation
+    if (c.kind === "LABEL" || c.kind === "NOTE") continue; // labels/notes are pure annotation
     const prefix = refdesPrefix(c.kind);
     counters[prefix] = (counters[prefix] ?? 0) + 1;
     const name = `${prefix}${counters[prefix]}`;
@@ -374,7 +397,9 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
         lines.push(`${name} ${n[0]} ${n[1]} ${formatISource(v)}`);
         break;
       case "C":
-        lines.push(`${name} ${n[0]} ${n[1]} ${normalizePassiveValue(v, "10n", "farad")}`);
+        lines.push(
+          `${name} ${n[0]} ${n[1]} ${normalizePassiveValue(v, "10n", "farad")}${formatInitialCondition(c.params?.IC)}`,
+        );
         break;
       case "L":
         lines.push(`${name} ${n[0]} ${n[1]} ${normalizePassiveValue(v, "10m", "henry")}`);
@@ -396,13 +421,25 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
       }
       case "NMOS":
       case "PMOS": {
-        const def = DEFAULT_MODEL_NAMES[c.kind]!;
+        const deviceKind = c.kind === "PMOS" ? "PMOS" : "NMOS";
+        const def = DEFAULT_MODEL_NAMES[deviceKind]!;
         const model = v || def;
-        if (model === def) opts.usedModels.add(c.kind);
+        if (model === def) opts.usedModels.add(deviceKind);
         const L = normalizeLengthValue(c.params?.L ?? "", "1u");
         const W = normalizeLengthValue(c.params?.W ?? "", "10u");
         // Body tied to source by default for the simple symbol.
         lines.push(`${name} ${n[0]} ${n[1]} ${n[2]} ${n[2]} ${model} L=${L} W=${W}`);
+        break;
+      }
+      case "NMOS4":
+      case "PMOS4": {
+        const deviceKind = c.kind === "PMOS4" ? "PMOS" : "NMOS";
+        const def = DEFAULT_MODEL_NAMES[deviceKind]!;
+        const model = v || def;
+        if (model === def) opts.usedModels.add(deviceKind);
+        const L = normalizeLengthValue(c.params?.L ?? "", "1u");
+        const W = normalizeLengthValue(c.params?.W ?? "", "10u");
+        lines.push(`${name} ${n[0]} ${n[1]} ${n[2]} ${n[3]} ${model} L=${L} W=${W}`);
         break;
       }
       case "OPAMP": {
@@ -433,15 +470,16 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
   for (const node of pinToNode.values()) {
     pinCountByNode.set(node, (pinCountByNode.get(node) ?? 0) + 1);
   }
+  const externalPinNames = new Set([...externalPins.values()].map((pin) => pin.name));
   for (const c of page.components) {
-    if (c.kind === "GND") continue;
+    if (c.kind === "GND" || c.kind === "LABEL" || c.kind === "NOTE") continue;
     const layout = getPinLayout(c);
     for (let i = 0; i < layout.length; i++) {
       const node = pinToNode.get(pinKey(c.id, i));
       if (!node || node === "0") continue;
       // Inside a subcircuit, a node that maps to an external pin is *not*
       // floating — it's a port. Skip those.
-      if (isSubckt && externalPinSet.has(node)) continue;
+      if (isSubckt && externalPinNames.has(node)) continue;
       if ((pinCountByNode.get(node) ?? 0) < 2) {
         const ref = refdes.get(c.id) ?? c.id;
         const label = pinLabelForKind(c.kind, i);
@@ -460,6 +498,10 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
     }
   }
 
+  for (const nearMiss of netLabelNearMisses(page)) {
+    warnings.push(formatNetLabelNearMissWarning(nearMiss, refdes, page));
+  }
+
   return {
     bodyLines: lines,
     modelLines: [],
@@ -467,8 +509,50 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
     nodes: { pinToNode, rootToName, posToNode },
     warnings,
     floatingPins,
-    externalPins: [...externalPinSet],
+    externalPins: orderedExternalPins([...externalPins.values()]),
   };
+}
+
+function formatNetLabelNearMissWarning(
+  nearMiss: NetLabelNearMiss,
+  refdes: Map<string, string>,
+  page: SchematicPage,
+): string {
+  const distance = nearMiss.distance < 0.01 ? "<0.01" : nearMiss.distance.toFixed(2);
+  const nearMissTarget = nearMiss.target;
+  let targetLabel: string;
+  if (nearMissTarget.kind === "pin") {
+    const component = page.components.find((c) => c.id === nearMissTarget.componentId);
+    const ref = refdes.get(nearMissTarget.componentId) ?? nearMissTarget.componentId;
+    const pinLabel = component
+      ? pinLabelForKind(component.kind, nearMissTarget.pinIdx)
+      : null;
+    targetLabel = `${ref} ${pinLabel ? `${pinLabel} pin` : `pin ${nearMissTarget.pinIdx + 1}`}`;
+  } else {
+    targetLabel = `wire ${nearMissTarget.wireId}`;
+  }
+  return `Net label "${nearMiss.label}" is ${distance} grid units from ${targetLabel} but is not connected; move the label anchor onto the target to connect it.`;
+}
+
+function noteCommentLines(value: string): string[] {
+  const lines = value.trimEnd().split(/\r?\n/).map((line) => line.trimEnd());
+  if (lines.length === 0 || lines.every((line) => line.trim() === "")) return [];
+  return lines.map((line) => `* Note: ${line.replace(/\*\//g, "* /")}`);
+}
+
+function orderedExternalPins(pins: ExternalPinCandidate[]): string[] {
+  if (pins.length === 0) return [];
+  const centerX = pins.reduce((sum, pin) => sum + pin.x, 0) / pins.length;
+  return [...pins]
+    .sort((a, b) => {
+      const sideA = a.x <= centerX ? 0 : 1;
+      const sideB = b.x <= centerX ? 0 : 1;
+      if (sideA !== sideB) return sideA - sideB;
+      if (Math.abs(a.y - b.y) > 1e-9) return a.y - b.y;
+      if (Math.abs(a.x - b.x) > 1e-9) return a.x - b.x;
+      return a.name.localeCompare(b.name);
+    })
+    .map((pin) => pin.name);
 }
 
 function unionWirePointsOnWireSegments(wires: Wire[], dsu: DSU) {
@@ -599,4 +683,9 @@ function formatBehavioralSource(v: string): string {
   if (!trimmed) return "V=0";
   if (/^[VI]\s*=/i.test(trimmed)) return trimmed;
   return `V=${trimmed}`;
+}
+
+function formatInitialCondition(value: string | undefined): string {
+  const normalized = normalizeDeviceValue(value ?? "", "");
+  return normalized ? ` IC=${normalized}` : "";
 }

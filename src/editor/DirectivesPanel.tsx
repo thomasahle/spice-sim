@@ -1,6 +1,6 @@
 // Structured directives editor. Replaces the raw textarea with one card per
 // directive: each card knows its directive shape (.meas / .ic / .param /
-// .options / .step / .temp / .mc / .subckt) and shows labeled form fields
+// .options / .model / .step / .temp / .mc / .subckt) and shows labeled form fields
 // instead of positional SPICE syntax. Unrecognised lines fall through as a
 // "raw" card so power users aren't blocked.
 
@@ -15,11 +15,17 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
 } from "react";
+import {
+  modelDefinitionLine,
+  parseModelLine,
+  type ModelDeviceType,
+} from "./modelPresets";
 
 export type DirectiveKind =
   | "meas"
   | "ic"
   | "param"
+  | "model"
   | "options"
   | "step-range"
   | "step-list"
@@ -42,6 +48,7 @@ export interface Directive {
   };
   ic?: { entries: { node: string; voltage: string }[] };
   param?: { entries: { name: string; value: string }[] };
+  model?: { name: string; type: ModelDeviceType; params: string };
   options?: { entries: { key: string; value: string }[] };
   stepRange?: { param: string; start: string; stop: string; step: string };
   stepList?: { param: string; values: string[] };
@@ -138,6 +145,15 @@ export function parseDirectives(text: string): Directive[] {
       out.push({ id: nextId(), kind: "param", param: { entries } });
       continue;
     }
+    if (lower.startsWith(".model")) {
+      const model = parseModelLine(line);
+      if (model) {
+        out.push({ id: nextId(), kind: "model", model });
+      } else {
+        out.push({ id: nextId(), kind: "raw", raw: { text: line } });
+      }
+      continue;
+    }
     if (lower.startsWith(".options") || lower.startsWith(".option")) {
       const body = line.replace(/^\.option[s]?/i, "").trim();
       // Tokens are either "key=value" or bare boolean keys.
@@ -226,6 +242,10 @@ export function serializeDirectives(dirs: Directive[]): string {
               .join(" "),
         );
         break;
+      case "model":
+        if (!d.model || !d.model.name.trim()) continue;
+        out.push(modelDefinitionLine(d.model));
+        break;
       case "options":
         if (!d.options || d.options.entries.length === 0) continue;
         out.push(
@@ -312,6 +332,20 @@ const ADD_OPTIONS: AddOption[] = [
     }),
   },
   {
+    kind: "model",
+    label: ".model — device model",
+    hint: "Define a shared diode/BJT/MOS model used by component instances",
+    factory: () => ({
+      id: nextId(),
+      kind: "model",
+      model: {
+        name: "NMOS_LEVEL1_FAST",
+        type: "NMOS",
+        params: "LEVEL=1 VTO=0.70 KP=180e-6 LAMBDA=0.03 GAMMA=0.4 PHI=0.7",
+      },
+    }),
+  },
+  {
     kind: "options",
     label: ".options — solver knobs",
     hint: "reltol / abstol / gmin / savecurrents …",
@@ -369,6 +403,7 @@ const KIND_LABEL: Record<DirectiveKind, string> = {
   meas: ".meas",
   ic: ".ic",
   param: ".param",
+  model: ".model",
   options: ".options",
   "step-range": ".step",
   "step-list": ".step (list)",
@@ -532,6 +567,8 @@ function summary(d: Directive): string {
       return d.ic ? `${d.ic.entries.length} node${d.ic.entries.length === 1 ? "" : "s"}` : "";
     case "param":
       return d.param ? `${d.param.entries.length} param${d.param.entries.length === 1 ? "" : "s"}` : "";
+    case "model":
+      return d.model ? `${d.model.name} ${d.model.type}` : "";
     case "options":
       return d.options ? `${d.options.entries.length} key${d.options.entries.length === 1 ? "" : "s"}` : "";
     case "step-range":
@@ -654,6 +691,52 @@ function CardBody({
           mkEntry={() => ({ name: "", value: "" })}
           renameKeys={(k, v) => ({ name: k, value: v })}
         />
+      );
+    }
+    case "model": {
+      const model = directive.model!;
+      return (
+        <>
+          <Row label="Name">
+            <input
+              className="value-input"
+              value={model.name}
+              onChange={(e) =>
+                onChange({ ...directive, model: { ...model, name: e.target.value } })
+              }
+              placeholder="NMOS_LEVEL1_FAST"
+            />
+          </Row>
+          <Row label="Type">
+            <select
+              className="value-input"
+              value={model.type}
+              onChange={(e) =>
+                onChange({
+                  ...directive,
+                  model: { ...model, type: e.target.value as ModelDeviceType },
+                })
+              }
+            >
+              <option value="D">Diode</option>
+              <option value="NPN">NPN BJT</option>
+              <option value="PNP">PNP BJT</option>
+              <option value="NMOS">NMOS</option>
+              <option value="PMOS">PMOS</option>
+            </select>
+          </Row>
+          <Row label="Parameters" hint="SPICE model tokens, e.g. LEVEL=1 VTO=0.7 KP=180e-6">
+            <textarea
+              className="value-input"
+              value={model.params}
+              spellCheck={false}
+              rows={3}
+              onChange={(e) =>
+                onChange({ ...directive, model: { ...model, params: e.target.value } })
+              }
+            />
+          </Row>
+        </>
       );
     }
     case "options": {

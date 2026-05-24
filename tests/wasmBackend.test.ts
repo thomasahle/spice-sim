@@ -9,6 +9,20 @@ test("WASM batch netlist appends analysis and ASCII raw option", () => {
   assert.equal((batch.match(/^\.end$/gm) ?? []).length, 1);
 });
 
+test("WASM batch netlist preserves subcircuit .ends lines", () => {
+  const netlist = [
+    "* generated",
+    "X1 in out relu_cell",
+    ".subckt relu_cell x h",
+    "B1 h 0 V=max(0,V(x))",
+    ".ends relu_cell",
+    ".end",
+  ].join("\n");
+  const batch = composeBatchNetlist(netlist, { kind: "tran", tstep: 0.00001, tstop: 0.001 });
+  assert.match(batch, /^\.ends relu_cell$/m);
+  assert.equal((batch.match(/^\.end$/gm) ?? []).length, 1);
+});
+
 test("WASM analysis directives mirror the native engine commands", () => {
   assert.equal(analysisDirective({ kind: "op" }), ".op");
   assert.equal(

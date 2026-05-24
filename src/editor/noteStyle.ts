@@ -1,0 +1,51 @@
+import type { CircuitComponent } from "./model.ts";
+
+export const NOTE_COLOR_PALETTE = [
+  "#34c759",
+  "#af52de",
+  "#ff9f0a",
+  "#0a84ff",
+  "#ff453a",
+  "#30d158",
+  "#bf5af2",
+  "#ff9500",
+] as const;
+
+export function noteColorForIndex(index: number): string {
+  const normalized = Math.max(0, Math.floor(index));
+  return NOTE_COLOR_PALETTE[normalized % NOTE_COLOR_PALETTE.length];
+}
+
+export function noteColor(c: CircuitComponent): string {
+  const color = c.params?.color;
+  return isHexColor(color) ? color : NOTE_COLOR_PALETTE[0];
+}
+
+export function withDefaultNoteColor(c: CircuitComponent, noteIndex: number): CircuitComponent {
+  if (c.kind !== "NOTE" || c.params?.color) return c;
+  return {
+    ...c,
+    params: {
+      ...c.params,
+      color: noteColorForIndex(noteIndex),
+    },
+  };
+}
+
+export function noteFillColor(c: CircuitComponent, active = false): string {
+  return hexWithAlpha(noteColor(c), active ? 0.16 : 0.1);
+}
+
+export function noteStrokeColor(c: CircuitComponent, active = false): string {
+  return hexWithAlpha(noteColor(c), active ? 0.95 : 0.72);
+}
+
+function isHexColor(value: string | undefined): value is string {
+  return /^#[0-9a-f]{6}$/i.test(value ?? "");
+}
+
+function hexWithAlpha(hex: string, alpha: number): string {
+  const clamped = Math.max(0, Math.min(1, alpha));
+  const suffix = Math.round(clamped * 255).toString(16).padStart(2, "0");
+  return `${hex}${suffix}`;
+}

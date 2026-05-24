@@ -13,7 +13,6 @@ import {
 import type {
   CircuitDoc,
   CircuitComponent,
-  AnalysisSpec,
   ComponentKind,
   Probe,
   SchematicPage,
@@ -40,11 +39,16 @@ import {
   valueLabelBounds,
   valueLabelOffsets,
 } from "./labelPlacement";
-import { draftMeasurement, dragDeltaMeasurement } from "./draftMeasurement";
+import { draftMeasurement } from "./draftMeasurement";
 import {
   boundsFromPoints,
   componentBoundsFor,
   componentVisualBoundsFor,
+  noteComponentHeight,
+  noteComponentWidth,
+  noteHeight,
+  noteTextLines,
+  noteWidth,
   normalizeCoord,
   normalizePoint,
   normalizeTuple,
@@ -56,6 +60,28 @@ import {
   wireIntersectsRect,
 } from "./geometry";
 import { buildNetlist, coordKey, type FloatingPinDiagnostic } from "./netlist";
+import { normalizeDoc } from "./docNormalize";
+import { importNetlist } from "./netlistImport";
+import { connectedNetLabelIds, netLabelNearMisses } from "./netLabelConnections";
+import {
+  NOTE_COLOR_PALETTE,
+  noteColor,
+  noteFillColor,
+  noteStrokeColor,
+  withDefaultNoteColor,
+} from "./noteStyle";
+import {
+  applyMosfetPreset,
+  BUILTIN_MOSFET_MODELS,
+  BUILTIN_MOSFET_PRESETS,
+  modelDefinitionLine,
+  modelTypesForKind,
+  mosfetPresetKindForComponentKind,
+  mosfetPresetFromComponent,
+  parseModelDefinitions,
+  type ModelDefinition,
+  type MosfetPreset,
+} from "./modelPresets";
 import { isAcStimulus, sourceValueWithAcStimulus } from "./sourceValues";
 import { isIndependentSourceKind, isSimulationStimulusKind } from "./sourceKinds";
 import { simulate, engineProbe } from "../sim/api";
@@ -88,7 +114,7 @@ import {
 } from "./measurementUnits";
 import { layoutProbeScopes } from "./scopeLayout";
 import { DEMOS } from "./demos";
-import { exportCsv, exportNetlist, exportSvg, onMenuEvent, openDoc, saveDoc } from "../sim/files";
+import { exportCsv, exportNetlist, exportSvg, onMenuEvent, openDoc, openNetlist, saveDoc } from "../sim/files";
 import { applyWheelPan } from "./panMath";
 import { deletionStatus, selectionSummary } from "./editorStatus";
 import { sharedDocFromHash, shareUrlForDoc } from "./shareUrl";
@@ -112,8 +138,7 @@ import {
   type HistorySnapshot,
 } from "./editorHistory";
 import {
-  componentFromClick,
-  componentFromTerminals,
+  componentFromDrag,
   movePointWithAnchoredWire,
   moveAttachedWirePoints,
   moveProbesFromInsertedWireSpan,
@@ -170,6 +195,9 @@ import {
   wirePathCoveredByWires,
 } from "./wireTopology";
 
+const STARTER_DEMO_IDS = new Set(["divider", "rc_step", "inverting_opamp"]);
+const STARTER_DEMOS = DEMOS.filter((demo) => STARTER_DEMO_IDS.has(demo.id));
+
 type Tool = "select" | "pan" | "wire" | "probe" | ComponentKind;
 type WireGestureMode = "wire-tool" | "quick-wire";
 
@@ -206,6 +234,9 @@ const PROBE_COLORS = [
   "#ffd60a",
   "#ff375f",
 ];
+
+const CUSTOM_MOSFET_PRESETS_KEY = "spicesim.mosfetPresets";
+const DEFAULT_MOSFET_PRESET_PREFIX = "spicesim.defaultMosfetPreset.";
 
 interface PaletteItem {
   tool: Tool;
@@ -332,6 +363,18 @@ const PALETTE_SECTIONS: { label: string; items: PaletteItem[] }[] = [
       },
       { tool: "PMOS", kind: "PMOS", name: "PMOS" },
       {
+        tool: "NMOS4",
+        kind: "NMOS4",
+        name: "NMOS 4-pin",
+        desc: "Explicit-body NMOS. Wire drain, gate, source, and bulk separately.",
+      },
+      {
+        tool: "PMOS4",
+        kind: "PMOS4",
+        name: "PMOS 4-pin",
+        desc: "Explicit-body PMOS. Wire drain, gate, source, and bulk separately.",
+      },
+      {
         tool: "OPAMP",
         kind: "OPAMP",
         name: "Op-amp",
@@ -350,7 +393,74 @@ const PALETTE_SECTIONS: { label: string; items: PaletteItem[] }[] = [
         hint: "N",
         desc: "Names a wire so it's easy to probe. Two labels with the same name are electrically connected.",
       },
+      {
+        tool: "NOTE",
+        kind: "NOTE",
+        name: "Note",
+        hint: "T",
+        desc: "Write a canvas note. Notes are visual comments and export as SPICE comment lines.",
+      },
     ],
+  },
+];
+
+const PALETTE_ITEMS = PALETTE_SECTIONS.flatMap((section) => section.items);
+const BASIC_TOOL_ITEMS = PALETTE_SECTIONS.find((section) => section.label === "Tools")?.items ?? [];
+const ESSENTIAL_TOOL_ITEMS = ["GND", "LABEL", "NOTE"]
+  .map((tool) => PALETTE_ITEMS.find((item) => item.tool === tool))
+  .filter((item): item is PaletteItem => Boolean(item));
+const DIRECT_TOOL_ITEMS = [...BASIC_TOOL_ITEMS, ...ESSENTIAL_TOOL_ITEMS];
+
+interface ToolGroup {
+  id: string;
+  label: string;
+  summary: string;
+  primary: Tool;
+  tools: Tool[];
+}
+
+const TOOL_GROUPS: ToolGroup[] = [
+  {
+    id: "sources",
+    label: "Sources",
+    summary: "Drive circuits with fixed, time-varying, or expression-based signals.",
+    primary: "V",
+    tools: ["V", "I", "B"],
+  },
+  {
+    id: "passive",
+    label: "Passive Elements",
+    summary: "Basic energy and impedance components for shaping current, voltage, and frequency response.",
+    primary: "R",
+    tools: ["R", "C", "L"],
+  },
+  {
+    id: "opamps",
+    label: "Operational Amplifiers",
+    summary: "High-gain building blocks for amplification, buffering, filtering, and feedback.",
+    primary: "OPAMP",
+    tools: ["OPAMP"],
+  },
+  {
+    id: "diodes",
+    label: "Diodes",
+    summary: "One-way and nonlinear devices for rectification, clamps, and protection.",
+    primary: "D",
+    tools: ["D"],
+  },
+  {
+    id: "bjts",
+    label: "BJTs",
+    summary: "Current-controlled transistors for switching, biasing, and analog gain stages.",
+    primary: "NPN",
+    tools: ["NPN", "PNP"],
+  },
+  {
+    id: "mosfets",
+    label: "MOSFETs",
+    summary: "Voltage-controlled transistors for switching, logic, and high-impedance input stages.",
+    primary: "NMOS",
+    tools: ["NMOS", "PMOS", "NMOS4", "PMOS4"],
   },
 ];
 
@@ -408,6 +518,16 @@ export function Editor() {
       if (loaded) return normalizeDoc(loaded);
     }
     return emptyDoc;
+  });
+  const [showStartupEmptyCard, setShowStartupEmptyCard] = useState(() => {
+    const shared = currentSharedDoc();
+    if (shared) return activeSchematicIsEmpty(normalizeDoc(shared));
+    const w = loadWorkspace();
+    if (w.active) {
+      const loaded = loadProject(w.active);
+      if (loaded) return activeSchematicIsEmpty(normalizeDoc(loaded));
+    }
+    return true;
   });
   const [past, setPast] = useState<HistorySnapshot[]>([]);
   const [future, setFuture] = useState<HistorySnapshot[]>([]);
@@ -474,6 +594,13 @@ export function Editor() {
     initialDy: number;
     committed: boolean;
   }>(null);
+  const [noteResize, setNoteResize] = useState<null | {
+    noteId: string;
+    startWorld: { x: number; y: number };
+    initialWidth: number;
+    initialHeight: number;
+    committed: boolean;
+  }>(null);
   const [marquee, setMarquee] = useState<null | {
     sx: number;
     sy: number;
@@ -532,23 +659,24 @@ export function Editor() {
       return true;
     }
   });
-  const [naturalPan, setNaturalPan] = useState(() => {
-    try {
-      return localStorage.getItem("spicesim.naturalPan") !== "0";
-    } catch {
-      return true;
-    }
-  });
   const [netlistOpen, setNetlistOpen] = useState(false);
   const [engineOk, setEngineOk] = useState<boolean | null>(null);
-  const [bjtVariant, setBjtVariant] = useState<"NPN" | "PNP">("NPN");
-  const [mosVariant, setMosVariant] = useState<"NMOS" | "PMOS">("NMOS");
+  const [activeToolGroupId, setActiveToolGroupId] = useState<string | null>(null);
+  const [activeToolGroupTop, setActiveToolGroupTop] = useState(0);
+  const [selectedSubcircuitPageId, setSelectedSubcircuitPageId] = useState<string | null>(null);
+  const [selectedMosfetPresetId, setSelectedMosfetPresetId] = useState<Record<"NMOS" | "PMOS", string>>(() => ({
+    NMOS: defaultMosfetPresetId("NMOS"),
+    PMOS: defaultMosfetPresetId("PMOS"),
+  }));
+  const [customMosfetPresets, setCustomMosfetPresets] = useState<MosfetPreset[]>(loadCustomMosfetPresets);
+  const toolGroupCloseTimerRef = useRef<number | null>(null);
   const [pagesCollapsed, setPagesCollapsed] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem("spicesim.pagesCollapsed");
       if (stored != null) return stored === "1";
       // Default to collapsed on narrow viewports so the canvas is visible
-      // when a first-time visitor opens the site on a phone.
+      // when a first-time visitor opens the site on a phone. Match the
+      // breakpoint in styles.css that turns the panel into an overlay.
       return isNarrowViewport();
     } catch {
       return false;
@@ -575,6 +703,7 @@ export function Editor() {
       }),
     );
   }, [pagesCollapsed]);
+  useEffect(() => () => clearToolGroupCloseTimer(), []);
   useEffect(() => {
     try {
       localStorage.setItem(
@@ -618,13 +747,6 @@ export function Editor() {
   }, [gridVisible]);
   useEffect(() => {
     try {
-      localStorage.setItem("spicesim.naturalPan", naturalPan ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
-  }, [naturalPan]);
-  useEffect(() => {
-    try {
       localStorage.setItem("spicesim.autoRun", autoRun ? "1" : "0");
     } catch {
       /* ignore */
@@ -652,6 +774,11 @@ export function Editor() {
   // Derive the active page once per render so most editor code can treat
   // `page.components` etc as the source of truth.
   const page = currentPage(doc);
+  useEffect(() => {
+    if (showStartupEmptyCard && !activeSchematicIsEmpty(doc)) {
+      setShowStartupEmptyCard(false);
+    }
+  }, [doc, showStartupEmptyCard]);
   // Always-current refs to dodge stale closures inside global listeners.
   const docRef = useRef(doc);
   docRef.current = doc;
@@ -715,6 +842,7 @@ export function Editor() {
     setFuture([]);
     resetInteractionState();
     clearSimulationState();
+    setShowStartupEmptyCard(false);
     // Empty projects shouldn't pop the (empty) waveform pane open.
     setWaveformVisible(next.pages[0].components.length > 0);
     setStatus("Idle");
@@ -741,6 +869,7 @@ export function Editor() {
     setFuture([]);
     resetInteractionState();
     clearSimulationState();
+    setShowStartupEmptyCard(false);
     // New project is empty — no point showing the waveform pane yet.
     setWaveformVisible(false);
     setStatus(`Created project: ${name}`);
@@ -765,7 +894,23 @@ export function Editor() {
       activePageId: newPage.id,
     }));
     setSelectedIds(new Set());
-    setStatus(`Created subcircuit: ${name}`);
+    setShowStartupEmptyCard(false);
+    setStatus(`Created schematic: ${name}`);
+  }
+
+  function updateActivePageMeta(patch: Partial<Pick<SchematicPage, "name" | "description">>) {
+    commit((d) => ({
+      ...d,
+      pages: d.pages.map((p) => {
+        if (p.id !== d.activePageId) return p;
+        const nextName = patch.name !== undefined ? patch.name.replace(/[^A-Za-z0-9_]/g, "_") : p.name;
+        return {
+          ...p,
+          ...patch,
+          name: nextName || "main",
+        };
+      }),
+    }));
   }
 
   function resetInteractionState() {
@@ -775,9 +920,9 @@ export function Editor() {
   }
 
   function selectTool(nextTool: Tool) {
-    if (nextTool === "NPN" || nextTool === "PNP") setBjtVariant(nextTool);
-    if (nextTool === "NMOS" || nextTool === "PMOS") setMosVariant(nextTool);
+    clearToolGroupCloseTimer();
     setTool(nextTool);
+    setActiveToolGroupId(null);
     updateWireDraft(null);
     updateWireGesture(null);
     setPlacementDraft(null);
@@ -956,6 +1101,8 @@ export function Editor() {
   wireDragRef.current = wireDrag;
   const scopeDragRef = useRef<typeof scopeDrag>(scopeDrag);
   scopeDragRef.current = scopeDrag;
+  const noteResizeRef = useRef<typeof noteResize>(noteResize);
+  noteResizeRef.current = noteResize;
   const placementDraftRef = useRef<typeof placementDraft>(placementDraft);
   placementDraftRef.current = placementDraft;
   const marqueeRef = useRef<typeof marquee>(marquee);
@@ -1049,10 +1196,12 @@ export function Editor() {
     const activeDrag = dragRef.current;
     const activeWireDrag = wireDragRef.current;
     const activeScopeDrag = scopeDragRef.current;
+    const activeNoteResize = noteResizeRef.current;
     const hasInteraction = Boolean(
       activeDrag ||
         activeWireDrag ||
         activeScopeDrag ||
+        activeNoteResize ||
         placementDraftRef.current ||
         marqueeRef.current ||
         panningRef.current,
@@ -1062,7 +1211,8 @@ export function Editor() {
     const hasCommittedPreview = Boolean(
       activeDrag?.committed ||
         activeWireDrag?.committed ||
-        activeScopeDrag?.committed,
+        activeScopeDrag?.committed ||
+        activeNoteResize?.committed,
     );
     if (hasCommittedPreview) {
       const popped = popLatestHistorySnapshot(pastRef.current);
@@ -1077,6 +1227,7 @@ export function Editor() {
     setDrag(null);
     setWireDrag(null);
     setScopeDrag(null);
+    setNoteResize(null);
     setPlacementDraft(null);
     setMarquee(null);
     setPanning(null);
@@ -1156,6 +1307,7 @@ export function Editor() {
       setDiskDirty(false);
       resetInteractionState();
       clearSimulationState();
+      setShowStartupEmptyCard(false);
       setWaveformVisible(shared.pages[0]?.components.length > 0);
       setWorkspace({
         active: id,
@@ -1200,6 +1352,7 @@ export function Editor() {
         setDiskDirty(false);
         resetInteractionState();
         clearSimulationState();
+        setShowStartupEmptyCard(false);
         setWaveformVisible(false);
         setStatus("New circuit");
         window.setTimeout(resetCanvasView, 0);
@@ -1213,8 +1366,27 @@ export function Editor() {
         setDiskDirty(false);
         resetInteractionState();
         clearSimulationState();
+        setShowStartupEmptyCard(false);
         setWaveformVisible(false);
         setStatus(`Opened ${r.path}`);
+        window.setTimeout(fitToContent, 0);
+        break;
+      }
+      case "file:import_netlist": {
+        if (!confirmDiscardIfDirty()) return;
+        const r = await openNetlist();
+        if (!r) return;
+        const imported = importNetlist(r.text);
+        commit(() => normalizeDoc(imported.doc));
+        setFilePath(null);
+        setDiskDirty(true);
+        resetInteractionState();
+        clearSimulationState();
+        setShowStartupEmptyCard(false);
+        setWaveformVisible(false);
+        setStatus(
+          `Imported netlist ${r.path}${imported.warnings.length ? ` (${imported.warnings.length} warnings)` : ""}`,
+        );
         window.setTimeout(fitToContent, 0);
         break;
       }
@@ -1377,11 +1549,6 @@ export function Editor() {
         setSnapToGrid((v) => !v);
         return;
       }
-      if (e.shiftKey && !meta && k === "p") {
-        e.preventDefault();
-        setNaturalPan((v) => !v);
-        return;
-      }
       // ⌘1..9 → switch to that page in the active project.
       if (meta && /^[1-9]$/.test(e.key)) {
         const idx = parseInt(e.key, 10) - 1;
@@ -1513,6 +1680,10 @@ export function Editor() {
       }
       if (k === "n" && !meta) {
         selectTool("LABEL");
+        return;
+      }
+      if (k === "t" && !meta) {
+        selectTool("NOTE");
         return;
       }
       if ((k === "backspace" || k === "delete") && selRef.current.size > 0) {
@@ -1658,6 +1829,11 @@ export function Editor() {
 
   function isConnectionHandleTarget(target: EventTarget | null): boolean {
     return target instanceof Element && target.closest("[data-connection-handle='true']") !== null;
+  }
+
+  function noteResizeIdFromTarget(target: EventTarget | null): string | null {
+    if (!(target instanceof Element)) return null;
+    return target.closest("[data-note-resize-id]")?.getAttribute("data-note-resize-id") ?? null;
   }
 
   function hitKindForItem(item: CircuitComponent | Wire | Probe | null): "component" | "wire" | "probe" | null {
@@ -1940,6 +2116,76 @@ export function Editor() {
     };
   }
 
+  function netLabelDragSnap(
+    activeDrag: NonNullable<typeof drag>,
+    dx: number,
+    dy: number,
+  ): { delta: { x: number; y: number }; target: ConnectionTarget | null } {
+    const componentIds = [...activeDrag.initial.keys()].filter((id) =>
+      page.components.some((component) => component.id === id),
+    );
+    if (componentIds.length !== 1) return { delta: { x: dx, y: dy }, target: null };
+    const label = page.components.find((component) => component.id === componentIds[0]);
+    if (!label || label.kind !== "LABEL") return { delta: { x: dx, y: dy }, target: null };
+    const initial = activeDrag.initial.get(label.id);
+    if (!initial) return { delta: { x: dx, y: dy }, target: null };
+
+    const anchor = normalizePoint({ x: initial.x + dx, y: initial.y + dy });
+    const snapPage: SchematicPage = {
+      ...page,
+      components: page.components.filter((component) => component.id !== label.id),
+    };
+    const snap = nearestConnectionTarget(snapPage, anchor.x, anchor.y, 0.7, {
+      ...WIRING_SNAP,
+      pinRadius: 0.8,
+      wirePointRadius: 0.8,
+      segmentRadius: 0.6,
+      snapPoint,
+    });
+    if (!snap) return { delta: { x: dx, y: dy }, target: null };
+
+    return {
+      delta: normalizePoint({ x: snap.x - initial.x, y: snap.y - initial.y }),
+      target: snap,
+    };
+  }
+
+  function componentFromPlacementDraft(
+    draft: NonNullable<typeof placementDraft>,
+    id: string,
+  ): { component: CircuitComponent; preset: MosfetPreset | null } {
+    const subcircuitPage =
+      draft.kind === "SUBX"
+        ? docRef.current.pages.find((p) => p.id === selectedSubcircuitPageId && p.id !== docRef.current.activePageId)
+        : null;
+    const subcircuitPinCount = subcircuitPage
+      ? Math.max(1, Math.min(16, subcircuitPinsForPage(subcircuitPage).length))
+      : 0;
+    const base = componentFromDrag(draft.kind, draft.start, draft.end, id);
+    const noteCount = currentPage(docRef.current).components.filter((component) => component.kind === "NOTE").length;
+    const withNoteDefaults = withDefaultNoteColor(base, noteCount);
+    const withSubcircuit: CircuitComponent = subcircuitPage
+      ? {
+          ...withNoteDefaults,
+          value: subcircuitPage.name,
+          params: { ...withNoteDefaults.params, npins: String(subcircuitPinCount) },
+        }
+      : withNoteDefaults;
+    const placementPresetKind = mosfetPresetKindForComponentKind(draft.kind);
+    const placementPreset =
+      placementPresetKind
+        ? mosfetPresetById(
+            mosfetPresets,
+            selectedMosfetPresetId[placementPresetKind] || defaultMosfetPresetId(placementPresetKind),
+            placementPresetKind,
+          )
+        : null;
+    return {
+      component: placementPreset ? applyMosfetPreset(withSubcircuit, placementPreset) : withSubcircuit,
+      preset: placementPreset,
+    };
+  }
+
   function appendConnectionWires(wires: Wire[], additions: Wire[]): Wire[] {
     return appendConnectionWiresWithInsertedIds(wires, additions).wires;
   }
@@ -2026,6 +2272,25 @@ export function Editor() {
     const raw = screenToWorld(e.clientX, e.clientY);
     const targetWireId = wireIdFromTarget(e.target);
     const targetComponentId = componentIdFromTarget(e.target);
+    const targetNoteResizeId = noteResizeIdFromTarget(e.target);
+
+    if (tool === "select" && targetNoteResizeId) {
+      const note = page.components.find(
+        (component) => component.id === targetNoteResizeId && component.kind === "NOTE",
+      );
+      if (!note) return;
+      const lines = noteTextLines(note.value);
+      setSelectedIds(new Set([note.id]));
+      setHoverId(null);
+      setNoteResize({
+        noteId: note.id,
+        startWorld: raw,
+        initialWidth: noteComponentWidth(note, lines),
+        initialHeight: noteComponentHeight(note, lines),
+        committed: false,
+      });
+      return;
+    }
 
     const scopeProbeId = scopeProbeIdFromTarget(e.target);
     if (tool === "select" && scopeProbeId) {
@@ -2212,42 +2477,22 @@ export function Editor() {
     }
 
     const kindTool = tool as ComponentKind;
-    if (isTwoTerminalKind(kindTool)) {
-      const snap = pointerConnectionPoint(e.clientX, e.clientY, 1.0, WIRING_SNAP);
-      setPlacementDraft({ kind: kindTool, start: snap, end: snap });
-      setSelectedIds(new Set());
-      setHoverId(null);
+    const subcircuitPage =
+      kindTool === "SUBX"
+        ? docRef.current.pages.find((p) => p.id === selectedSubcircuitPageId && p.id !== docRef.current.activePageId)
+        : null;
+    if (kindTool === "SUBX" && !subcircuitPage) {
+      showCanvasNotice("Choose a schematic from the Subcircuits menu first.");
+      selectTool("select");
       return;
     }
-
-    const placementPoint =
-      kindTool === "GND" || kindTool === "LABEL"
+    const start =
+      getPinLayout({ id: "__draft", kind: kindTool, x: 0, y: 0, rotation: 0, value: "" }).length > 0
         ? pointerConnectionPoint(e.clientX, e.clientY, 1.0, WIRING_SNAP)
         : g;
-    // Multi-pin/single-pin tools place at the pointer-down location. Moving is
-    // an explicit Select-tool action so a placement drag cannot silently shift
-    // the symbol away from the pin positions the user just targeted.
-    const c: CircuitComponent = {
-      id: makeId(tool.toLowerCase()),
-      kind: kindTool,
-      x: placementPoint.x,
-      y: placementPoint.y,
-      rotation: 0,
-      value: defaultValue(kindTool),
-    };
-    commit((d) =>
-      updateCurrentPage(d, (p) => ({
-        ...p,
-        components: [...p.components, c],
-        wires:
-          kindTool === "GND" || kindTool === "LABEL"
-            ? splitWiresAtPoint(p.wires, [placementPoint.x, placementPoint.y])
-            : p.wires,
-      })),
-    );
-    setSelectedIds(new Set([c.id]));
-    if (kindTool !== "GND" && kindTool !== "LABEL") setTool("select");
-    setStatus(placementStatusFor(kindTool));
+    setPlacementDraft({ kind: kindTool, start, end: start });
+    setSelectedIds(new Set());
+    setHoverId(null);
   }
 
   function onCanvasPointerMove(e: React.PointerEvent<SVGSVGElement>) {
@@ -2297,10 +2542,59 @@ export function Editor() {
     }
 
     if (placementDraft) {
-      const snap = nearestConnection(raw.x, raw.y, 1.0, WIRING_SNAP);
+      const hasPins =
+        getPinLayout({
+          id: "__draft",
+          kind: placementDraft.kind,
+          x: 0,
+          y: 0,
+          rotation: 0,
+          value: "",
+        }).length > 0;
+      const snap = hasPins ? nearestConnection(raw.x, raw.y, 1.0, WIRING_SNAP) : null;
       setSnapTarget(snap ? { x: snap.x, y: snap.y } : null);
       setPlacementDraft({ ...placementDraft, end: normalizePoint(snap ?? g) });
       setHoverId(null);
+      return;
+    }
+
+    if (noteResize) {
+      setHoverId(null);
+      const delta = noteResize.committed
+        ? canvasDragDelta(noteResize.startWorld, raw, snapToGridRef.current)
+        : canvasDragDeltaAfterThreshold(noteResize.startWorld, raw, snapToGridRef.current);
+      if (!delta) return;
+      const width = normalizeCoord(Math.max(2.8, noteResize.initialWidth + delta.x));
+      const height = normalizeCoord(Math.max(1.4, noteResize.initialHeight + delta.y));
+      if (
+        !noteResize.committed &&
+        width === noteResize.initialWidth &&
+        height === noteResize.initialHeight
+      ) {
+        return;
+      }
+      if (!noteResize.committed) {
+        pushPast(historySnapshot());
+        setFuture([]);
+        setNoteResize({ ...noteResize, committed: true });
+      }
+      previewMutate((d) =>
+        updateCurrentPage(d, (p) => ({
+          ...p,
+          components: p.components.map((component) =>
+            component.id === noteResize.noteId
+              ? {
+                  ...component,
+                  params: {
+                    ...component.params,
+                    w: String(width),
+                    h: String(height),
+                  },
+                }
+              : component,
+          ),
+        })),
+      );
       return;
     }
 
@@ -2400,8 +2694,10 @@ export function Editor() {
         ? canvasDragDelta(drag.startWorld, raw, snapToGridRef.current)
         : canvasDragDeltaAfterThreshold(drag.startWorld, raw, snapToGridRef.current);
       if (!delta) return;
-      const { x: dx, y: dy } = delta;
+      const snap = netLabelDragSnap(drag, delta.x, delta.y);
+      const { x: dx, y: dy } = snap.delta;
       if (dx === 0 && dy === 0 && !drag.committed) return;
+      setSnapTarget(snap.target ? { x: snap.target.x, y: snap.target.y } : null);
       if (!drag.committed) {
         pushPast(historySnapshot());
         setFuture([]);
@@ -2454,11 +2750,13 @@ export function Editor() {
       setDrag(null);
       if (activeDrag.committed) {
         const raw = screenToWorld(e.clientX, e.clientY);
-        const { x: dx, y: dy } = canvasDragDelta(
+        const delta = canvasDragDelta(
           activeDrag.startWorld,
           raw,
           snapToGridRef.current,
         );
+        const snap = netLabelDragSnap(activeDrag, delta.x, delta.y);
+        const { x: dx, y: dy } = snap.delta;
         previewMutate((d) =>
           updateCurrentPage(d, (p) =>
             applySelectionDragPreview(
@@ -2472,9 +2770,13 @@ export function Editor() {
           ),
         );
       }
+      setSnapTarget(null);
     }
     if (scopeDrag) {
       setScopeDrag(null);
+    }
+    if (noteResize) {
+      setNoteResize(null);
     }
     if (wireDrag) {
       if (wireDrag.committed) {
@@ -2533,43 +2835,28 @@ export function Editor() {
       return;
     }
     if (placementDraft) {
-      if (placementLength(placementDraft) < 0.35) {
-        const c = componentFromClick(
-          placementDraft.kind,
-          placementDraft.start,
-          makeId(placementDraft.kind.toLowerCase()),
-        );
-        commit((d) =>
-          updateCurrentPage(d, (p) => ({
-            ...p,
-            components: [...p.components, c],
-          })),
-        );
-        setSelectedIds(new Set([c.id]));
-        setPlacementDraft(null);
-        setSnapTarget(null);
-        setTool("select");
-        setStatus(`Added ${COMPONENT_LABELS[c.kind]}`);
-        return;
-      }
-      const c = componentFromTerminals(
-        placementDraft.kind,
-        placementDraft.start,
-        placementDraft.end,
+      const { component: c, preset } = componentFromPlacementDraft(
+        placementDraft,
         makeId(placementDraft.kind.toLowerCase()),
       );
       let insertedInline = false;
       let addedStubCount = 0;
-      commit((d) =>
-        updateCurrentPage(d, (p) => {
-          const cutSpan = placementWireCutSpan(c, placementDraft.start, placementDraft.end);
-          let nextWires = cutWireSegmentBetweenPoints(
-            p.wires,
-            [cutSpan.start.x, cutSpan.start.y],
-            [cutSpan.end.x, cutSpan.end.y],
-            () => makeId("w"),
-          );
-          insertedInline = nextWires !== p.wires;
+      commit((d) => {
+        const nextDoc = updateCurrentPage(d, (p) => {
+          const pinCount = getPinLayout(c).length;
+          const canInsertInline = pinCount === 2 && placementLength(placementDraft) >= 0.35;
+          const cutSpan = canInsertInline
+            ? placementWireCutSpan(c, placementDraft.start, placementDraft.end)
+            : null;
+          let nextWires = cutSpan
+            ? cutWireSegmentBetweenPoints(
+                p.wires,
+                [cutSpan.start.x, cutSpan.start.y],
+                [cutSpan.end.x, cutSpan.end.y],
+                () => makeId("w"),
+              )
+            : p.wires;
+          insertedInline = cutSpan ? nextWires !== p.wires : false;
           const placementWires = placementConnectionWires(
             c,
             placementDraft.start,
@@ -2582,12 +2869,19 @@ export function Editor() {
           for (const w of placementWires) {
             nextWires = addWireWithJunctions({ wires: nextWires }, w).wires;
           }
-          const nextProbes = insertedInline
+          if (pinCount > 0) {
+            for (let pinIdx = 0; pinIdx < pinCount; pinIdx++) {
+              const pin = pinWorldPos(c, pinIdx);
+              nextWires = splitWiresAtPoint(nextWires, [pin.x, pin.y]);
+            }
+          }
+          const nextProbes = insertedInline && cutSpan
             ? moveProbesFromInsertedWireSpan(p.probes, c, cutSpan, placementWires)
             : p.probes;
           return { ...p, components: [...p.components, c], wires: nextWires, probes: nextProbes };
-        }),
-      );
+        });
+        return preset ? ensureBuiltinModelDirective(nextDoc, preset.model) : nextDoc;
+      });
       if (insertedInline) {
         setStatus(`Inserted ${COMPONENT_LABELS[c.kind]} into wire`);
       } else if (addedStubCount > 0) {
@@ -2725,8 +3019,6 @@ export function Editor() {
   panRef.current = pan;
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
-  const naturalPanRef = useRef(naturalPan);
-  naturalPanRef.current = naturalPan;
   useEffect(() => {
     const el = svgRef.current;
     if (!el) return;
@@ -2747,10 +3039,8 @@ export function Editor() {
         setPan(next.pan);
         setZoom(next.zoom);
       } else {
-        // Two-finger scroll -> pan. The default uses the OS-reported macOS
-        // trackpad direction; users can flip it if their driver reports deltas
-        // the other way.
-        setPan(applyWheelPan(panRef.current, e.deltaX, e.deltaY, naturalPanRef.current));
+        // Two-finger scroll -> pan using natural trackpad direction.
+        setPan(applyWheelPan(panRef.current, e.deltaX, e.deltaY));
       }
     };
     el.addEventListener("wheel", handler, { passive: false });
@@ -2933,6 +3223,16 @@ export function Editor() {
     );
   }
 
+  function updateComponentModel(id: string, value: string) {
+    commit((d) => {
+      const nextDoc = updateCurrentPage(d, (p) => ({
+        ...p,
+        components: p.components.map((c) => (c.id === id ? { ...c, value } : c)),
+      }));
+      return ensureBuiltinModelDirective(nextDoc, value);
+    });
+  }
+
   function updateComponentPosition(id: string, axis: "x" | "y", raw: string) {
     const nextValue = Number(raw);
     if (!Number.isFinite(nextValue)) return;
@@ -3035,6 +3335,62 @@ export function Editor() {
             : c,
         ),
       })),
+    );
+  }
+
+  function applyPresetToComponent(id: string, presetId: string) {
+    const component = page.components.find((c) => c.id === id);
+    const presetKind = component ? mosfetPresetKindForComponentKind(component.kind) : null;
+    if (!component || !presetKind) return;
+    const preset = mosfetPresetById(mosfetPresets, presetId, presetKind);
+    if (!preset) return;
+    commit((d) => {
+      const nextDoc = updateCurrentPage(d, (p) => ({
+        ...p,
+        components: p.components.map((c) =>
+          c.id === id ? applyMosfetPreset(c, preset) : c,
+        ),
+      }));
+      return ensureBuiltinModelDirective(nextDoc, preset.model);
+    });
+    setSelectedMosfetPresetId((prev) => ({ ...prev, [preset.kind]: preset.id }));
+    setStatus(`Applied preset: ${preset.name}`);
+  }
+
+  function saveSelectedMosfetPreset(component: CircuitComponent) {
+    const presetKind = mosfetPresetKindForComponentKind(component.kind);
+    if (!presetKind) return;
+    const name = window.prompt("Preset name", `${presetKind} custom`);
+    const preset = mosfetPresetFromComponent(component, name ?? "");
+    if (!preset) return;
+    const next = mergeMosfetPresets([...customMosfetPresets, preset], []);
+    setCustomMosfetPresets(next);
+    saveCustomMosfetPresets(next);
+    setSelectedMosfetPresetId((prev) => ({ ...prev, [preset.kind]: preset.id }));
+    updateParam(component.id, "preset", preset.id);
+    setStatus(`Saved preset: ${preset.name}`);
+  }
+
+  function setDefaultMosfetPreset(kind: "NMOS" | "PMOS", presetId: string) {
+    const preset = mosfetPresetById(mosfetPresets, presetId, kind);
+    if (!preset) return;
+    try {
+      localStorage.setItem(`${DEFAULT_MOSFET_PRESET_PREFIX}${kind}`, preset.id);
+    } catch {
+      // Ignore persistence failures; the current session still updates.
+    }
+    setSelectedMosfetPresetId((prev) => ({ ...prev, [kind]: preset.id }));
+    setStatus(`Default ${kind} preset: ${preset.name}`);
+  }
+
+  function setDefaultMosfetPresetForComponent(component: CircuitComponent) {
+    const presetKind = mosfetPresetKindForComponentKind(component.kind);
+    if (!presetKind) return;
+    setDefaultMosfetPreset(
+      presetKind,
+      component.params?.preset ??
+        selectedMosfetPresetId[presetKind] ??
+        defaultMosfetPresetId(presetKind),
     );
   }
 
@@ -3402,6 +3758,7 @@ export function Editor() {
     commit(() => emptyDoc);
     resetInteractionState();
     clearSimulationState();
+    setShowStartupEmptyCard(false);
     setWaveformVisible(false);
     setStatus("Cleared");
     window.setTimeout(resetCanvasView, 0);
@@ -3412,6 +3769,7 @@ export function Editor() {
     commit(() => demo.build());
     resetInteractionState();
     clearSimulationState();
+    setShowStartupEmptyCard(false);
     setWaveformVisible(true);
     setStatus(`Loaded: ${demo.name}`);
     // On narrow viewports the side panels are overlay drawers; close them
@@ -3480,7 +3838,7 @@ export function Editor() {
   // rebuild. The annotations driven from this (refdes labels, hover node
   // names) don't materially change while a component is being moved; reuse
   // the previous result until the drag commits at pointerup.
-  const isDragging = drag !== null || wireDrag !== null || scopeDrag !== null;
+  const isDragging = drag !== null || wireDrag !== null || scopeDrag !== null || noteResize !== null;
   const lastPinAnnotationsRef = useRef<ReturnType<typeof buildNetlist> | null>(null);
   const pinAnnotations = useMemo(() => {
     if (isDragging && lastPinAnnotationsRef.current) {
@@ -3558,6 +3916,7 @@ export function Editor() {
     drag,
     wireDrag,
     scopeDrag,
+    noteResize,
     placementDraft,
     marquee,
     panning,
@@ -3621,7 +3980,7 @@ export function Editor() {
   const isTransient =
     !!transientScale &&
     transientScale.data.length > 1 &&
-    simResult!.plot.startsWith("tran");
+    isTransientPlot(simResult!.plot);
   const liveActive = isTransient && liveFlow;
   const nodeDisplayLabels = useMemo(() => {
     const labels = new Map<string, string>();
@@ -3805,9 +4164,67 @@ export function Editor() {
     }
     return ids;
   }, [page.probes, pinAnnotations.nodes.posToNode]);
+  const connectedLabelIds = useMemo(() => connectedNetLabelIds(page), [page]);
+  const labelNearMisses = useMemo(() => netLabelNearMisses(page), [page]);
+  const nearMissLabelIds = useMemo(
+    () => new Set(labelNearMisses.map((nearMiss) => nearMiss.labelId)),
+    [labelNearMisses],
+  );
   const firstFloatingPinLabel = runFloatingPins[0]
     ? floatingPinSummary(runFloatingPins[0])
     : null;
+  const modelDefinitions = useMemo(() => {
+    const byKey = new Map<string, ModelDefinition>();
+    for (const model of BUILTIN_MOSFET_MODELS) {
+      byKey.set(`${model.type}:${model.name}`, model);
+    }
+    for (const model of parseModelDefinitions(doc.directives)) {
+      byKey.set(`${model.type}:${model.name}`, model);
+    }
+    return Array.from(byKey.values());
+  }, [doc.directives]);
+  const mosfetPresets = useMemo(
+    () => mergeMosfetPresets(BUILTIN_MOSFET_PRESETS, customMosfetPresets),
+    [customMosfetPresets],
+  );
+  const openToolGroup = TOOL_GROUPS.find((group) => group.id === activeToolGroupId) ?? null;
+  const openToolItems = openToolGroup?.tools
+    .map((groupTool) => paletteItemForTool(groupTool))
+    .filter((item): item is PaletteItem => item !== undefined) ?? [];
+  const subcircuitMenuOpen = activeToolGroupId === "subcircuits";
+  const subcircuitPages = doc.pages.slice(1).filter((p) => p.id !== doc.activePageId);
+  const selectedSubcircuitPage = selectedSubcircuitPageId
+    ? subcircuitPages.find((p) => p.id === selectedSubcircuitPageId) ?? null
+    : null;
+
+  function clearToolGroupCloseTimer() {
+    if (toolGroupCloseTimerRef.current !== null) {
+      window.clearTimeout(toolGroupCloseTimerRef.current);
+      toolGroupCloseTimerRef.current = null;
+    }
+  }
+
+  function openToolGroupMenu(groupId: string, top: number) {
+    clearToolGroupCloseTimer();
+    setActiveToolGroupTop(top);
+    setActiveToolGroupId(groupId);
+  }
+
+  function selectSubcircuitTool(pageId: string) {
+    const target = docRef.current.pages.find((p) => p.id === pageId);
+    if (!target) return;
+    setSelectedSubcircuitPageId(pageId);
+    selectTool("SUBX");
+    setStatus(`Subcircuit tool: ${target.name}`);
+  }
+
+  function scheduleToolGroupClose() {
+    clearToolGroupCloseTimer();
+    toolGroupCloseTimerRef.current = window.setTimeout(() => {
+      setActiveToolGroupId(null);
+      toolGroupCloseTimerRef.current = null;
+    }, 140);
+  }
 
   function selectFloatingPin(fp: FloatingPinDiagnostic) {
     setSelectedIds(new Set([fp.componentId]));
@@ -3848,27 +4265,14 @@ export function Editor() {
       <aside className="side-nav" aria-hidden={pagesCollapsed}>
           {/* Sidebar toggle lives in the app titlebar — see App.tsx. */}
 
-          {/* Top utility actions — Claude-style nav rows. */}
-          <nav className="side-nav-actions">
-            <button
-              className="side-nav-action"
-              onClick={createProject}
-              title="New project"
-              aria-label="New project"
-            >
-              <SideNavIcon kind="new" />
-              <span>New project</span>
-            </button>
-          </nav>
-
           <div className="side-nav-section-head">
             <span>Projects</span>
             <button
               type="button"
               className="side-nav-add"
-              onClick={createSubcircuitPage}
-              title="Add subcircuit page"
-              aria-label="Add subcircuit page"
+              onClick={createProject}
+              title="New project"
+              aria-label="New project"
             >
               +
             </button>
@@ -3898,6 +4302,18 @@ export function Editor() {
                         aria-label="Project name"
                         spellCheck={false}
                       />
+                      <button
+                        type="button"
+                        className="side-proj-add"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          createSubcircuitPage();
+                        }}
+                        title="New schematic"
+                        aria-label={`New schematic in ${proj.name}`}
+                      >
+                        +
+                      </button>
                       {workspace.projects.length > 1 && (
                         <button
                           type="button"
@@ -4013,7 +4429,73 @@ export function Editor() {
             })}
           </div>
 
-          <div className="side-nav-section-head side-nav-examples-head">
+          <div className="side-nav-section-head side-nav-section-head-tight">
+            <span>File</span>
+          </div>
+          <nav className="side-nav-actions side-nav-file-actions" aria-label="File actions">
+            <button
+              type="button"
+              className="side-nav-action"
+              onClick={() => handleMenu("file:new")}
+              title="New circuit (⌘N)"
+              aria-label="New circuit"
+            >
+              <IconGlyph kind="new" />
+              <span>New circuit</span>
+            </button>
+            <button
+              type="button"
+              className="side-nav-action"
+              onClick={() => handleMenu("file:open")}
+              title="Open (⌘O)"
+              aria-label="Open"
+            >
+              <IconGlyph kind="open" />
+              <span>Open</span>
+            </button>
+            <button
+              type="button"
+              className="side-nav-action"
+              onClick={() => handleMenu("file:import_netlist")}
+              title="Import a SPICE netlist as an approximate schematic"
+              aria-label="Import netlist"
+            >
+              <IconGlyph kind="netlist" />
+              <span>Import netlist</span>
+            </button>
+            <button
+              type="button"
+              className="side-nav-action"
+              onClick={() => handleMenu("file:save")}
+              title="Save (⌘S)"
+              aria-label="Save"
+            >
+              <IconGlyph kind="save" />
+              <span>Save</span>
+            </button>
+            <button
+              type="button"
+              className="side-nav-action"
+              onClick={() => void exportSchematicSvg()}
+              title="Export schematic SVG"
+              aria-label="Export schematic SVG"
+            >
+              <IconGlyph kind="export" />
+              <span>Export SVG</span>
+            </button>
+            <button
+              type="button"
+              className="side-nav-action"
+              onClick={() => void copyShareLink()}
+              title="Copy shareable circuit URL"
+              aria-label="Copy shareable circuit URL"
+            >
+              <IconGlyph kind="share" />
+              <span>Share</span>
+            </button>
+          </nav>
+
+          <div className="side-nav-section-head side-nav-section-head-tight side-nav-examples-head">
             <span>Examples</span>
           </div>
           <div className="side-nav-examples">
@@ -4033,28 +4515,35 @@ export function Editor() {
 
       <aside className="right-pane" aria-hidden={inspectorCollapsed}>
         <div className="sidebar-section">
-          <div className="section-label">Project tools</div>
-          <div className="panel-action-grid">
-            <button type="button" onClick={() => setNetlistOpen(true)} title="Inspect generated SPICE netlist">
-              <IconGlyph kind="netlist" />
-              <span>Netlist</span>
-            </button>
-            <button type="button" onClick={() => setAnalysisOpen(true)} title="Open the full simulation settings dialog">
-              <IconGlyph kind="settings" />
-              <span>Settings</span>
-            </button>
-            <button type="button" onClick={() => void exportSchematicSvg()} title="Export schematic SVG">
-              <IconGlyph kind="export" />
-              <span>Export</span>
-            </button>
-            <button type="button" onClick={() => void copyShareLink()} title="Copy shareable circuit URL">
-              <IconGlyph kind="share" />
-              <span>Share</span>
-            </button>
+          <div className="section-label">Schematic</div>
+          <div className="schematic-meta-form">
+            <label className="meta-field">
+              <span>Name</span>
+              <input
+                className="value-input"
+                value={page.name}
+                onChange={(e) => updateActivePageMeta({ name: e.target.value })}
+                disabled={doc.pages[0]?.id === page.id}
+                spellCheck={false}
+                aria-label="Schematic name"
+                title={
+                  doc.pages[0]?.id === page.id
+                    ? "The main schematic's name comes from the project; rename it in the side panel"
+                    : undefined
+                }
+              />
+            </label>
+            <label className="meta-field">
+              <span>Description</span>
+              <textarea
+                className="value-input schematic-description-input"
+                value={page.description ?? ""}
+                onChange={(e) => updateActivePageMeta({ description: e.target.value })}
+                placeholder="Short summary for subcircuit menus"
+                rows={3}
+              />
+            </label>
           </div>
-          <button type="button" className="panel-clear-btn danger" onClick={clearDoc}>
-            Clear schematic
-          </button>
         </div>
 
         {selectedObjectCount > 0 && (
@@ -4147,17 +4636,132 @@ export function Editor() {
                   )}
                   {lastSelected.kind !== "GND" &&
                     lastSelected.kind !== "V" &&
-                    lastSelected.kind !== "I" && (
-                      <Row label={lastSelected.kind === "B" ? "Expression" : isModelKind(lastSelected.kind) ? "Model" : "Value"}>
-                        <input
-                          className="value-input"
+                    lastSelected.kind !== "I" &&
+                    lastSelected.kind !== "NOTE" && (
+                      <>
+                        {mosfetPresetKindForComponentKind(lastSelected.kind) && (
+                          <Row label="Preset">
+                            <select
+                              className="value-input"
+                              value={
+                                lastSelected.params?.preset ??
+                                selectedMosfetPresetId[mosfetPresetKindForComponentKind(lastSelected.kind)!] ??
+                                defaultMosfetPresetId(mosfetPresetKindForComponentKind(lastSelected.kind)!)
+                              }
+                              onChange={(e) =>
+                                applyPresetToComponent(lastSelected.id, e.target.value)
+                              }
+                            >
+                              {mosfetPresets
+                                .filter((preset) => preset.kind === mosfetPresetKindForComponentKind(lastSelected.kind))
+                                .map((preset) => (
+                                  <option key={preset.id} value={preset.id}>
+                                    {preset.name}
+                                  </option>
+                                ))}
+                            </select>
+                          </Row>
+                        )}
+                        <Row label={lastSelected.kind === "B" ? "Expression" : isModelKind(lastSelected.kind) ? "Model" : "Value"}>
+                          {isModelKind(lastSelected.kind) && lastSelected.kind !== "OPAMP" ? (
+                            <select
+                              className="value-input"
+                              value={lastSelected.value}
+                              onChange={(e) => updateComponentModel(lastSelected.id, e.target.value)}
+                            >
+                              {modelOptionsForKind(modelDefinitions, lastSelected.kind, lastSelected.value).map(
+                                (model) => (
+                                  <option key={`${model.type}:${model.name}`} value={model.name}>
+                                    {model.name}
+                                  </option>
+                                ),
+                              )}
+                            </select>
+                          ) : (
+                            <input
+                              className="value-input"
+                              value={lastSelected.value}
+                              onChange={(e) => updateValue(lastSelected.id, e.target.value)}
+                              placeholder={lastSelected.kind === "B" ? "V=sin(2*pi*1k*time)" : undefined}
+                            />
+                          )}
+                        </Row>
+                      </>
+                    )}
+                  {lastSelected.kind === "NOTE" && (
+                    <>
+                      <Row label="Text">
+                        <textarea
+                          className="value-input note-text-input"
                           value={lastSelected.value}
                           onChange={(e) => updateValue(lastSelected.id, e.target.value)}
-                          placeholder={lastSelected.kind === "B" ? "V=sin(2*pi*1k*time)" : undefined}
+                          placeholder="Add design notes, assumptions, or TODOs"
+                          rows={5}
                         />
                       </Row>
-                    )}
-                  {(lastSelected.kind === "NMOS" || lastSelected.kind === "PMOS") && (
+                      <Row label="Color">
+                        <div className="note-color-picker">
+                          <input
+                            className="note-color-input"
+                            type="color"
+                            value={noteColor(lastSelected)}
+                            onChange={(e) => updateParam(lastSelected.id, "color", e.target.value)}
+                            aria-label="Note color"
+                          />
+                          <div className="note-color-swatches" aria-label="Suggested note colors">
+                            {NOTE_COLOR_PALETTE.map((color) => (
+                              <button
+                                key={color}
+                                type="button"
+                                className="note-color-swatch"
+                                style={{ backgroundColor: color }}
+                                aria-label={`Set note color ${color}`}
+                                aria-pressed={noteColor(lastSelected).toLowerCase() === color.toLowerCase()}
+                                onClick={() => updateParam(lastSelected.id, "color", color)}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </Row>
+                      <Row label="Width">
+                        <input
+                          className="value-input"
+                          type="number"
+                          min="2.8"
+                          step="0.1"
+                          value={lastSelected.params?.w ?? ""}
+                          placeholder={noteWidth(noteTextLines(lastSelected.value)).toFixed(1)}
+                          onChange={(e) => updateParam(lastSelected.id, "w", e.target.value)}
+                        />
+                      </Row>
+                      <Row label="Height">
+                        <input
+                          className="value-input"
+                          type="number"
+                          min="1.4"
+                          step="0.1"
+                          value={lastSelected.params?.h ?? ""}
+                          placeholder={noteHeight(noteTextLines(lastSelected.value)).toFixed(1)}
+                          onChange={(e) => updateParam(lastSelected.id, "h", e.target.value)}
+                        />
+                      </Row>
+                    </>
+                  )}
+                  {lastSelected.kind === "LABEL" && doc.pages[0]?.id !== page.id && (
+                    <Row label="Subcircuit port">
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={lastSelected.params?.port === "1"}
+                          onChange={(e) =>
+                            updateParam(lastSelected.id, "port", e.target.checked ? "1" : "0")
+                          }
+                        />
+                        <span>Expose as pin</span>
+                      </label>
+                    </Row>
+                  )}
+                  {mosfetPresetKindForComponentKind(lastSelected.kind) && (
                     <>
                       <Row label="W">
                         <input
@@ -4179,6 +4783,24 @@ export function Editor() {
                           placeholder="1u"
                         />
                       </Row>
+                      <Row label="Preset actions">
+                        <div className="preset-actions">
+                          <button
+                            type="button"
+                            className="mini-btn"
+                            onClick={() => saveSelectedMosfetPreset(lastSelected)}
+                          >
+                            Save as preset
+                          </button>
+                          <button
+                            type="button"
+                            className="mini-btn"
+                            onClick={() => setDefaultMosfetPresetForComponent(lastSelected)}
+                          >
+                            Set default
+                          </button>
+                        </div>
+                      </Row>
                     </>
                   )}
                   {(lastSelected.kind === "NPN" || lastSelected.kind === "PNP") && (
@@ -4190,6 +4812,18 @@ export function Editor() {
                           updateParam(lastSelected.id, "area", e.target.value)
                         }
                         placeholder="1 (optional emitter area multiplier)"
+                      />
+                    </Row>
+                  )}
+                  {lastSelected.kind === "C" && (
+                    <Row label="Initial voltage">
+                      <input
+                        className="value-input"
+                        value={lastSelected.params?.IC ?? ""}
+                        onChange={(e) =>
+                          updateParam(lastSelected.id, "IC", e.target.value)
+                        }
+                        placeholder="optional IC, e.g. 1.35"
                       />
                     </Row>
                   )}
@@ -4286,16 +4920,21 @@ export function Editor() {
                     </span>
                   </Row>
                   <Row label="Scope">
-                    <button
-                      type="button"
-                      onClick={() => resetProbeScopeOffset(lastSelectedProbe.id)}
-                      disabled={
+                    {(() => {
+                      const atDefault =
                         lastSelectedProbe.scopeDx === undefined &&
-                        lastSelectedProbe.scopeDy === undefined
-                      }
-                    >
-                      Reset placement
-                    </button>
+                        lastSelectedProbe.scopeDy === undefined;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => resetProbeScopeOffset(lastSelectedProbe.id)}
+                          disabled={atDefault}
+                          title={atDefault ? "Scope is already at its default offset" : "Move the scope back to its default offset from the probe"}
+                        >
+                          Reset placement
+                        </button>
+                      );
+                    })()}
                   </Row>
                 </>
               ) : null}
@@ -4329,6 +4968,41 @@ export function Editor() {
             onAnalysis={(a) => commit((d) => ({ ...d, analysis: a }))}
             onSettings={(s) => commit((d) => ({ ...d, simSettings: s }))}
           />
+        </div>
+
+        <div className="sidebar-section">
+          <div className="section-label">Netlist</div>
+          <div className="panel-summary-grid">
+            <div>
+              <span>Nodes</span>
+              <code>{pinAnnotations.nodes.rootToName.size}</code>
+            </div>
+            <div>
+              <span>Components</span>
+              <code>{electricalComponentCount(page)}</code>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="panel-row-action"
+            onClick={() => setNetlistOpen(true)}
+            title="Inspect generated SPICE netlist"
+          >
+            <IconGlyph kind="netlist" />
+            <span>Inspect generated netlist</span>
+          </button>
+          <button
+            type="button"
+            className="panel-row-action"
+            onClick={() => handleMenu("file:import_netlist")}
+            title="Import a SPICE netlist as an approximate schematic"
+          >
+            <IconGlyph kind="open" />
+            <span>Import netlist</span>
+          </button>
+          <button type="button" className="panel-clear-btn danger" onClick={clearDoc}>
+            Clear schematic
+          </button>
         </div>
 
         <div className="sidebar-section">
@@ -4444,69 +5118,28 @@ export function Editor() {
               </svg>
             </button>
           )}
-          <div className="tb-group" role="group" aria-label="File actions">
+          {/* Run button + analysis pills are rendered as a floating cluster
+             on the canvas (see `.canvas-actions` below) so they stay
+             reachable without taking permanent toolbar real estate. */}
+          {!IS_TAURI && (
             <button
-              className="tb-icon-btn"
-              onClick={() => handleMenu("file:new")}
-              title="New (⌘N)"
-              aria-label="New"
+              className={`tb-icon-btn tb-pane-toggle ${inspectorCollapsed ? "collapsed" : ""}`}
+              onClick={() => setInspectorCollapsed((c) => !c)}
+              aria-pressed={!inspectorCollapsed}
+              title={inspectorCollapsed ? "Show inspector (⇧⌘\\)" : "Hide inspector (⇧⌘\\)"}
+              aria-label="Toggle inspector"
             >
-              <IconGlyph kind="new" />
+              <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
+                <path d="M10.25 2.75v10.5" />
+              </svg>
             </button>
-            <button
-              className="tb-icon-btn"
-              onClick={() => handleMenu("file:open")}
-              title="Open (⌘O)"
-              aria-label="Open"
-            >
-              <IconGlyph kind="open" />
-            </button>
-            <button
-              className="tb-icon-btn"
-              onClick={() => handleMenu("file:save")}
-              title="Save (⌘S)"
-              aria-label="Save"
-            >
-              <IconGlyph kind="save" />
-            </button>
-          </div>
-          <div className="tb-sep" />
-          <div className="tb-group" role="group" aria-label="Edit history">
-            <button
-              className="tb-icon-btn"
-              onClick={undo}
-              disabled={past.length === 0}
-              title="Undo (⌘Z)"
-              aria-label="Undo"
-            >
-              <IconGlyph kind="undo" />
-            </button>
-            <button
-              className="tb-icon-btn"
-              onClick={redo}
-              disabled={future.length === 0}
-              title="Redo (⌘⇧Z)"
-              aria-label="Redo"
-            >
-              <IconGlyph kind="redo" />
-            </button>
-          </div>
-          <div className="tb-sep" />
-          <button
-            className={`tb-run ${running ? "running" : ""}`}
-            onClick={runSimulation}
-            disabled={runDisabled}
-            title={runTitle}
-            aria-label={engineOk === false ? "Simulation engine unavailable" : running ? "Running simulation" : "Run simulation"}
-          >
-            {running ? (
-              <span className="tb-run-spinner" />
-            ) : (
-              <IconGlyph kind="play" />
-            )}
-            <span>{engineOk === false ? "Unavailable" : running ? "Running…" : "Run"}</span>
-          </button>
-          <div className="tb-sep" />
+          )}
+        </div>
+        <div className="canvas-wrap" tabIndex={-1}>
+        {/* Floating Run + analysis-type cluster — sits over the canvas at the
+           top so it's always reachable without dedicating toolbar space. */}
+        <div className="canvas-actions" role="group" aria-label="Run controls">
           <div className="tb-group tb-analyses" role="group" aria-label="Analysis type">
             {(
               [
@@ -4536,7 +5169,7 @@ export function Editor() {
                 },
               ] as const
             ).map((a) => {
-              const tipId = `tb-pill-tip-${a.kind}`;
+              const tipId = `canvas-pill-tip-${a.kind}`;
               return (
                 <button
                   key={a.kind}
@@ -4558,48 +5191,21 @@ export function Editor() {
               );
             })}
           </div>
-
-          <a
-            className="tb-brand"
-            href="https://github.com/thomasahle/spice-sim"
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Spice Sim on GitHub"
+          <button
+            className={`tb-run ${running ? "running" : ""}`}
+            onClick={runSimulation}
+            disabled={runDisabled}
+            title={runTitle}
+            aria-label={engineOk === false ? "Simulation engine unavailable" : running ? "Running simulation" : "Run simulation"}
           >
-            <svg
-              className="tb-brand-logo"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="11" strokeWidth={1.6} />
-              <line x1="5" y1="10" x2="19" y2="10" strokeWidth={1.7} />
-              <line x1="12" y1="10" x2="12" y2="18" strokeWidth={1.7} />
-              <circle cx="5" cy="10" r="1.7" strokeWidth={1.4} />
-              <circle cx="19" cy="10" r="1.7" strokeWidth={1.4} />
-              <circle cx="12" cy="18" r="1.7" strokeWidth={1.4} />
-            </svg>
-            <span className="tb-brand-text">Spice Sim</span>
-          </a>
-          {!IS_TAURI && (
-            <button
-              className={`tb-icon-btn tb-pane-toggle ${inspectorCollapsed ? "collapsed" : ""}`}
-              onClick={() => setInspectorCollapsed((c) => !c)}
-              aria-pressed={!inspectorCollapsed}
-              title={inspectorCollapsed ? "Show inspector (⇧⌘\\)" : "Hide inspector (⇧⌘\\)"}
-              aria-label="Toggle inspector"
-            >
-              <svg width={17} height={17} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-                <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
-                <path d="M10.25 2.75v10.5" />
-              </svg>
-            </button>
-          )}
+            {running ? (
+              <span className="tb-run-spinner" />
+            ) : (
+              <IconGlyph kind="play" />
+            )}
+            <span>{engineOk === false ? "Unavailable" : running ? "Running…" : "Run"}</span>
+          </button>
         </div>
-        <div className="canvas-wrap" tabIndex={-1}>
         {(canvasNotice || disconnectedProbeIds.size > 0 || runFloatingPins.length > 0) && (
           <div className="canvas-issue-banner" role="status" aria-live="polite">
             {canvasNotice && (
@@ -4645,16 +5251,16 @@ export function Editor() {
             )}
           </div>
         )}
-        {page.components.length === 0 && page.wires.length === 0 && tool === "select" && (
+        {showStartupEmptyCard && page.components.length === 0 && page.wires.length === 0 && tool === "select" && (
           <div className="empty-canvas">
             <div className="empty-canvas-card">
               <div className="empty-canvas-title">Schematic is empty</div>
               <div className="empty-canvas-hint">
                 Pick a tool from the strip on the left and click in the
-                canvas, or load one of the examples below.
+                canvas, or load one of these starters.
               </div>
               <div className="empty-canvas-demos">
-                {DEMOS.map((d) => (
+                {STARTER_DEMOS.map((d) => (
                   <button
                     key={d.id}
                     className="empty-canvas-demo"
@@ -4670,88 +5276,215 @@ export function Editor() {
           </div>
         )}
         <aside className="tool-strip" role="toolbar" aria-label="Drawing tools">
-          {PALETTE_SECTIONS.flatMap((sec, sIdx) => [
-            sIdx > 0 ? <div key={`sep-${sec.label}`} className="tool-sep" /> : null,
-            ...sec.items
-              .filter((p) => p.tool !== "PNP" && p.tool !== "PMOS")
-              .map((p) => {
-                const isBJT = p.tool === "NPN";
-                const isMOS = p.tool === "NMOS";
-                const grouped = isBJT || isMOS;
-                const activeKind = isBJT ? bjtVariant : isMOS ? mosVariant : (p.kind ?? null);
-                const activeDesc = activeKind ? toolDescriptionFor(activeKind as ComponentKind, p.desc) : p.desc;
-                const otherKind = isBJT
-                  ? bjtVariant === "NPN" ? "PNP" : "NPN"
-                  : isMOS
-                    ? mosVariant === "NMOS" ? "PMOS" : "NMOS"
-                    : null;
-                const isActive =
-                  (activeKind ? tool === (activeKind as Tool) : tool === p.tool) ||
-                  (isBJT && (tool === "NPN" || tool === "PNP")) ||
-                  (isMOS && (tool === "NMOS" || tool === "PMOS"));
-                const tooltipId = `tool-tip-${p.tool}`;
-                return (
-                  <button
-                    key={p.tool}
-                    className={`tool-icon ${isActive ? "active" : ""}`}
-                    onClick={(e) => {
-                      if (grouped && e.shiftKey && otherKind) {
-                        selectTool(otherKind as Tool);
-                      } else {
-                        selectTool((activeKind ?? p.tool) as Tool);
-                      }
-                    }}
-                    onContextMenu={(e) => {
-                      if (!grouped || !otherKind) return;
-                      e.preventDefault();
-                      selectTool(otherKind as Tool);
-                    }}
-                    aria-label={
-                      grouped
-                        ? `${COMPONENT_LABELS[activeKind as ComponentKind]}, shift-click for ${otherKind}`
-                        : p.name
-                    }
-                    aria-pressed={isActive}
-                    aria-keyshortcuts={p.hint}
-                    aria-describedby={tooltipId}
-                    title={
-                      grouped && otherKind
-                        ? `${COMPONENT_LABELS[activeKind as ComponentKind]} (${p.hint ?? ""}); shift-click or right-click for ${otherKind}`
-                        : `${p.name}${p.hint ? ` (${p.hint})` : ""}`
-                    }
-                  >
-                    {activeKind ? (
-                      <PaletteGlyph kind={activeKind as ComponentKind} />
-                    ) : (
-                      <ToolIcon tool={p.tool} />
-                    )}
-                    {p.hint && <span className="tool-hint">{p.hint}</span>}
-                    {grouped && <span className="tool-variant-mark">▾</span>}
-                    <span id={tooltipId} className="tool-tip" role="tooltip">
-                      <span className="tool-tip-head">
-                        <span className="tool-tip-name">
-                          {grouped
-                            ? COMPONENT_LABELS[activeKind as ComponentKind]
-                            : p.name}
-                        </span>
-                        {p.hint && (
-                          <kbd className="tool-tip-key">{p.hint}</kbd>
-                        )}
-                      </span>
-                      {activeDesc && (
-                        <span className="tool-tip-desc">{activeDesc}</span>
-                      )}
-                      {grouped && otherKind && (
-                        <span className="tool-tip-aux">
-                          Shift-click for {otherKind}
-                        </span>
-                      )}
+          {DIRECT_TOOL_ITEMS.map((item) => {
+            const tooltipId = `tool-tip-${item.tool}`;
+            const itemKind = item.kind;
+            return (
+              <button
+                key={item.tool}
+                className={`tool-icon ${tool === item.tool ? "active" : ""}`}
+                onClick={() => selectTool(item.tool)}
+                onMouseEnter={() => setActiveToolGroupId(null)}
+                onFocus={() => setActiveToolGroupId(null)}
+                aria-label={item.name}
+                aria-pressed={tool === item.tool}
+                aria-keyshortcuts={item.hint}
+                aria-describedby={tooltipId}
+                title={`${item.name}${item.hint ? ` (${item.hint})` : ""}`}
+              >
+                {itemKind ? <PaletteGlyph kind={itemKind} /> : <ToolIcon tool={item.tool} />}
+                {item.hint && <span className="tool-hint">{item.hint}</span>}
+                <span id={tooltipId} className="tool-tip" role="tooltip">
+                  <span className="tool-tip-head">
+                    <span className="tool-tip-name">{item.name}</span>
+                    {item.hint && <kbd className="tool-tip-key">{item.hint}</kbd>}
+                  </span>
+                  {item.desc && (
+                    <span className="tool-tip-desc">
+                      {itemKind ? toolDescriptionFor(itemKind, item.desc) : item.desc}
                     </span>
-                  </button>
-                );
-              }),
-          ]).filter(Boolean)}
+                  )}
+                </span>
+              </button>
+            );
+          })}
+          <div className="tool-sep" />
+          {TOOL_GROUPS.map((group) => {
+            const groupActive = group.tools.includes(tool);
+            const displayTool = groupActive ? tool : group.primary;
+            const displayItem = paletteItemForTool(displayTool) ?? paletteItemForTool(group.primary);
+            const displayKind = displayItem?.kind ?? group.primary;
+            return (
+              <button
+                key={group.id}
+                type="button"
+                className={`tool-icon tool-group-icon ${groupActive ? "active" : ""} ${activeToolGroupId === group.id ? "open" : ""}`}
+                onClick={() => selectTool(displayTool)}
+                onMouseEnter={(e) => openToolGroupMenu(group.id, Math.max(0, e.currentTarget.offsetTop - 11))}
+                onMouseLeave={scheduleToolGroupClose}
+                onFocus={(e) => openToolGroupMenu(group.id, Math.max(0, e.currentTarget.offsetTop - 11))}
+                onBlur={scheduleToolGroupClose}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  openToolGroupMenu(group.id, Math.max(0, e.currentTarget.offsetTop - 11));
+                }}
+                aria-label={group.label}
+                aria-pressed={groupActive}
+                aria-haspopup="dialog"
+                aria-expanded={activeToolGroupId === group.id}
+                title={`${group.label}: ${group.summary}`}
+              >
+                <PaletteGlyph kind={displayKind as ComponentKind} />
+                <span className="tool-group-corner" />
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            className={`tool-icon tool-group-icon ${tool === "SUBX" ? "active" : ""} ${subcircuitMenuOpen ? "open" : ""}`}
+            onClick={(e) => {
+              if (selectedSubcircuitPage) selectSubcircuitTool(selectedSubcircuitPage.id);
+              else openToolGroupMenu("subcircuits", Math.max(0, e.currentTarget.offsetTop - 11));
+            }}
+            onMouseEnter={(e) => openToolGroupMenu("subcircuits", Math.max(0, e.currentTarget.offsetTop - 11))}
+            onMouseLeave={scheduleToolGroupClose}
+            onFocus={(e) => openToolGroupMenu("subcircuits", Math.max(0, e.currentTarget.offsetTop - 11))}
+            onBlur={scheduleToolGroupClose}
+            aria-label="Subcircuits"
+            aria-pressed={tool === "SUBX"}
+            aria-haspopup="dialog"
+            aria-expanded={subcircuitMenuOpen}
+            title="Subcircuits"
+          >
+            <PaletteGlyph kind="SUBX" />
+            <span className="tool-group-corner" />
+          </button>
         </aside>
+        {(openToolGroup || subcircuitMenuOpen) && (
+          <div
+            className="tool-popover"
+            role="dialog"
+            aria-label={openToolGroup ? `${openToolGroup.label} tools` : "Subcircuit tools"}
+            style={{ top: activeToolGroupTop + 14 }}
+            onMouseEnter={clearToolGroupCloseTimer}
+            onMouseLeave={scheduleToolGroupClose}
+          >
+            {openToolGroup ? (
+              <>
+                <div className="tool-popover-current">
+                  <div className="tool-popover-current-head">
+                    <span className="tool-popover-name">{openToolGroup.label}</span>
+                  </div>
+                  <div className="tool-popover-desc">{openToolGroup.summary}</div>
+                </div>
+                {openToolGroup.id === "mosfets" ? (
+                  <div className="tool-popover-list">
+                    {mosfetPresets.map((preset) => {
+                      const active =
+                        tool === preset.kind &&
+                        selectedMosfetPresetId[preset.kind] === preset.id;
+                      const defaultId = defaultMosfetPresetId(preset.kind);
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          className={`tool-popover-row ${active ? "active" : ""}`}
+                          onClick={() => {
+                            setSelectedMosfetPresetId((prev) => ({
+                              ...prev,
+                              [preset.kind]: preset.id,
+                            }));
+                            selectTool(preset.kind);
+                          }}
+                          aria-pressed={active}
+                        >
+                          <span className="tool-popover-icon">
+                            <PaletteGlyph kind={preset.kind} />
+                          </span>
+                          <span className="tool-popover-copy">
+                            <span className="tool-popover-name">{preset.name}</span>
+                            <span className="tool-popover-desc">
+                              {preset.description} Model {preset.model}; W={preset.W}, L={preset.L}
+                            </span>
+                          </span>
+                          <span className="preset-row-meta">
+                            {preset.id === defaultId && <span className="preset-default-chip">Default</span>}
+                            <kbd>{preset.kind === "NMOS" ? "M" : "⇧M"}</kbd>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : openToolItems.length > 0 && (
+                  <div className="tool-popover-list">
+                    {openToolItems.map((item) => {
+                      const itemKind = item.kind;
+                      const active = item.tool === tool;
+                      return (
+                        <button
+                          key={item.tool}
+                          type="button"
+                          className={`tool-popover-row ${active ? "active" : ""}`}
+                          onClick={() => selectTool(item.tool)}
+                          aria-pressed={active}
+                        >
+                          <span className="tool-popover-icon">
+                            {itemKind ? <PaletteGlyph kind={itemKind} /> : <ToolIcon tool={item.tool} />}
+                          </span>
+                          <span className="tool-popover-copy">
+                            <span className="tool-popover-name">{item.name}</span>
+                            <span className="tool-popover-desc">{itemKind ? toolDescriptionFor(itemKind, item.desc) : item.desc}</span>
+                          </span>
+                          {item.hint && <kbd>{item.hint}</kbd>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="tool-popover-current">
+                  <div className="tool-popover-current-head">
+                    <span className="tool-popover-name">Subcircuits</span>
+                  </div>
+                  <div className="tool-popover-desc">
+                    Place schematic pages as reusable blocks.
+                  </div>
+                </div>
+                <div className="tool-popover-list">
+                  {subcircuitPages.length === 0 ? (
+                    <div className="tool-popover-empty">No subcircuit schematics yet.</div>
+                  ) : (
+                    subcircuitPages.map((subPage) => {
+                      const pins = subcircuitPinsForPage(subPage);
+                      const active = tool === "SUBX" && selectedSubcircuitPageId === subPage.id;
+                      return (
+                        <button
+                          key={subPage.id}
+                          type="button"
+                          className={`tool-popover-row ${active ? "active" : ""}`}
+                          onClick={() => selectSubcircuitTool(subPage.id)}
+                          aria-pressed={active}
+                        >
+                          <span className="tool-popover-icon">
+                            <PaletteGlyph kind="SUBX" />
+                          </span>
+                          <span className="tool-popover-copy">
+                            <span className="tool-popover-name">{subPage.name}</span>
+                            <span className="tool-popover-desc">
+                              {subPage.description?.trim() || `${pins.length} pin${pins.length === 1 ? "" : "s"} from net labels`}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         <svg
           ref={svgRef}
@@ -4946,22 +5679,22 @@ export function Editor() {
             )}
 
             {placementDraft && (() => {
-              const draft = componentFromTerminals(
-                placementDraft.kind,
-                placementDraft.start,
-                placementDraft.end,
-                "__placement",
-              );
+              const { component: draft } = componentFromPlacementDraft(placementDraft, "__placement");
               const pins = getPinLayout(draft).map((_, idx) => pinWorldPos(draft, idx));
-              const endpointLabels = twoTerminalPinLabels(draft.kind);
-              const cutSpan = placementWireCutSpan(draft, placementDraft.start, placementDraft.end);
-              const inlineInsertion =
+              const endpointLabels = pins.map((_, idx) => pinLabelForKind(draft.kind, idx) ?? `${idx + 1}`);
+              const canInsertInline = pins.length === 2 && placementLength(placementDraft) >= 0.35;
+              const cutSpan = canInsertInline
+                ? placementWireCutSpan(draft, placementDraft.start, placementDraft.end)
+                : null;
+              const inlineInsertion = cutSpan
+                ? (
                 cutWireSegmentBetweenPoints(
                   page.wires,
                   [cutSpan.start.x, cutSpan.start.y],
                   [cutSpan.end.x, cutSpan.end.y],
                   () => "__preview-cut",
-                ) !== page.wires;
+                ) !== page.wires)
+                : false;
               const stubs = placementConnectionWires(
                 draft,
                 placementDraft.start,
@@ -4970,24 +5703,17 @@ export function Editor() {
                 inlineInsertion,
                 () => "__stub",
               );
-              const target = placementDraft.end;
-              const measurement = draftMeasurement(pins);
               return (
                 <g className="placement-draft" pointerEvents="none">
-                  <line
-                    x1={placementDraft.start.x}
-                    y1={placementDraft.start.y}
-                    x2={target.x}
-                    y2={target.y}
-                    className="placement-draft-guide"
-                  />
-                  <line
-                    x1={pins[0].x}
-                    y1={pins[0].y}
-                    x2={pins[1].x}
-                    y2={pins[1].y}
-                    className="placement-draft-axis"
-                  />
+                  {pins.length >= 2 && (
+                    <line
+                      x1={pins[0].x}
+                      y1={pins[0].y}
+                      x2={pins[pins.length - 1].x}
+                      y2={pins[pins.length - 1].y}
+                      className="placement-draft-axis"
+                    />
+                  )}
                   {stubs.map((stub, idx) => (
                     <polyline
                       key={idx}
@@ -4995,33 +5721,67 @@ export function Editor() {
                       className="placement-draft-stub"
                     />
                   ))}
-                  <g transform={`translate(${draft.x} ${draft.y}) rotate(${draft.rotation})`}>
-                    <ComponentGlyph kind={draft.kind} selected strokeWidth={selectedSchematicStrokeWidth} />
-                    {getPinLayout(draft).map((p, i) => (
-                      <circle
-                        key={i}
-                        cx={p.x}
-                        cy={p.y}
-                        r={0.2}
-                        fill="var(--accent)"
+                  {draft.kind === "NOTE" ? (() => {
+                    const lines = noteTextLines(draft.value);
+                    const width = noteComponentWidth(draft, lines);
+                    const height = noteComponentHeight(draft, lines);
+                    return (
+                      <>
+                        <rect
+                          x={draft.x}
+                          y={draft.y}
+                          width={width}
+                          height={height}
+                          rx={0.22}
+                          className="note-card selected"
+                          style={{
+                            fill: noteFillColor(draft, true),
+                            stroke: noteStrokeColor(draft, true),
+                            strokeWidth: 0.075,
+                          }}
+                        />
+                        <text x={draft.x + 0.45} y={draft.y + 0.72} fontSize={0.32} className="note-text">
+                          {lines.slice(0, 3).map((line, idx) => (
+                            <tspan key={idx} x={draft.x + 0.45} dy={idx === 0 ? 0 : 0.45}>
+                              {line || " "}
+                            </tspan>
+                          ))}
+                        </text>
+                      </>
+                    );
+                  })() : (
+                    <g transform={`translate(${draft.x} ${draft.y}) rotate(${draft.rotation})`}>
+                      <ComponentGlyph
+                        kind={draft.kind}
+                        selected
+                        strokeWidth={selectedSchematicStrokeWidth}
+                        subxPins={draft.kind === "SUBX" ? getPinLayout(draft) : undefined}
+                        subxLabel={draft.kind === "SUBX" ? draft.value : undefined}
                       />
-                    ))}
-                  </g>
-                  <circle
-                    cx={pins[0].x}
-                    cy={pins[0].y}
-                    r={0.34}
-                    className="placement-draft-endpoint"
-                  />
-                  <circle
-                    cx={pins[1].x}
-                    cy={pins[1].y}
-                    r={0.34}
-                    className="placement-draft-endpoint"
-                  />
+                      {getPinLayout(draft).map((p, i) => (
+                        <circle
+                          key={i}
+                          cx={p.x}
+                          cy={p.y}
+                          r={0.2}
+                          fill="var(--accent)"
+                        />
+                      ))}
+                    </g>
+                  )}
+                  {pins.map((pin, idx) => (
+                    <circle
+                      key={idx}
+                      cx={pin.x}
+                      cy={pin.y}
+                      r={0.34}
+                      className="placement-draft-endpoint"
+                    />
+                  ))}
                   {endpointLabels.map((label, idx) => {
                     const pin = pins[idx];
-                    const other = pins[idx === 0 ? 1 : 0];
+                    if (!pin) return null;
+                    const other = pins.length > 1 ? pins[idx === 0 ? 1 : 0] : placementDraft.start;
                     const awayX = pin.x - other.x;
                     const awayY = pin.y - other.y;
                     const horizontal = Math.abs(awayX) >= Math.abs(awayY);
@@ -5043,20 +5803,6 @@ export function Editor() {
                       </g>
                     );
                   })}
-                  {measurement && (
-                    <g className="draft-measure" transform={`translate(${measurement.x} ${measurement.y})`}>
-                      <rect
-                        x={-measurement.width / 2}
-                        y={-0.32}
-                        width={measurement.width}
-                        height={0.54}
-                        rx={0.14}
-                      />
-                      <text x={0} y={0.08} textAnchor="middle">
-                        {measurement.label}
-                      </text>
-                    </g>
-                  )}
                 </g>
               );
             })()}
@@ -5069,12 +5815,21 @@ export function Editor() {
                   : null;
                 const sel = selectedIds.has(c.id);
                 const hovered = hoverId === c.id;
+                const connected = connectedLabelIds.has(c.id);
+                const nearMiss = nearMissLabelIds.has(c.id);
                 return (
                   <g
                     key={c.id}
                     data-component-id={c.id}
-                    className={`component-group net-label-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}
+                    className={`component-group net-label-group ${connected ? "connected" : "unconnected"} ${nearMiss ? "near-miss" : ""} ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}
                   >
+                    <title>
+                      {connected
+                        ? `${label || "Net label"} is attached to a net`
+                        : nearMiss
+                          ? `${label || "Net label"} is close to a pin or wire but not connected`
+                          : `${label || "Net label"} is not physically attached`}
+                    </title>
                     {layout ? (
                       <>
                         <line
@@ -5120,7 +5875,7 @@ export function Editor() {
                       cx={c.x}
                       cy={c.y}
                       r={0.18}
-                      fill="var(--pin)"
+                      className={`net-label-anchor-dot ${connected ? "connected" : nearMiss ? "near-miss" : "unconnected"}`}
                       data-connection-handle="true"
                     />
                     {layout && (
@@ -5143,6 +5898,62 @@ export function Editor() {
                           {label}
                         </text>
                       </>
+                    )}
+                  </g>
+                );
+              }
+              if (c.kind === "NOTE") {
+                const sel = selectedIds.has(c.id);
+                const hovered = hoverId === c.id;
+                const lines = noteTextLines(c.value);
+                const width = noteComponentWidth(c, lines);
+                const height = noteComponentHeight(c, lines);
+                const showResizeHandle = sel || hovered || noteResize?.noteId === c.id;
+                const noteActive = sel || hovered;
+                return (
+                  <g
+                    key={c.id}
+                    data-component-id={c.id}
+                    className={`component-group note-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}
+                  >
+                    <rect
+                      x={c.x}
+                      y={c.y}
+                      width={width}
+                      height={height}
+                      rx={0.22}
+                      className="component-hit-target"
+                    />
+                    <rect
+                      x={c.x}
+                      y={c.y}
+                      width={width}
+                      height={height}
+                      rx={0.22}
+                      className={`note-card ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}
+                      style={{
+                        fill: noteFillColor(c, noteActive),
+                        stroke: noteStrokeColor(c, noteActive),
+                        strokeWidth: noteActive ? 0.075 : 0.05,
+                      }}
+                    />
+                    <text x={c.x + 0.45} y={c.y + 0.72} fontSize={0.32} className="note-text">
+                      {lines.map((line, idx) => (
+                        <tspan key={idx} x={c.x + 0.45} dy={idx === 0 ? 0 : 0.45}>
+                          {line || " "}
+                        </tspan>
+                      ))}
+                    </text>
+                    {showResizeHandle && (
+                      <rect
+                        x={c.x + width - 0.34}
+                        y={c.y + height - 0.34}
+                        width={0.46}
+                        height={0.46}
+                        rx={0.11}
+                        className="note-resize-handle"
+                        data-note-resize-id={c.id}
+                      />
                     )}
                   </g>
                 );
@@ -5309,6 +6120,29 @@ export function Editor() {
               </g>
             ))}
 
+            {labelNearMisses.map((nearMiss) => (
+              <g
+                key={nearMiss.labelId}
+                className="net-label-near-miss-marker"
+                pointerEvents="none"
+              >
+                <title>{`Net label "${nearMiss.label}" is close to a connection point but not attached`}</title>
+                <line
+                  x1={nearMiss.anchor.x}
+                  y1={nearMiss.anchor.y}
+                  x2={nearMiss.target.position.x}
+                  y2={nearMiss.target.position.y}
+                  className="near-miss-guide"
+                />
+                <circle
+                  cx={nearMiss.target.position.x}
+                  cy={nearMiss.target.position.y}
+                  r={0.28}
+                  className="near-miss-target"
+                />
+              </g>
+            ))}
+
             {liveReadings && doc.analysis.kind === "op" && simResult?.plot.startsWith("op") && (
               <NodeReadingsOverlay
                 page={page}
@@ -5433,31 +6267,6 @@ export function Editor() {
               </g>
             )}
 
-            {(drag || scopeDrag) && (() => {
-              const start = drag?.startGrid ?? scopeDrag?.startGrid;
-              const delta = drag?.delta ?? scopeDrag?.delta;
-              if (!start || !delta) return null;
-              const measurement = dragDeltaMeasurement(start, {
-                x: start.x + delta.x,
-                y: start.y + delta.y,
-              });
-              if (!measurement) return null;
-              return (
-                <g className="draft-measure drag-delta-measure" transform={`translate(${measurement.x} ${measurement.y})`} pointerEvents="none">
-                  <rect
-                    x={-measurement.width / 2}
-                    y={-0.32}
-                    width={measurement.width}
-                    height={0.54}
-                    rx={0.14}
-                  />
-                  <text x={0} y={0.08} textAnchor="middle">
-                    {measurement.label}
-                  </text>
-                </g>
-              );
-            })()}
-
             {marquee && (
               <rect
                 x={Math.min(marquee.sx, marquee.ex) - 0.2}
@@ -5509,16 +6318,6 @@ export function Editor() {
             aria-pressed={autoRun}
           >
             Auto: {autoRunPaused ? "Paused" : autoRun ? "On" : "Off"}
-          </button>
-          <button
-            type="button"
-            className={naturalPan ? "active" : ""}
-            onClick={() => setNaturalPan((v) => !v)}
-            title="Toggle trackpad pan direction (Shift+P)"
-            aria-label="Toggle trackpad pan direction"
-            aria-pressed={naturalPan}
-          >
-            Pan: {naturalPan ? "Natural" : "Reverse"}
           </button>
           <span>Zoom: {Math.round(zoom * 100)}%</span>
           <button
@@ -5623,7 +6422,7 @@ export function Editor() {
       autoRun={autoRun}
       autoRunPaused={autoRunPaused}
       nNodes={pinAnnotations.nodes.rootToName.size}
-      nComponents={page.components.filter((c) => c.kind !== "GND" && c.kind !== "LABEL").length}
+      nComponents={electricalComponentCount(page)}
       plot={simResult?.plot ?? null}
       selection={selectionStatus}
     />
@@ -5731,6 +6530,35 @@ function isNeutralStatusMessage(status: string): boolean {
     !status.startsWith("✗") &&
     !status.startsWith("Modified")
   );
+}
+
+function isTransientPlot(plot: string): boolean {
+  const normalized = plot.toLowerCase();
+  return normalized.startsWith("tran") || normalized.includes("transient");
+}
+
+function activeSchematicIsEmpty(doc: CircuitDoc): boolean {
+  const page = currentPage(doc);
+  return page.components.length === 0 && page.wires.length === 0;
+}
+
+function subcircuitPinsForPage(page: SchematicPage): string[] {
+  const pins: string[] = [];
+  const seen = new Set<string>();
+  const hasExplicitPorts = page.components.some(
+    (component) => component.kind === "LABEL" && component.params?.port === "1",
+  );
+  for (const component of page.components) {
+    if (component.kind !== "LABEL") continue;
+    if (hasExplicitPorts && component.params?.port !== "1") continue;
+    const pin = component.value.trim();
+    if (!pin) continue;
+    const key = pin.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pins.push(pin);
+  }
+  return pins;
 }
 
 function NetlistModal({
@@ -5845,49 +6673,6 @@ function findTimeIndex(xs: number[], t: number): number {
     else hi = mid;
   }
   return Math.abs(xs[lo] - t) < Math.abs(xs[hi] - t) ? lo : hi;
-}
-
-function normalizeDoc(
-  d: Partial<CircuitDoc> & {
-    components?: CircuitComponent[];
-    wires?: Wire[];
-    probes?: import("./model").Probe[];
-    pages?: SchematicPage[];
-    activePageId?: string;
-  },
-): CircuitDoc {
-  // Migrate legacy single-page docs (pre-hierarchy schema).
-  if (!d.pages || !Array.isArray(d.pages) || d.pages.length === 0) {
-    const root: SchematicPage = {
-      id: makeId("page"),
-      name: "main",
-      components: d.components ?? [],
-      wires: d.wires ?? [],
-      probes: d.probes ?? [],
-    };
-    return {
-      pages: [root],
-      activePageId: root.id,
-      directives: d.directives ?? "",
-      analysis: d.analysis ?? { kind: "op" },
-    };
-  }
-  const pages = d.pages.map((p) => ({
-    id: p.id || makeId("page"),
-    name: p.name || "main",
-    components: p.components ?? [],
-    wires: p.wires ?? [],
-    probes: p.probes ?? [],
-  }));
-  return {
-    pages,
-    activePageId:
-      d.activePageId && pages.some((p) => p.id === d.activePageId)
-        ? d.activePageId
-        : pages[0].id,
-    directives: d.directives ?? "",
-    analysis: d.analysis ?? { kind: "op" },
-  };
 }
 
 function currentSharedDoc(): CircuitDoc | null {
@@ -6012,28 +6797,16 @@ function detectSubckts(directives: string): { name: string; pins: string[] }[] {
 }
 
 function isModelKind(k: ComponentKind): boolean {
-  return k === "D" || k === "NPN" || k === "PNP" || k === "NMOS" || k === "PMOS" || k === "OPAMP";
-}
-
-function isTwoTerminalKind(k: ComponentKind): boolean {
-  return k === "R" || k === "C" || k === "L" || k === "D" || k === "V" || k === "B" || k === "I";
-}
-
-function twoTerminalPinLabels(kind: ComponentKind): [string, string] {
-  switch (kind) {
-    case "D":
-      return ["A", "K"];
-    case "V":
-    case "B":
-    case "I":
-      return ["+", "−"];
-    case "R":
-    case "C":
-    case "L":
-      return ["1", "2"];
-    default:
-      return ["1", "2"];
-  }
+  return (
+    k === "D" ||
+    k === "NPN" ||
+    k === "PNP" ||
+    k === "NMOS" ||
+    k === "PMOS" ||
+    k === "NMOS4" ||
+    k === "PMOS4" ||
+    k === "OPAMP"
+  );
 }
 
 function isSinglePinSnappingTool(tool: Tool): boolean {
@@ -6041,7 +6814,16 @@ function isSinglePinSnappingTool(tool: Tool): boolean {
 }
 
 function isActiveMultiPinKind(kind: ComponentKind): boolean {
-  return kind === "NPN" || kind === "PNP" || kind === "NMOS" || kind === "PMOS" || kind === "OPAMP" || kind === "SUBX";
+  return (
+    kind === "NPN" ||
+    kind === "PNP" ||
+    kind === "NMOS" ||
+    kind === "PMOS" ||
+    kind === "NMOS4" ||
+    kind === "PMOS4" ||
+    kind === "OPAMP" ||
+    kind === "SUBX"
+  );
 }
 
 function toolDescriptionFor(kind: ComponentKind, fallback?: string): string | undefined {
@@ -6054,6 +6836,10 @@ function toolDescriptionFor(kind: ComponentKind, fallback?: string): string | un
       return "Click to place. D/G/S pins stay visible on selection and snap strongly while wiring.";
     case "PMOS":
       return "Click to place. D/G/S pins stay visible on selection and snap strongly while wiring.";
+    case "NMOS4":
+      return "Click to place. D/G/S/B pins stay visible on selection; use this when bulk must not be tied to source.";
+    case "PMOS4":
+      return "Click to place. D/G/S/B pins stay visible on selection; use this when bulk must not be tied to source.";
     case "OPAMP":
       return "Click to place; wire the +, - and OUT pins. Pins stay visible on selection and snap strongly while wiring.";
     default:
@@ -6061,10 +6847,109 @@ function toolDescriptionFor(kind: ComponentKind, fallback?: string): string | un
   }
 }
 
-function placementStatusFor(kind: ComponentKind): string {
-  if (kind === "GND" || kind === "LABEL") return `Added ${COMPONENT_LABELS[kind]}`;
-  if (isActiveMultiPinKind(kind)) return `Added ${COMPONENT_LABELS[kind]} - wire the highlighted pins`;
-  return `Added ${COMPONENT_LABELS[kind]}`;
+function paletteItemForTool(tool: Tool): PaletteItem | undefined {
+  return PALETTE_ITEMS.find((item) => item.tool === tool);
+}
+
+function loadCustomMosfetPresets(): MosfetPreset[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CUSTOM_MOSFET_PRESETS_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isMosfetPreset);
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomMosfetPresets(presets: MosfetPreset[]) {
+  try {
+    localStorage.setItem(CUSTOM_MOSFET_PRESETS_KEY, JSON.stringify(presets.filter((p) => p.custom)));
+  } catch {
+    // Local persistence is a convenience only.
+  }
+}
+
+function defaultMosfetPresetId(kind: "NMOS" | "PMOS"): string {
+  try {
+    const stored = localStorage.getItem(`${DEFAULT_MOSFET_PRESET_PREFIX}${kind}`);
+    if (stored) return stored;
+  } catch {
+    // Ignore storage failures and fall back to built-ins.
+  }
+  return kind === "NMOS" ? "nmos-default" : "pmos-default";
+}
+
+function mergeMosfetPresets(...groups: MosfetPreset[][]): MosfetPreset[] {
+  const out = new Map<string, MosfetPreset>();
+  for (const group of groups) {
+    for (const preset of group) {
+      if (isMosfetPreset(preset)) out.set(preset.id, preset);
+    }
+  }
+  return Array.from(out.values());
+}
+
+function mosfetPresetById(
+  presets: MosfetPreset[],
+  presetId: string,
+  kind: "NMOS" | "PMOS",
+): MosfetPreset | null {
+  return (
+    presets.find((preset) => preset.kind === kind && preset.id === presetId) ??
+    presets.find((preset) => preset.kind === kind && preset.id === defaultMosfetPresetId(kind)) ??
+    BUILTIN_MOSFET_PRESETS.find((preset) => preset.kind === kind) ??
+    null
+  );
+}
+
+function modelOptionsForKind(
+  models: ModelDefinition[],
+  kind: ComponentKind,
+  current: string,
+): ModelDefinition[] {
+  const allowed = new Set(modelTypesForKind(kind));
+  const filtered = models.filter((model) => allowed.has(model.type));
+  if (current.trim() && !filtered.some((model) => model.name === current.trim())) {
+    const fallbackType = allowed.values().next().value as ModelDefinition["type"] | undefined;
+    if (fallbackType) {
+      return [{ name: current.trim(), type: fallbackType, params: "" }, ...filtered];
+    }
+  }
+  return filtered;
+}
+
+function ensureBuiltinModelDirective(doc: CircuitDoc, modelName: string): CircuitDoc {
+  if (modelName === "NCH" || modelName === "PCH") return doc;
+  const model = BUILTIN_MOSFET_MODELS.find((candidate) => candidate.name === modelName);
+  if (!model) return doc;
+  const existing = parseModelDefinitions(doc.directives).some(
+    (candidate) => candidate.name === model.name && candidate.type === model.type,
+  );
+  if (existing) return doc;
+  const line = modelDefinitionLine(model);
+  return {
+    ...doc,
+    directives: doc.directives.trim()
+      ? `${doc.directives.replace(/\s+$/u, "")}\n${line}`
+      : line,
+  };
+}
+
+function isMosfetPreset(value: unknown): value is MosfetPreset {
+  if (!value || typeof value !== "object") return false;
+  const preset = value as Partial<MosfetPreset>;
+  return (
+    (preset.kind === "NMOS" || preset.kind === "PMOS") &&
+    typeof preset.id === "string" &&
+    typeof preset.name === "string" &&
+    typeof preset.model === "string" &&
+    typeof preset.W === "string" &&
+    typeof preset.L === "string"
+  );
+}
+
+function electricalComponentCount(page: SchematicPage): number {
+  return page.components.filter((c) => c.kind !== "GND" && c.kind !== "LABEL" && c.kind !== "NOTE").length;
 }
 
 function floatingPinSummary(pin: FloatingPinDiagnostic): string {
@@ -6303,6 +7188,12 @@ function includeCanvasLabelBounds(
       const bounds = netLabelLayout(c, p, text).bounds;
       xs.push(c.x, bounds.x1, bounds.x2);
       ys.push(c.y, bounds.y1, bounds.y2);
+      continue;
+    }
+    if (c.kind === "NOTE") {
+      const bounds = componentVisualBoundsFor(c);
+      xs.push(bounds.x1, bounds.x2);
+      ys.push(bounds.y1, bounds.y2);
       continue;
     }
     const text = canvasValueLabel(c.kind, c.value);
@@ -6626,12 +7517,6 @@ function NodeReadingsOverlay({
   );
 }
 
-function trimPath(p: string): string {
-  // ~/some/dir/file.ext  → file.ext  (just the basename for the toolbar)
-  const parts = p.split("/");
-  return parts[parts.length - 1] || p;
-}
-
 /** Compact line-art glyphs for the left sidebar nav rows. */
 function SideNavIcon({ kind }: { kind: "new" | "page" | "folder" }) {
   const props = {
@@ -6800,14 +7685,14 @@ function formatVolts(v: number): string {
 function ToolIcon({ tool }: { tool: Tool }) {
   if (tool === "select") {
     return (
-      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={0.95} strokeLinecap="round" strokeLinejoin="round">
         <path d="M5 3l5 16 2-7 7-2z" />
       </svg>
     );
   }
   if (tool === "wire") {
     return (
-      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={0.95} strokeLinecap="round">
         <circle cx={5} cy={12} r={2.2} />
         <circle cx={19} cy={12} r={2.2} />
         <line x1={7} y1={12} x2={17} y2={12} />
@@ -6816,7 +7701,7 @@ function ToolIcon({ tool }: { tool: Tool }) {
   }
   if (tool === "probe") {
     return (
-      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={0.95} strokeLinecap="round" strokeLinejoin="round">
         <path d="M4.5 16.5l5.2-5.2" />
         <circle cx={12} cy={9} r={3.2} />
         <circle cx={12} cy={9} r={0.8} fill="currentColor" stroke="none" />
@@ -6827,7 +7712,7 @@ function ToolIcon({ tool }: { tool: Tool }) {
   }
   if (tool === "pan") {
     return (
-      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={0.95} strokeLinecap="round" strokeLinejoin="round">
         <path d="M8.5 12.5V6.7a1.2 1.2 0 0 1 2.4 0v4.8" />
         <path d="M10.9 11.5V5.8a1.2 1.2 0 0 1 2.4 0v5.7" />
         <path d="M13.3 11.6V7a1.2 1.2 0 0 1 2.4 0v5.4" />

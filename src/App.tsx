@@ -4,6 +4,58 @@ import "./styles.css";
 
 const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const REPO_SLUG = "thomasahle/spice-sim";
+const STARS_CACHE_KEY = `spicesim.github-stars.${REPO_SLUG}`;
+const STARS_TTL_MS = 60 * 60 * 1000; // 1h
+
+function formatStarCount(n: number): string {
+  if (n < 1000) return String(n);
+  const k = n / 1000;
+  return (k >= 10 ? k.toFixed(0) : k.toFixed(1)) + "k";
+}
+
+function useGithubStars(): number | null {
+  const [stars, setStars] = useState<number | null>(() => {
+    try {
+      const raw = localStorage.getItem(STARS_CACHE_KEY);
+      if (!raw) return null;
+      const entry = JSON.parse(raw) as { count: number; ts: number };
+      return typeof entry.count === "number" ? entry.count : null;
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STARS_CACHE_KEY);
+      if (raw) {
+        const entry = JSON.parse(raw) as { count: number; ts: number };
+        if (Date.now() - entry.ts < STARS_TTL_MS) return;
+      }
+    } catch {
+      /* fall through to refetch */
+    }
+    fetch(`https://api.github.com/repos/${REPO_SLUG}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && typeof data.stargazers_count === "number") {
+          setStars(data.stargazers_count);
+          try {
+            localStorage.setItem(
+              STARS_CACHE_KEY,
+              JSON.stringify({ count: data.stargazers_count, ts: Date.now() }),
+            );
+          } catch {
+            /* ignore quota */
+          }
+        }
+      })
+      .catch(() => {
+        /* offline or rate-limited — silently keep cached value */
+      });
+  }, []);
+  return stars;
+}
 
 export default function App() {
   // Editor dispatches "spicesim:title" whenever the active project name
@@ -74,8 +126,60 @@ export default function App() {
     window.dispatchEvent(new CustomEvent("spicesim:toggle-inspector"));
   }
 
+  const stars = useGithubStars();
+
   return (
     <div className={`app${IS_TAURI ? "" : " website"}`}>
+      {!IS_TAURI && (
+        <header className="app-header">
+          <a
+            className="app-header-brand"
+            href={`https://github.com/${REPO_SLUG}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Spice Sim on GitHub"
+          >
+            <svg
+              className="app-header-logo"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <line x1="4" y1="9" x2="20" y2="9" strokeWidth={1.8} />
+              <line x1="12" y1="9" x2="12" y2="19" strokeWidth={1.8} />
+              <circle cx="4" cy="9" r="1.9" strokeWidth={1.5} />
+              <circle cx="20" cy="9" r="1.9" strokeWidth={1.5} />
+              <circle cx="12" cy="19" r="1.9" strokeWidth={1.5} />
+            </svg>
+            <span className="app-header-name">Spice Sim</span>
+          </a>
+          <div className="app-header-spacer" />
+          <a
+            className="app-header-stars"
+            href={`https://github.com/${REPO_SLUG}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`Star ${REPO_SLUG} on GitHub`}
+          >
+            <svg
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              aria-hidden="true"
+              width={14}
+              height={14}
+            >
+              <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z" />
+            </svg>
+            <span className="app-header-stars-label">Star</span>
+            {stars !== null && (
+              <span className="app-header-stars-count">{formatStarCount(stars)}</span>
+            )}
+          </a>
+        </header>
+      )}
       {IS_TAURI && (
         /* Tauri 2 drag-region: empty string is the canonical "drag here"
            value. React's bare-prop shorthand renders as `"true"` which some

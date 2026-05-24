@@ -23,6 +23,7 @@ const STRIP_SELECTORS = [
   ".probe-scope",
   ".wire-hit-target",
   ".wire-vertex",
+  ".note-resize-handle",
   ".draft-measure",
   ".placement-draft",
 ].join(",");
@@ -136,5 +137,14 @@ text {
   font-size: 0.58px;
   font-weight: 560;
   dominant-baseline: alphabetic;
+}
+.note-card {
+  fill: #34c7591a;
+  stroke: #34c759b8;
+  stroke-width: 0.05;
+}
+.note-text {
+  fill: var(--ink);
+  font-weight: 400;
 }
 `.trim();

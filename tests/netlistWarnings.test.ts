@@ -4,6 +4,143 @@ import test from "node:test";
 import { buildNetlist } from "../src/editor/netlist.ts";
 import type { CircuitDoc } from "../src/editor/model.ts";
 
+test("subcircuit external pins follow visual left-then-right order", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      { id: "main", name: "main", wires: [], probes: [], components: [] },
+      {
+        id: "sub",
+        name: "relu_cell",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "h", kind: "LABEL", x: 7, y: -1, rotation: 0, value: "h" },
+          { id: "vss", kind: "LABEL", x: 7, y: 0, rotation: 0, value: "VSS" },
+          { id: "x", kind: "LABEL", x: -7, y: -1, rotation: 0, value: "x" },
+          { id: "dpos", kind: "LABEL", x: -7, y: 0, rotation: 0, value: "dpos" },
+        ],
+      },
+    ],
+  };
+
+  assert.match(buildNetlist(doc).netlist, /^\.subckt relu_cell x dpos h VSS$/m);
+});
+
+test("subcircuit instances can export more than eight pins", () => {
+  const pins = Array.from({ length: 12 }, (_, i) => `n${i + 1}`);
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "x1", kind: "SUBX", x: 0, y: 0, rotation: 0, value: "wide", params: { npins: "12" } },
+          ...pins.map((pin, i) => ({
+            id: `label-${pin}`,
+            kind: "LABEL" as const,
+            x: i < 6 ? -4.2 : 4.2,
+            y: i < 6 ? -2.5 + i : -2.5 + (i - 6),
+            rotation: 0 as const,
+            value: pin,
+          })),
+        ],
+        wires: pins.map((pin, i) => ({
+          id: `w-${pin}`,
+          points: [[i < 6 ? -3 : 3, i < 6 ? -2.5 + i : -2.5 + (i - 6)], [i < 6 ? -4.2 : 4.2, i < 6 ? -2.5 + i : -2.5 + (i - 6)]] as [number, number][],
+        })),
+      },
+    ],
+  };
+
+  assert.match(buildNetlist(doc).netlist, /^X1 n1 n2 n3 n4 n5 n6 n7 n8 n9 n10 n11 n12 wide$/m);
+});
+
+test("capacitors can emit initial conditions", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "c1", kind: "C", x: 0, y: 0, rotation: 0, value: "20p", params: { IC: "1.35" } },
+          { id: "g1", kind: "GND", x: 0, y: 2, rotation: 0, value: "" },
+          { id: "l1", kind: "LABEL", x: 0, y: -2, rotation: 0, value: "wp" },
+        ],
+      },
+    ],
+  };
+
+  assert.match(buildNetlist(doc).netlist, /^C1 wp 0 20p IC=1.35$/m);
+});
+
+test("explicit subcircuit ports keep internal labels private", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      { id: "main", name: "main", wires: [], probes: [], components: [] },
+      {
+        id: "sub",
+        name: "block",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "in", kind: "LABEL", x: -3, y: 0, rotation: 0, value: "in", params: { port: "1" } },
+          { id: "out", kind: "LABEL", x: 5, y: 0, rotation: 0, value: "out", params: { port: "1" } },
+          { id: "nint", kind: "LABEL", x: 1, y: 0, rotation: 0, value: "n_int" },
+          { id: "r1", kind: "R", x: -1, y: 0, rotation: 0, value: "1k" },
+          { id: "r2", kind: "R", x: 3, y: 0, rotation: 0, value: "1k" },
+        ],
+      },
+    ],
+  };
+
+  const netlist = buildNetlist(doc).netlist;
+  assert.match(netlist, /^\.subckt block in out$/m);
+  assert.doesNotMatch(netlist, /^\.subckt block .*n_int/m);
+  assert.match(netlist, /^R1 in n_int 1k$/m);
+  assert.match(netlist, /^R2 n_int out 1k$/m);
+});
+
+test("canvas notes export as comments without electrical components", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "note1", kind: "NOTE", x: 0, y: 0, rotation: 0, value: "Forward path only\nNo behavioral sources" },
+          { id: "g1", kind: "GND", x: 4, y: 0, rotation: 0, value: "" },
+        ],
+      },
+    ],
+  };
+
+  const netlist = buildNetlist(doc).netlist;
+  assert.match(netlist, /^\* Note: Forward path only$/m);
+  assert.match(netlist, /^\* Note: No behavioral sources$/m);
+  assert.doesNotMatch(netlist, /^1\b/m);
+});
+
 test("floating active-device warnings use terminal names", () => {
   const doc: CircuitDoc = {
     activePageId: "main",
@@ -28,6 +165,66 @@ test("floating active-device warnings use terminal names", () => {
   assert.ok(result.warnings.some((warning) => warning.includes("M1 G pin is floating")));
   assert.ok(result.warnings.some((warning) => warning.includes("M1 S pin is floating")));
   assert.deepEqual(result.floatingPins.map((pin) => pin.pinLabel), ["D", "G", "S"]);
+});
+
+test("netlist warns when a net label is close to a pin but not connected", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" },
+          { id: "in", kind: "LABEL", x: -2.2, y: 0, rotation: 0, value: "in" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+
+  assert.ok(
+    result.warnings.some((warning) =>
+      warning.includes('Net label "in" is 0.20 grid units from R1 1 pin but is not connected'),
+    ),
+  );
+  assert.equal(
+    result.warnings.some((warning) => warning.includes("label pin")),
+    false,
+  );
+});
+
+test("four-terminal MOSFETs netlist explicit body pin", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "m1", kind: "NMOS4", x: 0, y: 0, rotation: 0, value: "NMOS_LEVEL1_FAST", params: { W: "8u", L: "2u" } },
+          { id: "vdd", kind: "LABEL", x: 0, y: -2, rotation: 0, value: "vdd" },
+          { id: "gate", kind: "LABEL", x: -2, y: 0, rotation: 0, value: "gate" },
+          { id: "src", kind: "LABEL", x: 0, y: 2, rotation: 0, value: "src" },
+          { id: "bulk", kind: "LABEL", x: 2, y: 0, rotation: 0, value: "vss" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+
+  assert.match(result.netlist, /^M1 vdd gate src vss NMOS_LEVEL1_FAST L=2u W=8u$/m);
+  assert.doesNotMatch(result.netlist, /^M1 vdd gate src src /m);
 });
 
 test("shorted-to-ground circuits get an explicit collapsed-node warning", () => {

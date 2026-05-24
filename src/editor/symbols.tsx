@@ -7,6 +7,7 @@ interface Props {
   kind: ComponentKind;
   selected?: boolean;
   strokeWidth?: number;
+  palette?: boolean;
   /** SUBX-only: actual pin positions resolved from getPinLayout(component). */
   subxPins?: { x: number; y: number }[];
   /** SUBX-only: subcircuit name to render in the body label. */
@@ -15,8 +16,12 @@ interface Props {
 
 const SW = 0.12; // line width in cell units
 
-export function ComponentGlyph({ kind, selected, strokeWidth = SW, subxPins, subxLabel }: Props) {
+export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = false, subxPins, subxLabel }: Props) {
   const stroke = selected ? "var(--accent)" : "var(--ink)";
+  const lead = palette ? 1.45 : 2;
+  const sourceRadius = palette ? 1.08 : 0.9;
+  const passiveLead = palette ? 1.55 : 2;
+  const transistorLead = palette ? 1.55 : 2;
   const common = {
     fill: "none",
     stroke,
@@ -28,7 +33,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, subxPins, sub
     case "R":
       return (
         <g {...common}>
-          <line x1={-2} y1={0} x2={-1} y2={0} />
+          <line x1={-passiveLead} y1={0} x2={-1} y2={0} />
           <polyline
             points={[
               [-1, 0],
@@ -43,15 +48,15 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, subxPins, sub
               .map((p) => p.join(","))
               .join(" ")}
           />
-          <line x1={1} y1={0} x2={2} y2={0} />
+          <line x1={1} y1={0} x2={passiveLead} y2={0} />
         </g>
       );
     case "V":
       return (
         <g {...common}>
-          <line x1={0} y1={-2} x2={0} y2={-0.9} />
-          <line x1={0} y1={0.9} x2={0} y2={2} />
-          <circle cx={0} cy={0} r={0.9} />
+          <line x1={0} y1={-lead} x2={0} y2={-sourceRadius} />
+          <line x1={0} y1={sourceRadius} x2={0} y2={lead} />
+          <circle cx={0} cy={0} r={sourceRadius} />
           <line x1={-0.22} y1={-0.45} x2={0.22} y2={-0.45} />
           <line x1={0} y1={-0.67} x2={0} y2={-0.23} />
           <line x1={-0.22} y1={0.45} x2={0.22} y2={0.45} />
@@ -60,9 +65,9 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, subxPins, sub
     case "B":
       return (
         <g {...common}>
-          <line x1={0} y1={-2} x2={0} y2={-0.9} />
-          <line x1={0} y1={0.9} x2={0} y2={2} />
-          <circle cx={0} cy={0} r={0.9} />
+          <line x1={0} y1={-lead} x2={0} y2={-sourceRadius} />
+          <line x1={0} y1={sourceRadius} x2={0} y2={lead} />
+          <circle cx={0} cy={0} r={sourceRadius} />
           <text x={0} y={0.24} textAnchor="middle" fontSize={0.72} fill={stroke} stroke="none">
             f
           </text>
@@ -71,9 +76,9 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, subxPins, sub
     case "I":
       return (
         <g {...common}>
-          <line x1={0} y1={-2} x2={0} y2={-0.9} />
-          <line x1={0} y1={0.9} x2={0} y2={2} />
-          <circle cx={0} cy={0} r={0.9} />
+          <line x1={0} y1={-lead} x2={0} y2={-sourceRadius} />
+          <line x1={0} y1={sourceRadius} x2={0} y2={lead} />
+          <circle cx={0} cy={0} r={sourceRadius} />
           {/* Arrow inside pointing down (current flows from + at top to - at bottom internally) */}
           <line x1={0} y1={-0.5} x2={0} y2={0.4} />
           <polyline points="-0.22,0.15 0,0.5 0.22,0.15" />
@@ -82,16 +87,16 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, subxPins, sub
     case "C":
       return (
         <g {...common}>
-          <line x1={0} y1={-2} x2={0} y2={-0.35} />
+          <line x1={0} y1={-passiveLead} x2={0} y2={-0.35} />
           <line x1={-0.9} y1={-0.35} x2={0.9} y2={-0.35} />
           <line x1={-0.9} y1={0.35} x2={0.9} y2={0.35} />
-          <line x1={0} y1={0.35} x2={0} y2={2} />
+          <line x1={0} y1={0.35} x2={0} y2={passiveLead} />
         </g>
       );
     case "L":
       return (
         <g {...common}>
-          <line x1={0} y1={-2} x2={0} y2={-1.4} />
+          <line x1={0} y1={-passiveLead} x2={0} y2={-1.4} />
           {/* Three half-circle humps */}
           <path
             d={`
@@ -101,13 +106,13 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, subxPins, sub
               A 0.45 0.45 0 0 1 0 1.3
             `}
           />
-          <line x1={0} y1={1.3} x2={0} y2={2} />
+          <line x1={0} y1={1.3} x2={0} y2={passiveLead} />
         </g>
       );
     case "D":
       return (
         <g {...common}>
-          <line x1={0} y1={-2} x2={0} y2={-0.7} />
+          <line x1={0} y1={-passiveLead} x2={0} y2={-0.7} />
           {/* Anode triangle (pointing toward cathode bar) */}
           <polygon
             points="-0.6,-0.7 0.6,-0.7 0,0.4"
@@ -115,7 +120,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, subxPins, sub
             stroke={stroke}
           />
           <line x1={-0.65} y1={0.4} x2={0.65} y2={0.4} />
-          <line x1={0} y1={0.4} x2={0} y2={2} />
+          <line x1={0} y1={0.4} x2={0} y2={passiveLead} />
         </g>
       );
     case "GND":
@@ -134,14 +139,14 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, subxPins, sub
         <g {...common}>
           <circle cx={0} cy={0} r={1} />
           {/* Base lead */}
-          <line x1={-2} y1={0} x2={-0.7} y2={0} />
+          <line x1={-transistorLead} y1={0} x2={-0.7} y2={0} />
           {/* Base bar inside */}
           <line x1={-0.7} y1={-0.6} x2={-0.7} y2={0.6} />
           {/* Collector to base */}
-          <line x1={0} y1={-2} x2={0} y2={-0.85} />
+          <line x1={0} y1={-transistorLead} x2={0} y2={-0.85} />
           <line x1={0} y1={-0.85} x2={-0.7} y2={-0.3} />
           {/* Emitter to base */}
-          <line x1={0} y1={2} x2={0} y2={0.85} />
+          <line x1={0} y1={transistorLead} x2={0} y2={0.85} />
           <line x1={0} y1={0.85} x2={-0.7} y2={0.3} />
           {/* Emitter arrow */}
           {npn ? (
@@ -182,6 +187,16 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, subxPins, sub
           <polyline points="0,0 0.8,0 1.2,-0.4 2.4,-0.4 2.4,0.4 1.2,0.4 0.8,0" />
         </g>
       );
+    case "NOTE":
+      return (
+        <g {...common}>
+          <rect x={-1.15} y={-0.9} width={2.3} height={1.8} rx={0.18} />
+          <polyline points="0.58,-0.9 1.15,-0.35 0.58,-0.35 0.58,-0.9" />
+          <line x1={-0.68} y1={-0.28} x2={0.32} y2={-0.28} />
+          <line x1={-0.68} y1={0.12} x2={0.68} y2={0.12} />
+          <line x1={-0.68} y1={0.52} x2={0.42} y2={0.52} />
+        </g>
+      );
     case "SUBX":
       return (
         <SubxGlyph
@@ -196,22 +211,31 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, subxPins, sub
         />
       );
     case "NMOS":
-    case "PMOS": {
-      const n = kind === "NMOS";
+    case "PMOS":
+    case "NMOS4":
+    case "PMOS4": {
+      const n = kind === "NMOS" || kind === "NMOS4";
+      const fourTerminal = kind === "NMOS4" || kind === "PMOS4";
       return (
         <g {...common}>
           {/* Gate lead */}
-          <line x1={-2} y1={0} x2={-0.8} y2={0} />
+          <line x1={-transistorLead} y1={0} x2={-0.8} y2={0} />
           {/* Gate bar (slightly offset from channel) */}
           <line x1={-0.7} y1={-0.6} x2={-0.7} y2={0.6} />
           {/* Channel bar */}
           <line x1={-0.4} y1={-0.7} x2={-0.4} y2={0.7} />
           {/* Drain branch */}
-          <line x1={0} y1={-2} x2={0} y2={-0.6} />
+          <line x1={0} y1={-transistorLead} x2={0} y2={-0.6} />
           <line x1={0} y1={-0.6} x2={-0.4} y2={-0.6} />
           {/* Source branch */}
-          <line x1={0} y1={2} x2={0} y2={0.6} />
+          <line x1={0} y1={transistorLead} x2={0} y2={0.6} />
           <line x1={0} y1={0.6} x2={-0.4} y2={0.6} />
+          {fourTerminal && (
+            <>
+              <line x1={2} y1={0} x2={0.2} y2={0} />
+              <line x1={0.2} y1={-0.45} x2={0.2} y2={0.45} />
+            </>
+          )}
           {/* Body arrow (on source side; toward channel for N, away for P) */}
           {n ? (
             <polygon
@@ -293,7 +317,7 @@ export function SubxGlyph({
 export function PaletteGlyph({ kind }: { kind: ComponentKind }) {
   if (kind === "SUBX") {
     return (
-      <svg viewBox="-3.5 -2 7 4" width="42" height="28">
+      <svg viewBox="-3.2 -1.75 6.4 3.5" width="42" height="28">
         <SubxGlyph
           pins={[
             { x: -3, y: -1 },
@@ -302,14 +326,47 @@ export function PaletteGlyph({ kind }: { kind: ComponentKind }) {
             { x: 3, y: 1 },
           ]}
           label="X"
-          strokeWidth={0.24}
+          strokeWidth={0.18}
         />
       </svg>
     );
   }
   return (
-    <svg viewBox="-3 -3 6 6" width="36" height="36">
-      <ComponentGlyph kind={kind} strokeWidth={0.22} />
+    <svg viewBox={paletteViewBox(kind)} width="36" height="36">
+      <ComponentGlyph kind={kind} strokeWidth={0.2} palette />
     </svg>
   );
+}
+
+function paletteViewBox(kind: ComponentKind): string {
+  switch (kind) {
+    case "R":
+      return "-1.95 -1.25 3.9 2.5";
+    case "V":
+    case "I":
+    case "B":
+      return "-1.7 -1.85 3.4 3.7";
+    case "C":
+    case "L":
+    case "D":
+      return "-1.65 -1.9 3.3 3.8";
+    case "GND":
+      return "-1.3 -0.15 2.6 1.55";
+    case "NPN":
+    case "PNP":
+    case "NMOS":
+    case "PMOS":
+      return "-1.95 -1.95 3.9 3.9";
+    case "NMOS4":
+    case "PMOS4":
+      return "-2.25 -1.95 4.75 3.9";
+    case "OPAMP":
+      return "-3.25 -2.65 6.75 5.3";
+    case "LABEL":
+      return "-0.25 -1.05 2.9 2.1";
+    case "NOTE":
+      return "-1.45 -1.2 2.9 2.4";
+    default:
+      return "-2 -2 4 4";
+  }
 }

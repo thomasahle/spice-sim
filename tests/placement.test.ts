@@ -4,6 +4,7 @@ import test from "node:test";
 import { pinWorldPos } from "../src/editor/model.ts";
 import {
   componentFromClick,
+  componentFromDrag,
   componentFromTerminals,
   connectedInlinePlacementWires,
   connectedPlacementWires,
@@ -49,6 +50,27 @@ test("two-terminal click placement creates a default symbol centered on the clic
   assert.equal(c.rotation, 0);
   assert.deepEqual(pinWorldPos(c, 0), { x: 2, y: -3 });
   assert.deepEqual(pinWorldPos(c, 1), { x: 2, y: 1 });
+});
+
+test("single-pin placement can drag out a connected ground stub", () => {
+  let n = 0;
+  const c = componentFromDrag("GND", { x: -2, y: 0 }, { x: -2, y: 2 }, "g1");
+
+  assert.equal(c.x, -2);
+  assert.equal(c.y, 2);
+  assert.deepEqual(
+    placementConnectionWires(c, { x: -2, y: 0 }, { x: -2, y: 2 }, true, false, () => `w${++n}`),
+    [{ id: "w1", points: [[-2, 2], [-2, 0]] }],
+  );
+});
+
+test("note placement uses the drag rectangle as its editable size", () => {
+  const c = componentFromDrag("NOTE", { x: 4, y: 3 }, { x: 10, y: 7 }, "note1");
+
+  assert.equal(c.x, 4);
+  assert.equal(c.y, 3);
+  assert.equal(c.params?.w, "6");
+  assert.equal(c.params?.h, "4");
 });
 
 test("two-terminal placement puts canonical vertical capacitor pins on dragged endpoints", () => {

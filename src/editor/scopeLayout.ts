@@ -206,6 +206,8 @@ function componentBounds(kind: CircuitComponent["kind"]): { w: number; h: number
     case "PNP":
     case "NMOS":
     case "PMOS":
+    case "NMOS4":
+    case "PMOS4":
       return { w: 4.8, h: 5.2 };
     case "GND":
     case "LABEL":

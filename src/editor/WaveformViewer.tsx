@@ -26,7 +26,7 @@ import { computeSweepMetrics } from "./dcSweepMetrics";
 type YMode = "linear" | "db";
 
 const VIEW_TABS: { kind: ViewTab; label: string }[] = [
-  { kind: "viewer", label: "Waveform Viewer" },
+  { kind: "viewer", label: "Waveform" },
   { kind: "xy", label: "X/Y Plot" },
   { kind: "ac", label: "AC Analysis" },
   { kind: "dc", label: "DC Sweep" },
@@ -166,6 +166,7 @@ export function WaveformViewer({
   const [xyXName, setXyXName] = useState("");
   const [xyYName, setXyYName] = useState("");
   const [exportStatus, setExportStatus] = useState("");
+  const [focusedTrace, setFocusedTrace] = useState<string | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -185,9 +186,9 @@ export function WaveformViewer({
   // Stable color per trace name — based on position in the full (unfiltered)
   // trace list so swatch and plotted line always agree.
   const colorMap = useMemo(() => buildColorMap(rawTraces), [rawTraces]);
-  const isAc = plot.startsWith("ac");
-  const isTran = plot.startsWith("tran");
-  const isDc = plot.startsWith("dc");
+  const isAc = isAcPlot(plot);
+  const isTran = isTransientPlot(plot);
+  const isDc = isDcPlot(plot);
   const fftActive = !!(showFft && isTran && rawScale && rawScale.data.length > 8);
 
   // If FFT mode is on, replace scale with frequency axis and replace each
@@ -252,6 +253,14 @@ export function WaveformViewer({
   const { plotPath, yPx, yMin, yMax, xMin, xMax } = useMemo(() => {
     return computePlot(scale, shown, size, logX);
   }, [scale, shown, size, logX]);
+  const orderedPlotPath = useMemo(() => {
+    if (!focusedTrace) return plotPath;
+    return [...plotPath].sort((a, b) => {
+      if (a.name === focusedTrace) return 1;
+      if (b.name === focusedTrace) return -1;
+      return 0;
+    });
+  }, [focusedTrace, plotPath]);
 
   function onMove(e: React.MouseEvent) {
     const rect = (e.target as Element).getBoundingClientRect();
@@ -404,8 +413,8 @@ export function WaveformViewer({
               </button>
             );
           })}
-          <span className="wf-plot-tag" title={`ngspice plot: ${plot}`}>Plot: {plot}</span>
         </div>
+        <span className="wf-plot-tag" title={`ngspice plot: ${plot}`}>{plotBadge(plot)}</span>
         {isAc && tab === "viewer" && (
           <div className="seg" role="group" aria-label="AC plot scale">
             <button
@@ -543,6 +552,10 @@ export function WaveformViewer({
                       aria-label={`${active ? "Hide" : "Show"} ${traceDisplayName(t.name, traceAliases, runLabels)}`}
                       title={`${active ? "Hide" : "Show"} ${traceDisplayName(t.name, traceAliases, runLabels)}`}
                       onClick={() => handleTraceClick(t.name)}
+                      onMouseEnter={() => setFocusedTrace(t.name)}
+                      onMouseLeave={() => setFocusedTrace((current) => current === t.name ? null : current)}
+                      onFocus={() => setFocusedTrace(t.name)}
+                      onBlur={() => setFocusedTrace((current) => current === t.name ? null : current)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
@@ -681,16 +694,34 @@ export function WaveformViewer({
             />
           )}
           {/* traces */}
-          {plotPath.map((p) => (
-            <path
-              key={p.name}
-              d={p.d}
-              fill="none"
-              stroke={colorMap.get(p.name) ?? TRACE_COLORS[0]}
-              strokeWidth={1.5}
-              strokeLinejoin="round"
-            />
-          ))}
+          {orderedPlotPath.map((p) => {
+            const focused = p.name === focusedTrace;
+            const color = colorMap.get(p.name) ?? TRACE_COLORS[0];
+            return (
+              <g key={p.name} className={focused ? "wf-trace-path focused" : "wf-trace-path"}>
+                {focused && (
+                  <path
+                    d={p.d}
+                    fill="none"
+                    stroke="var(--bg-canvas)"
+                    strokeWidth={5}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    opacity={0.92}
+                  />
+                )}
+                <path
+                  d={p.d}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={focused ? 2.35 : 1.5}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  opacity={focused || shown.length <= 1 ? 1 : 0.84}
+                />
+              </g>
+            );
+          })}
           {/* hover cursor (ephemeral) */}
           {cursor && cursor.px >= PAD_L && cursor.px <= size.w - PAD_R && (
             <line
@@ -957,7 +988,7 @@ function InfoTab({
   measurementDirectives: Map<string, MeasurementDirectiveInfo>;
 }) {
   const totalSamples = traces.reduce((a, t) => a + t.data.length, 0);
-  const showTransientMetrics = plot.startsWith("tran");
+  const showTransientMetrics = isTransientPlot(plot);
   return (
     <div className="wf-info-pane">
       <div className="wf-info-grid">
@@ -1953,10 +1984,34 @@ function inverseAxisUnit(unit: string): string {
 }
 
 function fallbackXAxisLabel(plot: string): string {
-  if (plot.startsWith("tran")) return "Time (s)";
-  if (plot.startsWith("ac") || plot.startsWith("noise")) return "Frequency (Hz)";
-  if (plot.startsWith("dc")) return "Sweep";
+  if (isTransientPlot(plot)) return "Time (s)";
+  if (isAcPlot(plot) || isNoisePlot(plot)) return "Frequency (Hz)";
+  if (isDcPlot(plot)) return "Sweep";
   return "Sample";
+}
+
+function isTransientPlot(plot: string): boolean {
+  const normalized = plot.toLowerCase();
+  return normalized.startsWith("tran") || normalized.includes("transient");
+}
+
+function isAcPlot(plot: string): boolean {
+  return plot.toLowerCase().startsWith("ac");
+}
+
+function isDcPlot(plot: string): boolean {
+  return plot.toLowerCase().startsWith("dc");
+}
+
+function isNoisePlot(plot: string): boolean {
+  return plot.toLowerCase().startsWith("noise");
+}
+
+function plotBadge(plot: string): string {
+  if (isTransientPlot(plot)) return "Plot: Transient";
+  if (isAcPlot(plot)) return "Plot: AC";
+  if (isDcPlot(plot)) return "Plot: DC";
+  return `Plot: ${plot}`;
 }
 
 // ---- FFT helpers ---------------------------------------------------------

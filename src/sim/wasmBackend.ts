@@ -44,7 +44,7 @@ export function analysisDirective(analysis: Analysis): string {
 export function composeBatchNetlist(netlist: string, analysis: Analysis): string {
   const lines = netlist
     .split(/\r?\n/)
-    .filter((line) => !line.trim().toLowerCase().startsWith(".end"));
+    .filter((line) => !/^\.end(?:\s|$)/i.test(line.trim()));
   if (lines.every((line) => line.trim() === "")) {
     lines.unshift("* Spice Sim circuit");
   }
