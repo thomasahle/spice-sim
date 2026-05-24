@@ -461,20 +461,30 @@ button[disabled] {
   color: var(--ink);
 }
 
-/* Section header — "PROJECTS" muted label. */
+/* Section header — visually unified with `.section-label` on the right
+   pane so "PROJECTS" and "SIMULATION SETTINGS" read as the same kind of
+   header. Left padding 8 + .side-nav padding 10 = 18 px from pane left,
+   matching .right-pane padding 14 + .section-label padding-left 4 = 18. */
 .side-nav-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 10px 4px;
-  margin-top: 4px;
+  padding: 0 8px 6px;
+}
+.side-nav-section-head + .side-nav-section-head,
+.side-nav-projects + .side-nav-section-head,
+.side-nav-actions + .side-nav-section-head {
+  /* Subsequent section headers need a gap above; the first one sits flush
+     with the .side-nav top padding (14 px). */
+  padding-top: 14px;
 }
 .side-nav-section-head > span {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 10.5px;
+  font-weight: 700;
   color: var(--ink-muted);
-  letter-spacing: 0;
-  text-transform: none;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.75;
 }
 .side-nav-add {
   width: 22px;
