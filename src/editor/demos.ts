@@ -243,4 +243,62 @@ export const DEMOS: Demo[] = [
       analysis: { kind: "ac", sweep: "dec", npts: 30, fstart: "10", fstop: "100k" },
     }),
   },
+  {
+    id: "rc_cascade_subckt",
+    name: "Cascaded RC filter (subcircuit)",
+    description:
+      "Two RC low-pass stages built from the same reusable .subckt block. Open the `rc_stage` page in the side panel to edit the subcircuit definition.",
+    build: () => {
+      const mainId = makeId("page");
+      const subId = makeId("page");
+      return {
+        pages: [
+          {
+            id: mainId,
+            name: "main",
+            components: [
+              { id: "v1", kind: "V", x: -10, y: 0, rotation: 0, value: "AC 1" },
+              // SUBX defaults to 4 pins; force 2 (in/out) via params.npins.
+              { id: "x1", kind: "SUBX", x: -3, y: -3, rotation: 0, value: "rc_stage", params: { npins: "2" } },
+              { id: "x2", kind: "SUBX", x: 5, y: -3, rotation: 0, value: "rc_stage", params: { npins: "2" } },
+              { id: "g_in", kind: "GND", x: -10, y: 4, rotation: 0, value: "" },
+              { id: "lbl_mid", kind: "LABEL", x: 1, y: -3, rotation: 0, value: "mid" },
+              { id: "lbl_out", kind: "LABEL", x: 9, y: -3, rotation: 0, value: "out" },
+            ],
+            wires: [
+              { id: "w1", points: [[-10, -2], [-10, -3], [-6, -3]] },
+              { id: "w2", points: [[0, -3], [2, -3]] },
+              { id: "w3", points: [[8, -3], [9, -3]] },
+              { id: "w4", points: [[-10, 2], [-10, 4]] },
+            ],
+            probes: [{ id: "p_out", x: 9, y: -3, color: "#bf5af2" }],
+          },
+          {
+            id: subId,
+            name: "rc_stage",
+            description: "Single-pole RC low-pass building block (R then C to ground).",
+            components: [
+              // The first port-label encountered becomes pin 0 of the SUBX
+              // instance, so keep `in` ahead of `out` in this array.
+              { id: "lbl_in", kind: "LABEL", x: -6, y: 0, rotation: 0, value: "in", params: { port: "1" } },
+              { id: "r1", kind: "R", x: -2, y: 0, rotation: 0, value: "1k" },
+              { id: "c1", kind: "C", x: 4, y: 3, rotation: 0, value: "159n" },
+              { id: "g1", kind: "GND", x: 4, y: 7, rotation: 0, value: "" },
+              { id: "lbl_out", kind: "LABEL", x: 4, y: 0, rotation: 0, value: "out", params: { port: "1" } },
+            ],
+            wires: [
+              { id: "sw1", points: [[-6, 0], [-4, 0]] },
+              { id: "sw2", points: [[0, 0], [4, 0]] },
+              { id: "sw3", points: [[4, 0], [4, 1]] },
+              { id: "sw4", points: [[4, 5], [4, 7]] },
+            ],
+            probes: [],
+          },
+        ],
+        activePageId: mainId,
+        directives: "",
+        analysis: { kind: "ac", sweep: "dec", npts: 30, fstart: "10", fstop: "100k" },
+      };
+    },
+  },
 ];
