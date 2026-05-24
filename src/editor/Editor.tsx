@@ -3874,6 +3874,23 @@ export function Editor() {
               );
             })}
           </div>
+
+          <div className="side-nav-section-head side-nav-examples-head">
+            <span>Examples</span>
+          </div>
+          <div className="side-nav-examples">
+            {DEMOS.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                className="side-nav-example"
+                onClick={() => loadDemo(d.id)}
+                title={d.description}
+              >
+                {d.name}
+              </button>
+            ))}
+          </div>
       </aside>
 
       <aside className="right-pane" aria-hidden={inspectorCollapsed}>
