@@ -640,6 +640,15 @@ export function Editor() {
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const spacePanRef = useRef(false);
+  // Multi-touch gesture tracking. Touch pointers go into `activeTouches`
+  // keyed by pointerId; when two touches are active simultaneously we enter
+  // pinch-zoom mode and record the starting distance / zoom / world center.
+  const activeTouchesRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchRef = useRef<null | {
+    startDist: number;
+    startZoom: number;
+    centerWorld: { x: number; y: number };
+  }>(null);
   // Derive the active page once per render so most editor code can treat
   // `page.components` etc as the source of truth.
   const page = currentPage(doc);
@@ -1973,11 +1982,43 @@ export function Editor() {
       if (active && active !== document.body) active.blur?.();
       wrap.focus({ preventScroll: true });
     }
+    if (e.pointerType === "touch") {
+      activeTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      // Two simultaneous touches → start pinch-zoom. Cancel any in-flight
+      // single-touch pan/drag so the gestures don't fight.
+      if (activeTouchesRef.current.size === 2) {
+        e.preventDefault();
+        const [a, b] = [...activeTouchesRef.current.values()];
+        const dist = Math.hypot(a.x - b.x, a.y - b.y);
+        const centerScreen = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const centerWorld = screenToWorld(centerScreen.x, centerScreen.y);
+        pinchRef.current = { startDist: dist || 1, startZoom: zoom, centerWorld };
+        setPanning(null);
+        setDrag(null);
+        setWireDrag(null);
+        setScopeDrag(null);
+        return;
+      }
+    }
     if (e.button === 1 || (e.button === 0 && (tool === "pan" || e.altKey || spacePanRef.current))) {
       e.preventDefault();
       capturePointer(e);
       setPanning({ x: e.clientX - pan.x, y: e.clientY - pan.y });
       return;
+    }
+    // Touch on empty canvas pans instead of starting a rubber-band selection.
+    // Tap-to-select on a component still works because it routes through the
+    // existing target-id handlers below before we reach the empty-canvas case.
+    if (e.pointerType === "touch" && e.button === 0 && tool === "select") {
+      const targetWire = wireIdFromTarget(e.target);
+      const targetComp = componentIdFromTarget(e.target);
+      const targetScope = scopeProbeIdFromTarget(e.target);
+      if (!targetWire && !targetComp && !targetScope) {
+        e.preventDefault();
+        capturePointer(e);
+        setPanning({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+        return;
+      }
     }
     if (e.button !== 0) return;
     capturePointer(e);
@@ -2210,6 +2251,28 @@ export function Editor() {
   }
 
   function onCanvasPointerMove(e: React.PointerEvent<SVGSVGElement>) {
+    // Track moving touches so pinch-zoom math sees fresh positions.
+    if (e.pointerType === "touch" && activeTouchesRef.current.has(e.pointerId)) {
+      activeTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const pinch = pinchRef.current;
+      if (pinch && activeTouchesRef.current.size >= 2) {
+        e.preventDefault();
+        const [a, b] = [...activeTouchesRef.current.values()];
+        const dist = Math.hypot(a.x - b.x, a.y - b.y);
+        const ratio = dist / pinch.startDist;
+        const newZoom = Math.max(0.2, Math.min(8, pinch.startZoom * ratio));
+        // Keep the world point originally under the pinch center stationary
+        // under the (possibly moved) current pinch center.
+        const centerScreen = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const rect = svgRef.current!.getBoundingClientRect();
+        setZoom(newZoom);
+        setPan({
+          x: centerScreen.x - rect.left - pinch.centerWorld.x * CELL * newZoom,
+          y: centerScreen.y - rect.top - pinch.centerWorld.y * CELL * newZoom,
+        });
+        return;
+      }
+    }
     if (panning) {
       e.preventDefault();
       setPan({ x: e.clientX - panning.x, y: e.clientY - panning.y });
@@ -2381,6 +2444,10 @@ export function Editor() {
 
   function onCanvasPointerUp(e: React.PointerEvent<SVGSVGElement>) {
     releasePointer(e);
+    if (e.pointerType === "touch") {
+      activeTouchesRef.current.delete(e.pointerId);
+      if (activeTouchesRef.current.size < 2) pinchRef.current = null;
+    }
     setPanning(null);
     if (drag) {
       const activeDrag = drag;
