@@ -3407,7 +3407,22 @@ export function Editor() {
       : running
         ? "Simulation is running"
         : "Run (⌘R)";
-  const pinAnnotations = useMemo(() => buildNetlist(doc), [doc]);
+  // buildNetlist walks every page's components/wires/labels and is invoked
+  // again every time `doc` changes. During a drag we mutate `doc` on every
+  // pointermove — so without gating, every move triggers a full netlist
+  // rebuild. The annotations driven from this (refdes labels, hover node
+  // names) don't materially change while a component is being moved; reuse
+  // the previous result until the drag commits at pointerup.
+  const isDragging = drag !== null || wireDrag !== null || scopeDrag !== null;
+  const lastPinAnnotationsRef = useRef<ReturnType<typeof buildNetlist> | null>(null);
+  const pinAnnotations = useMemo(() => {
+    if (isDragging && lastPinAnnotationsRef.current) {
+      return lastPinAnnotationsRef.current;
+    }
+    const next = buildNetlist(doc);
+    lastPinAnnotationsRef.current = next;
+    return next;
+  }, [doc, isDragging]);
   const lastSelectedProbeNode = lastSelectedProbe
     ? pinAnnotations.nodes.posToNode.get(
         `${coordKey(lastSelectedProbe.x)},${coordKey(lastSelectedProbe.y)}`,
