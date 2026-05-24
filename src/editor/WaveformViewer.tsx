@@ -1089,7 +1089,7 @@ function XyPane({
           }}
           disabled={xTrace.name === yTrace.name}
           aria-label="Swap X and Y traces"
-          title="Swap X and Y traces"
+          title={xTrace.name === yTrace.name ? "X and Y are the same trace — pick different traces to swap" : "Swap X and Y traces"}
         >
           <svg viewBox="0 0 18 18" aria-hidden="true">
             <path d="M3 6h10" />

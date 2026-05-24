@@ -4465,7 +4465,16 @@ export function Editor() {
             <span className="tb-title-icon">
               <IconGlyph kind="page" />
             </span>
-            <span className="tb-title-text">{filePath ? trimPath(filePath) : "Untitled circuit"}</span>
+            <span className="tb-title-text">
+              {filePath
+                ? trimPath(filePath)
+                : (() => {
+                    const proj = workspace.projects.find((p) => p.id === workspace.active);
+                    const projName = proj?.name?.trim() || "Untitled";
+                    const isMain = doc.pages[0]?.id === page.id;
+                    return isMain ? projName : `${projName} · ${page.name}`;
+                  })()}
+            </span>
             <span className="tb-title-chevron">▾</span>
           </div>
 
