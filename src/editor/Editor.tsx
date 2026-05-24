@@ -4642,7 +4642,12 @@ export function Editor() {
               height={CELL * zoom}
               patternUnits="userSpaceOnUse"
             >
-              <circle cx={0} cy={0} r={0.8} fill="var(--grid-dot)" />
+              <path
+                d={`M ${CELL * zoom} 0 L 0 0 0 ${CELL * zoom}`}
+                fill="none"
+                stroke="var(--grid-dot)"
+                strokeWidth={1}
+              />
             </pattern>
             <pattern
               id="major-grid"
