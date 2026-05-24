@@ -1,0 +1,4 @@
+# libngspice is a process-singleton. Serialise tests to avoid concurrent
+# ngSpice_Init calls corrupting the library's global state.
+[env]
+RUST_TEST_THREADS = "1"

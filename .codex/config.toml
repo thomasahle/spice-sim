@@ -1,0 +1,3 @@
+[mcp_servers.spice-sim]
+args = ["/Users/ahle/repos/spice-sim/mcp-server/spice_mcp.py"]
+command = "python3"
