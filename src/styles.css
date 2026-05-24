@@ -210,7 +210,7 @@ button[disabled] {
    on the section header pushes the heading + list past the project list
    when there's free space; when the panel is full the list just follows
    normally and scrolls with the rest of the side-nav. */
-.side-nav-examples-head {
+.side-nav-section-head.side-nav-examples-head {
   margin-top: auto;
 }
 .side-nav-examples {
