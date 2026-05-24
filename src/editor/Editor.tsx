@@ -3976,7 +3976,11 @@ export function Editor() {
     !!transientScale &&
     transientScale.data.length > 1 &&
     isTransientPlot(simResult!.plot);
-  const liveActive = isTransient && liveFlow;
+  // Freeze live-flow when the last run flagged floating pins — the
+  // dashed motion implies "this circuit is alive" which is misleading
+  // when ngspice's result is built on top of broken connectivity.
+  const liveActive =
+    isTransient && liveFlow && runFloatingPins.length === 0;
   const nodeDisplayLabels = useMemo(() => {
     const labels = new Map<string, string>();
     for (const c of page.components) {
