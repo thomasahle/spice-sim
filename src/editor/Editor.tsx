@@ -4936,9 +4936,11 @@ export function Editor() {
               <div className="inspector-actions">
                 {selectedList.length > 0 && <button onClick={() => rotateSelected()}>Rotate</button>}
                 <button onClick={duplicateSelection}>Duplicate</button>
-                <button onClick={deleteSelected} className="danger">
-                  Delete
-                </button>
+                {/* Delete intentionally omitted — Delete/Backspace keyboard
+                   shortcuts and the right-click menu already cover it, and
+                   a destructive button this close to common edits invites
+                   accidents. Mirror will live here once the underlying
+                   `mirrored` flag lands on the component model (TODO). */}
               </div>
               {selectedObjectCount > 1 && (
                 <div className="multi-hint">
