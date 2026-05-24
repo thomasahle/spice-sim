@@ -173,6 +173,39 @@ button[disabled] {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
+/* Rich hover tooltip on the Tran/AC/DC/OP pills — reuses the `.tool-tip`
+   markup from the floating tool strip but anchors below the pill instead of
+   to its right. */
+.tb-pill { position: relative; }
+.tb-pill .tool-tip {
+  left: 50%;
+  top: calc(100% + 10px);
+  transform: translate(-50%, -4px);
+}
+.tb-pill .tool-tip::before {
+  left: 50%;
+  top: -5px;
+  transform: translate(-50%, 0) rotate(45deg);
+  border-left: 1px solid var(--hairline);
+  border-bottom: none;
+  border-top: 1px solid var(--hairline);
+  border-right: none;
+}
+.tb-pill:hover .tool-tip,
+.tb-pill:focus-visible .tool-tip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+/* `.toolbar` and `.canvas-area` both clip overflow to keep narrow toolbars
+   from spilling. Reveal them only while a pill is hovered/focused so the
+   tooltip can drop down. */
+.canvas-area:has(.tb-pill:hover),
+.canvas-area:has(.tb-pill:focus-visible),
+.toolbar:has(.tb-pill:hover),
+.toolbar:has(.tb-pill:focus-visible) {
+  overflow: visible;
+}
+
 .statusbar {
   display: flex;
   align-items: center;

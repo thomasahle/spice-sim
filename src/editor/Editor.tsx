@@ -4355,23 +4355,53 @@ export function Editor() {
           <div className="tb-group tb-analyses" role="group" aria-label="Analysis type">
             {(
               [
-                { kind: "tran", label: "Tran" },
-                { kind: "ac", label: "AC" },
-                { kind: "dc", label: "DC" },
-                { kind: "op", label: "OP" },
+                {
+                  kind: "tran",
+                  label: "Tran",
+                  name: "Transient",
+                  desc: "Solve voltages and currents over time. Use for step responses, ringing, oscillation — any time-domain behavior.",
+                },
+                {
+                  kind: "ac",
+                  label: "AC",
+                  name: "AC sweep",
+                  desc: "Small-signal frequency response. Plots gain and phase versus frequency for filters, amplifiers, and impedance.",
+                },
+                {
+                  kind: "dc",
+                  label: "DC",
+                  name: "DC sweep",
+                  desc: "Vary a source value and plot the steady-state response. Useful for IV curves and transfer characteristics.",
+                },
+                {
+                  kind: "op",
+                  label: "OP",
+                  name: "Operating point",
+                  desc: "Single steady-state DC solution. Shows node voltages and branch currents with no time variation.",
+                },
               ] as const
-            ).map((a) => (
-              <button
-                key={a.kind}
-                className={`tb-pill ${doc.analysis.kind === a.kind ? "active" : ""}`}
-                onClick={() => switchAnalysis(a.kind)}
-                title={`Switch to ${a.label} analysis`}
-                aria-label={`Switch to ${a.label} analysis`}
-                aria-pressed={doc.analysis.kind === a.kind}
-              >
-                {a.label}
-              </button>
-            ))}
+            ).map((a) => {
+              const tipId = `tb-pill-tip-${a.kind}`;
+              return (
+                <button
+                  key={a.kind}
+                  className={`tb-pill ${doc.analysis.kind === a.kind ? "active" : ""}`}
+                  onClick={() => switchAnalysis(a.kind)}
+                  title={`${a.name} analysis`}
+                  aria-label={`${a.name} analysis`}
+                  aria-pressed={doc.analysis.kind === a.kind}
+                  aria-describedby={tipId}
+                >
+                  {a.label}
+                  <span id={tipId} className="tool-tip" role="tooltip">
+                    <span className="tool-tip-head">
+                      <span className="tool-tip-name">{a.name}</span>
+                    </span>
+                    <span className="tool-tip-desc">{a.desc}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
 
           <div className="tb-title">
