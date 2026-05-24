@@ -2418,7 +2418,16 @@ button[disabled] {
     0 1px 2px rgba(0, 0, 0, 0.10),
     0 6px 18px color-mix(in srgb, var(--accent) 32%, transparent);
 }
-.tb-run:hover { filter: brightness(1.06); }
+.tb-run:hover {
+  /* The global `button:hover` rule sets background via shorthand and wipes
+     the gradient — re-apply it here so the pill stays accent-coloured. */
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 100%, white 8%) 0%,
+    var(--accent) 100%
+  );
+  filter: brightness(1.06);
+}
 .tb-run.running { filter: saturate(0.7); }
 .tb-run[disabled] {
   background: color-mix(in srgb, var(--ink-muted) 18%, var(--bg-window));
