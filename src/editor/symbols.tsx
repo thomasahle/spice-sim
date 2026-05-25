@@ -2,6 +2,9 @@
 // <g> applies a `scale(cellPx)` so the editor controls grid pitch.
 
 import type { ComponentKind } from "./model";
+import { compactInlineMathText, estimateInlineMathTextWidth } from "./mathText.ts";
+import { inlineMathTspans, SvgInlineMathText } from "./mathTextSvg";
+import { subxPinLabelMaxWidth } from "./subxLayout.ts";
 
 interface Props {
   kind: ComponentKind;
@@ -13,11 +16,13 @@ interface Props {
   subxPins?: { x: number; y: number }[];
   /** SUBX-only: subcircuit name to render in the body label. */
   subxLabel?: string;
+  /** SUBX-only: ordered public pin labels resolved from the referenced schematic. */
+  subxPinLabels?: string[];
 }
 
 const SW = 0.12; // line width in cell units
 
-export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = false, mirrored = false, subxPins, subxLabel }: Props) {
+export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = false, mirrored = false, subxPins, subxLabel, subxPinLabels }: Props) {
   const stroke = selected ? "var(--accent)" : "var(--ink)";
   const lead = palette ? 1.45 : 2;
   const sourceRadius = palette ? 1.08 : 0.9;
@@ -131,6 +136,8 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
         </g>
       );
     case "GND": {
+      // Pin sits at y=0 on the canvas; in the palette we shift up so the
+      // visible mass is centered in the slot rather than hanging below it.
       const dy = palette ? -0.55 : 0;
       return (
         <g {...commonWithTransform}>
@@ -192,6 +199,9 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
         </g>
       );
     case "LABEL": {
+      // Anchor lives at (0,0) on the canvas, but for the palette icon we
+      // shift the bounding box to the origin so the centered viewBox
+      // doesn't clip the pennant body.
       const dx = palette ? -1.2 : 0;
       return (
         <g {...commonWithTransform}>
@@ -221,6 +231,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
             { x: 3, y: 1 },
           ]}
           label={subxLabel}
+          pinLabels={subxPinLabels}
           selected={selected}
         />
       );
@@ -276,17 +287,20 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
 export function SubxGlyph({
   pins,
   label,
+  pinLabels,
   selected,
   strokeWidth = SW,
 }: {
   pins: { x: number; y: number }[];
   label?: string;
+  pinLabels?: string[];
   selected?: boolean;
   strokeWidth?: number;
 }) {
   const stroke = selected ? "var(--accent)" : "var(--ink)";
   const pinExtent = Math.max(3, ...pins.map((p) => Math.abs(p.x)));
-  const bodyHalfW = Math.max(1.7, pinExtent - 0.6);
+  const labelHalfW = label ? subxLabelWidth(label) / 2 + 0.42 : 0;
+  const bodyHalfW = Math.max(1.7, pinExtent - 0.6, labelHalfW);
   const minY = Math.min(...pins.map((p) => p.y));
   const maxY = Math.max(...pins.map((p) => p.y));
   const bodyY = minY - 0.6;
@@ -317,17 +331,45 @@ export function SubxGlyph({
           strokeWidth={strokeWidth}
         />
       ))}
+      {pinLabels?.map((pinLabel, i) => {
+        const p = pins[i];
+        if (!p || !pinLabel.trim()) return null;
+        const isLeft = p.x < 0;
+        const fontSize = 0.32;
+        const maxLabelWidth = subxPinLabelMaxWidth(bodyHalfW, fontSize);
+        const atoms = compactInlineMathText(pinLabel.trim(), maxLabelWidth);
+        return (
+          <text
+            key={`label-${i}`}
+            x={isLeft ? -bodyHalfW + 0.28 : bodyHalfW - 0.28}
+            y={p.y + 0.11}
+            fontSize={fontSize}
+            textAnchor={isLeft ? "start" : "end"}
+            className="subx-pin-label"
+            style={{
+              fill: selected ? "var(--accent)" : "var(--ink-muted)",
+              fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+              fontWeight: 600,
+              pointerEvents: "none",
+            }}
+          >
+            {inlineMathTspans(atoms, fontSize)}
+          </text>
+        );
+      })}
       {label && (
-        <text
+        <SvgInlineMathText
           x={0}
           y={0.2}
           fontSize={0.6}
-          fill={stroke}
+          text={label}
           textAnchor="middle"
-          style={{ fontFamily: "ui-monospace, SF Mono, Menlo, monospace", fontWeight: 600 }}
-        >
-          {label}
-        </text>
+          style={{
+            fill: stroke,
+            fontFamily: "ui-monospace, SF Mono, Menlo, monospace",
+            fontWeight: 600,
+          }}
+        />
       )}
     </g>
   );
@@ -373,6 +415,10 @@ function paletteExtent(kind: ComponentKind): { w: number; h: number } {
   }
 }
 
+export function subxLabelWidth(label: string): number {
+  return estimateInlineMathTextWidth(label) * 0.6;
+}
+
 // Target visual look of the icon inside its 36-px slot:
 //  - the bigger of (w, h) fills `PALETTE_FILL` × 36 CSS pixels
 //  - all icons render with the same stroke weight in CSS pixels
@@ -391,6 +437,9 @@ function paletteScale(kind: ComponentKind): { viewBox: string; strokeWidth: numb
 
 export function PaletteGlyph({ kind }: { kind: ComponentKind }) {
   if (kind === "SUBX") {
+    // SUBX is intrinsically much wider than tall — render with the same
+    // visual stroke weight as the rest by computing strokeWidth the same
+    // way (boxSize derived from the wider dimension).
     const boxSize = 6.4 / PALETTE_FILL;
     const stroke = (PALETTE_STROKE_PX * boxSize) / PALETTE_RENDER;
     return (

@@ -6,6 +6,8 @@ import {
   getPinLayout,
   pinWorldPos,
   MAX_SUBCIRCUIT_PINS,
+  subcircuitBodyWidth,
+  subcircuitPinLabelsForInstance,
   subcircuitPortCount,
   subcircuitPortLabels,
   subcircuitPageForInstance,
@@ -191,6 +193,62 @@ test("SUBX pin layout supports large reusable blocks without truncating at 16 pi
 
   assert.equal(getPinLayout(subx).length, 20);
   assert.equal(getPinLayout({ ...subx, params: { npins: "100" } }).length, MAX_SUBCIRCUIT_PINS);
+});
+
+test("SUBX default width scales with pin count without overriding explicit sizes", () => {
+  const compact: CircuitComponent = {
+    id: "xsmall",
+    kind: "SUBX",
+    x: 0,
+    y: 0,
+    rotation: 0,
+    value: "cell",
+    params: { npins: "4" },
+  };
+  const dense: CircuitComponent = {
+    ...compact,
+    id: "xdense",
+    params: { npins: "20" },
+  };
+  const resized: CircuitComponent = {
+    ...dense,
+    params: { npins: "20", w: "5" },
+  };
+
+  assert.equal(subcircuitBodyWidth(compact), 4.8);
+  assert.ok(subcircuitBodyWidth(dense) > subcircuitBodyWidth(compact));
+  assert.equal(subcircuitBodyWidth(resized), 5);
+});
+
+test("subcircuitPinLabelsForInstance resolves displayed instance pin labels", () => {
+  const doc = docWithPages();
+  const withPorts: CircuitDoc = {
+    ...doc,
+    pages: doc.pages.map((page) =>
+      page.id === "relu"
+        ? {
+            ...page,
+            components: [
+              { id: "x", kind: "LABEL", x: -2, y: -1, rotation: 0, value: "x", params: { port: "1", portOrder: "1" } },
+              { id: "dpos", kind: "LABEL", x: -2, y: 0, rotation: 0, value: "d+", params: { port: "1", portOrder: "2" } },
+              { id: "h", kind: "LABEL", x: 2, y: -1, rotation: 0, value: "h", params: { port: "1", portOrder: "3" } },
+              { id: "internal", kind: "LABEL", x: 0, y: 0, rotation: 0, value: "u_internal" },
+            ],
+          }
+        : page,
+    ),
+  };
+  const instance: CircuitComponent = {
+    id: "xrelu",
+    kind: "SUBX",
+    x: 0,
+    y: 0,
+    rotation: 0,
+    value: "relu_cell",
+    params: { npins: "2" },
+  };
+
+  assert.deepEqual(subcircuitPinLabelsForInstance(withPorts, instance), ["x", "d+"]);
 });
 
 test("SUBX pin layout follows custom symbol dimensions", () => {

@@ -1,12 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { analysisDirective, composeBatchNetlist, parseAsciiRaw } from "../src/sim/wasmBackend.ts";
+import {
+  WASM_SPINIT_COMMANDS,
+  analysisDirective,
+  composeBatchNetlist,
+  parseAsciiRaw,
+} from "../src/sim/wasmBackend.ts";
+import { traceDisplayName } from "../src/editor/traceNames.ts";
+import { traceValueUnit } from "../src/editor/traceUnits.ts";
 
 test("WASM batch netlist appends analysis and ASCII raw option", () => {
   const netlist = ["* generated", "V1 in 0 DC 1", "R1 in 0 1k", ".end"].join("\n");
   const batch = composeBatchNetlist(netlist, { kind: "tran", tstep: 0.00001, tstop: 0.001 });
   assert.match(batch, /\.option filetype=ascii\n\.tran 0\.00001 0\.001\n\.end\n$/);
   assert.equal((batch.match(/^\.end$/gm) ?? []).length, 1);
+});
+
+test("WASM startup commands request branch-current vectors for Live Flow", () => {
+  assert.match(WASM_SPINIT_COMMANDS, /^set filetype=ascii$/m);
+  assert.match(WASM_SPINIT_COMMANDS, /^set savecurrents$/m);
 });
 
 test("WASM batch netlist preserves subcircuit .ends lines", () => {
@@ -345,6 +357,101 @@ test("ASCII RAW parser accepts native ngspice noise RAW with trailing integrated
       raw: "v(inoise_total) = 5.728927555801138e-7",
     },
   ]);
+});
+
+test("ASCII RAW parser rejects unsupported extra RAW plots instead of silently dropping them", () => {
+  const raw = [
+    "Title: stepped tran fixture",
+    "Plotname: Transient Analysis",
+    "Flags: real",
+    "No. Variables: 2",
+    "No. Points: 1",
+    "Variables:",
+    "\t0\ttime\ttime",
+    "\t1\tv(out)\tvoltage",
+    "Values:",
+    "0\t\t0.000000000000000e+00",
+    "\t1.000000000000000e+00",
+    "Title: stepped tran fixture",
+    "Plotname: Transient Analysis",
+    "Flags: real",
+    "No. Variables: 2",
+    "No. Points: 1",
+    "Variables:",
+    "\t0\ttime\ttime",
+    "\t1\tv(out)\tvoltage",
+    "Values:",
+    "0\t\t0.000000000000000e+00",
+    "\t2.000000000000000e+00",
+  ].join("\n");
+
+  assert.throws(
+    () => parseAsciiRaw(raw),
+    /Unsupported ngspice RAW output: additional plot "Transient Analysis"/,
+  );
+});
+
+test("ASCII RAW parser preserves native savecurrents device vectors for Live Flow", () => {
+  const raw = [
+    "Title: * native savecurrents raw fixture",
+    "Date: Mon May 25 13:12:44  2026",
+    "Command: ngspice-46, Build",
+    "Plotname: Transient Analysis",
+    "Flags: real",
+    "No. Variables: 7",
+    "No. Points: 2",
+    "Variables:",
+    "\t0\ttime\ttime",
+    "\t1\tv(out)\tvoltage",
+    "\t2\tv1#branch\tcurrent",
+    "\t3\t@m1[id]\tcurrent",
+    "\t4\t@m1[gm]\tconductance",
+    "\t5\t@m.xrelu.mpos[id]\tcurrent",
+    "\t6\t@q1[ic]\tcurrent",
+    "Values:",
+    "0\t\t0.000000000000000e+00",
+    "\t0.000000000000000e+00",
+    "\t-1.000000000000000e-03",
+    "\t9.500000000000000e-04",
+    "\t2.100000000000000e-03",
+    "\t1.200000000000000e-06",
+    "\t3.300000000000000e-04",
+    "1\t\t1.000000000000000e-06",
+    "\t9.500000000000000e-01",
+    "\t-8.000000000000000e-04",
+    "\t7.750000000000000e-04",
+    "\t1.900000000000000e-03",
+    "\t9.000000000000000e-07",
+    "\t2.900000000000000e-04",
+  ].join("\n");
+
+  const result = parseAsciiRaw(raw);
+  assert.equal(result.plot, "Transient Analysis");
+  assert.deepEqual(
+    result.vectors.map((vector) => [vector.name, vector.is_scale, vector.phase]),
+    [
+      ["time", true, undefined],
+      ["v(out)", false, undefined],
+      ["v1#branch", false, undefined],
+      ["@m1[id]", false, undefined],
+      ["@m1[gm]", false, undefined],
+      ["@m.xrelu.mpos[id]", false, undefined],
+      ["@q1[ic]", false, undefined],
+    ],
+  );
+  assert.deepEqual(result.vectors[2].data, [-1e-3, -8e-4]);
+  assert.deepEqual(result.vectors[3].data, [9.5e-4, 7.75e-4]);
+  assert.deepEqual(result.vectors[5].data, [1.2e-6, 9e-7]);
+  assert.equal(traceDisplayName(result.vectors[2].name), "I(V1)");
+  assert.equal(traceDisplayName(result.vectors[3].name), "I(M1 drain)");
+  assert.equal(traceDisplayName(result.vectors[4].name), "gm(M1)");
+  assert.equal(traceDisplayName(result.vectors[5].name), "I(M.XRELU.MPOS drain)");
+  assert.equal(traceDisplayName(result.vectors[6].name), "I(Q1 collector)");
+  assert.equal(traceValueUnit(result.vectors[2].name), "A");
+  assert.equal(traceValueUnit(result.vectors[3].name), "A");
+  assert.equal(traceValueUnit(result.vectors[4].name), "S");
+  assert.equal(traceValueUnit(result.vectors[5].name), "A");
+  assert.equal(traceValueUnit(result.vectors[6].name), "A");
 });
 
 test("ASCII RAW parser rejects extra trailing values instead of hiding malformed output", () => {

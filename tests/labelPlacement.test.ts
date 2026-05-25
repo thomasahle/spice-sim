@@ -173,7 +173,7 @@ test("component value labels avoid routed net-label chip positions", () => {
   const schematic = page([resistor, label, blocker]);
   const routedLabel = netLabelLayout(label, schematic, "out");
 
-  assert.deepEqual(routedLabel.bounds, { x1: -0.78, y1: 1.01, x2: 1.08, y2: 1.8900000000000001 });
+  assert.deepEqual(routedLabel.bounds, { x1: -0.7919999999999998, y1: 1.01, x2: 1.08, y2: 1.8900000000000001 });
 
   const offset = valueLabelOffset(resistor, schematic, "1kΩ");
   const bounds = valueLabelBounds(resistor, offset, "1kΩ");

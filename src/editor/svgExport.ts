@@ -24,6 +24,8 @@ const STRIP_SELECTORS = [
   ".floating-pin-marker",
   ".probe-scope",
   ".wire-hit-target",
+  ".wire-live-overlay",
+  ".live-flow-readout-object",
   ".wire-vertex",
   ".note-resize-handle",
   ".placement-draft",
@@ -65,7 +67,7 @@ export function sanitizeExportLayer(layer: Element): void {
   layer.querySelectorAll(STRIP_SELECTORS).forEach((el) => el.remove());
   normalizeExportNoteCards(layer);
   layer.querySelectorAll(".wire-live").forEach((el) => {
-    el.classList.remove("wire-live");
+    el.classList.remove("wire-live", "reverse");
     (el as SVGElement).style.removeProperty("opacity");
     (el as SVGElement).style.removeProperty("--flow-duration");
   });

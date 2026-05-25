@@ -3,6 +3,8 @@
 // *text* renders via foreignObject + HTML so it stays crisp at any zoom.
 
 import { useId } from "react";
+import { InlineMathText } from "./mathTextHtml";
+import { estimateInlineMathTextWidth } from "./mathText";
 import { scopeReadoutValue, shouldUseLogScopeX } from "./miniScopeMath";
 
 interface Props {
@@ -300,7 +302,7 @@ function ScopeLabel({
   color: string;
   text: string;
 }) {
-  const w = Math.min(width - 0.5, Math.max(1.6, text.length * 0.42 + 0.5));
+  const w = Math.min(width - 0.5, Math.max(1.6, estimateInlineMathTextWidth(text) * 0.42 + 0.5));
   return (
     <g transform={`translate(${width / 2 - w / 2} ${-0.85})`}>
       <rect x={0} y={0} width={w} height={0.7} rx={0.18} fill={color} />
@@ -317,7 +319,7 @@ function ScopeLabel({
           fontWeight: 600,
         }}
       >
-        {text}
+        <InlineMathText text={text} />
       </HtmlOverlay>
     </g>
   );

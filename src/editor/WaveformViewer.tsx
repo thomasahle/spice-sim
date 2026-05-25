@@ -28,9 +28,12 @@ import { axisUnitFromLabel } from "./waveformAxis";
 import { traceAxisLabel, traceValueUnit } from "./traceUnits";
 import { computeSweepMetrics } from "./dcSweepMetrics";
 import { orderedPlotPathsForHighlight, tracePathRenderStyles } from "./waveformTraceStyles";
-import { isInternalTraceName, waveformTraceListEmptyMessage } from "./waveformEmptyState";
+import { waveformTraceBuckets, waveformTraceListEmptyMessage } from "./waveformEmptyState";
 import { computeMetrics, type TraceMetrics } from "./waveformMetrics";
 import { computeFFT, nextPow2, resampleUniform } from "./waveformFft";
+import { compactInlineMathText } from "./mathText";
+import { InlineMathText } from "./mathTextHtml";
+import { inlineMathTspans, SvgInlineMathText } from "./mathTextSvg";
 export { computeMetrics, type TraceMetrics } from "./waveformMetrics";
 
 type YMode = "linear" | "db";
@@ -130,10 +133,11 @@ export function WaveformViewer({
   }, []);
 
   const rawScale = vectors.find((v) => v.is_scale);
-  const rawTraces = vectors.filter((v) => !v.is_scale);
-  const userTraces = rawTraces.filter((t) => !isInternalTraceName(t.name));
-  const hiddenInternalCount = rawTraces.length - userTraces.length;
-  const baseTraces = !showInternal && userTraces.length > 0 ? userTraces : rawTraces;
+  const {
+    rawTraces,
+    visibleTraces: baseTraces,
+    hiddenInternalCount,
+  } = waveformTraceBuckets(vectors, showInternal);
   // Stable color per trace name — based on position in the full (unfiltered)
   // trace list so swatch and plotted line always agree.
   const colorMap = useMemo(() => buildColorMap(rawTraces), [rawTraces]);
@@ -533,7 +537,7 @@ export function WaveformViewer({
                         style={{ background: color }}
                       />
                       <span className="wf-trow-name" title={t.name}>
-                        {traceDisplayName(t.name, traceAliases, runLabels)}
+                        <InlineMathText text={traceDisplayName(t.name, traceAliases, runLabels)} />
                       </span>
                       <span className="wf-trow-val">
                         {formatTraceValue(last, t.name)}
@@ -743,8 +747,10 @@ export function WaveformViewer({
                   </span>
                 </div>
                 {sampleEach(cursorAx).map((r) => (
-                  <div key={r.name} className="wf-cursor-row">
-                    <span className="lbl" style={{ color: r.color }}>{r.name}</span>
+                  <div key={r.rawName} className="wf-cursor-row">
+                    <span className="lbl" style={{ color: r.color }}>
+                      <InlineMathText text={r.name} />
+                    </span>
                     <span className="val">{formatTraceValue(r.v, r.rawName)}</span>
                   </div>
                 ))}
@@ -760,8 +766,10 @@ export function WaveformViewer({
                   </span>
                 </div>
                 {sampleEach(cursorBx).map((r) => (
-                  <div key={r.name} className="wf-cursor-row">
-                    <span className="lbl" style={{ color: r.color }}>{r.name}</span>
+                  <div key={r.rawName} className="wf-cursor-row">
+                    <span className="lbl" style={{ color: r.color }}>
+                      <InlineMathText text={r.name} />
+                    </span>
                     <span className="val">{formatTraceValue(r.v, r.rawName)}</span>
                   </div>
                 ))}
@@ -783,8 +791,10 @@ export function WaveformViewer({
                 {sampleEach(cursorAx).map((rA, i) => {
                   const rB = sampleEach(cursorBx)[i];
                   return (
-                    <div key={rA.name} className="wf-cursor-row">
-                      <span className="lbl" style={{ color: rA.color }}>Δ{rA.name}</span>
+                    <div key={rA.rawName} className="wf-cursor-row">
+                      <span className="lbl" style={{ color: rA.color }}>
+                        Δ<InlineMathText text={rA.name} />
+                      </span>
                       <span className="val">{formatTraceValue(rB.v - rA.v, rA.rawName)}</span>
                     </div>
                   );
@@ -854,7 +864,9 @@ function DcSweepTable({
               <tr key={t.name}>
                 <td>
                   <span className="wf-swatch" style={{ background: color }} />
-                  <span title={t.name}>{traceDisplayName(t.name, traceAliases, runLabels)}</span>
+                  <span title={t.name}>
+                    <InlineMathText text={traceDisplayName(t.name, traceAliases, runLabels)} />
+                  </span>
                 </td>
                 <td>{formatTraceValue(m.start, t.name)}</td>
                 <td>{formatTraceValue(m.end, t.name)}</td>
@@ -914,7 +926,9 @@ function AcAnalysisTable({
               <tr key={t.name}>
                 <td>
                   <span className="wf-swatch" style={{ background: color }} />
-                  <span title={t.name}>{traceDisplayName(t.name, traceAliases, runLabels)}</span>
+                  <span title={t.name}>
+                    <InlineMathText text={traceDisplayName(t.name, traceAliases, runLabels)} />
+                  </span>
                 </td>
                 <td>{formatDb(summary.startMagDb)}</td>
                 <td>{formatDeg(summary.startPhase)}</td>
@@ -1017,7 +1031,9 @@ function InfoTab({
                 className="wf-swatch"
                 style={{ background: colorMap.get(t.name) ?? TRACE_COLORS[0] }}
               />
-              <code title={t.name}>{traceDisplayName(t.name, traceAliases, runLabels)}</code>
+              <code title={t.name}>
+                <InlineMathText text={traceDisplayName(t.name, traceAliases, runLabels)} />
+              </code>
               {showTransientMetrics && m && Number.isFinite(m.vpp) && (
                 <span className="wf-info-stat">
                   pp {formatTraceValue(m.vpp, t.name)} · rms {formatTraceValue(m.vrms, t.name)} · mean{" "}
@@ -1273,19 +1289,23 @@ function XyPlot({
           #{activeSample.index + 1}
         </text>
       </g>
-      <text x={w / 2} y={h - 2} textAnchor="middle" fontSize={11} fill="var(--ink-muted)">
-        {xAxisLabel}
-      </text>
-      <text
-        x={14}
-        y={h / 2}
+      <SvgInlineMathText
+        x={w / 2}
+        y={h - 2}
+        text={xAxisLabel}
         textAnchor="middle"
         fontSize={11}
-        fill="var(--ink-muted)"
+        style={{ fill: "var(--ink-muted)" }}
+      />
+      <SvgInlineMathText
+        x={14}
+        y={h / 2}
+        text={yAxisLabel}
+        fontSize={11}
+        textAnchor="middle"
+        style={{ fill: "var(--ink-muted)" }}
         transform={`rotate(-90 14 ${h / 2})`}
-      >
-        {yAxisLabel}
-      </text>
+      />
     </svg>
   );
 }
@@ -1536,7 +1556,9 @@ function BodePlot({
           {hoverRows.map((row, i) => (
             <text key={row.rawName} x={8} y={31 + i * 16}>
               <tspan fill={colorMap.get(row.rawName) ?? TRACE_COLORS[0]}>● </tspan>
-              <tspan className="wf-bode-readout-key">{compactTraceLabel(row.name)} </tspan>
+              <tspan className="wf-bode-readout-key">
+                {inlineMathTspans(compactInlineMathText(row.name, 18), 10)}{" "}
+              </tspan>
               <tspan>{formatBodeReadoutValue(row.value, unit)}</tspan>
             </text>
           ))}
@@ -1863,10 +1885,6 @@ function formatBodeReadoutValue(v: number, unit: string): string {
   if (unit === "°") return `${cleaned.toFixed(1)}°`;
   if (unit === "dB") return `${cleaned.toFixed(2)} dB`;
   return `${formatSI(cleaned)}${unit}`;
-}
-
-function compactTraceLabel(label: string): string {
-  return label.length <= 18 ? label : `${label.slice(0, 15)}...`;
 }
 
 function formatAxisValue(v: number, unit: string): string {

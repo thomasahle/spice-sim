@@ -3425,13 +3425,130 @@ button[disabled] {
   text-rendering: geometricPrecision;
 }
 
-/* Falstad-style live current flow: animated dashed offset along wires. */
+.inline-math-sub,
+.inline-math-sup {
+  font-size: 0.68em;
+  line-height: 0;
+}
+
+.inline-math-sub {
+  vertical-align: -0.32em;
+}
+
+.inline-math-sup {
+  vertical-align: 0.46em;
+}
+
+/* Falstad-style live current flow: a moving overlay that leaves the schematic wire solid. */
 @keyframes wire-flow {
-  to { stroke-dashoffset: -1; }
+  from { stroke-dashoffset: var(--flow-offset, 0); }
+  to { stroke-dashoffset: calc(var(--flow-offset, 0) - var(--flow-cycle, 0.72)); }
+}
+@keyframes wire-flow-reverse {
+  from { stroke-dashoffset: var(--flow-offset, 0); }
+  to { stroke-dashoffset: calc(var(--flow-offset, 0) + var(--flow-cycle, 0.72)); }
 }
 .wire-live {
-  stroke-dasharray: 0.35 0.35;
+  stroke-dasharray: var(--flow-dash, 0.18) var(--flow-gap, 0.54);
   animation: wire-flow var(--flow-duration, 0.6s) linear infinite;
+}
+.wire-live.reverse {
+  animation-name: wire-flow-reverse;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wire-live,
+  .wire-live.reverse {
+    animation: none;
+    stroke-dashoffset: var(--flow-offset, 0);
+  }
+}
+.wire-live-casing {
+  stroke: color-mix(in srgb, var(--bg-canvas) 88%, white 12%);
+  opacity: 0.74;
+  filter: drop-shadow(0 0 0.1px color-mix(in srgb, var(--bg-canvas) 85%, transparent));
+}
+.wire-live-overlay {
+  filter: drop-shadow(0 0 0.08px color-mix(in srgb, currentColor 55%, transparent));
+}
+.wire-live-overlay.measured {
+  color: var(--accent);
+  stroke: var(--accent);
+}
+.wire-live-overlay.estimated {
+  color: #f59e0b;
+  stroke: #f59e0b;
+}
+.live-flow-readout-object {
+  overflow: visible;
+}
+.live-flow-readout {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4.5px;
+  width: 100%;
+  height: 100%;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--hairline-strong));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-elevated) 84%, transparent);
+  color: var(--accent);
+  box-shadow: 0 5px 16px rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(12px) saturate(170%);
+  -webkit-backdrop-filter: blur(12px) saturate(170%);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.live-flow-readout-dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 16%, transparent);
+}
+.live-flow-readout-label,
+.live-flow-readout-detail,
+.live-flow-status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.live-flow-readout-label {
+  flex: 1 1 auto;
+}
+.live-flow-readout-detail {
+  flex: 0 1 auto;
+}
+.live-flow-readout small {
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+.live-flow-readout strong {
+  color: currentColor;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+.live-flow-readout.estimated {
+  border-color: color-mix(in srgb, #f59e0b 45%, var(--hairline-strong));
+  color: #b45309;
+}
+.live-flow-readout.missing {
+  border-color: color-mix(in srgb, var(--ink-muted) 28%, var(--hairline));
+  background: color-mix(in srgb, var(--bg-elevated) 74%, transparent);
+  color: var(--ink-muted);
+}
+.live-flow-readout.inactive {
+  border-color: color-mix(in srgb, var(--ink-muted) 30%, var(--hairline-strong));
+  color: var(--ink-muted);
+  opacity: 0.82;
 }
 
 /* ---------- Play bar ----------------------------------------------- */
@@ -3510,7 +3627,130 @@ button[disabled] {
   white-space: nowrap;
 }
 .live-flow-toggle input {
-  accent-color: var(--accent);
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.live-flow-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 28px;
+  height: 16px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink-muted) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, white 40%, transparent);
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+.live-flow-switch-knob {
+  position: absolute;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg-elevated) 92%, white 8%);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.2);
+  transition: transform 120ms ease, background 120ms ease;
+}
+.live-flow-toggle input:checked + .live-flow-switch {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--hairline-strong));
+  background:
+    radial-gradient(circle at 70% 50%, color-mix(in srgb, white 42%, transparent) 0 2px, transparent 3px),
+    color-mix(in srgb, var(--accent) 76%, white 8%);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, white 28%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.live-flow-toggle input:checked + .live-flow-switch .live-flow-switch-knob {
+  transform: translateX(12px);
+  background: white;
+}
+.live-flow-toggle input:focus-visible + .live-flow-switch {
+  outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  outline-offset: 2px;
+}
+.live-flow-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 20px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline-strong);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.live-flow-status-label {
+  flex: 1 1 auto;
+}
+.live-flow-source-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 14%, transparent);
+}
+.live-flow-status.warning .live-flow-source-dot {
+  border-radius: 2px;
+}
+.live-flow-status.ready {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--hairline-strong));
+}
+.live-flow-status.ready.estimated {
+  color: #b45309;
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  border-color: color-mix(in srgb, #f59e0b 44%, var(--hairline-strong));
+}
+.live-flow-status.ready.mixed {
+  color: color-mix(in srgb, var(--accent) 68%, #b45309 32%);
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) 12%, transparent),
+      color-mix(in srgb, #f59e0b 14%, transparent)
+    );
+  border-color: color-mix(in srgb, var(--accent) 24%, #f59e0b 38%);
+}
+.live-flow-status.mixed .live-flow-source-dot {
+  background: linear-gradient(90deg, var(--accent) 0 50%, #f59e0b 50% 100%);
+}
+.live-flow-status.muted {
+  color: var(--ink-muted);
+  background: color-mix(in srgb, var(--ink-muted) 6%, transparent);
+}
+.live-flow-status.muted.measured {
+  color: color-mix(in srgb, var(--accent) 72%, var(--ink-muted));
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--hairline-strong));
+}
+.live-flow-status.muted.estimated {
+  color: color-mix(in srgb, #b45309 78%, var(--ink-muted));
+  background: color-mix(in srgb, #f59e0b 8%, transparent);
+  border-color: color-mix(in srgb, #f59e0b 30%, var(--hairline-strong));
+}
+.live-flow-status.muted.mixed {
+  color: color-mix(in srgb, var(--accent) 56%, #b45309 44%);
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) 7%, transparent),
+      color-mix(in srgb, #f59e0b 8%, transparent)
+    );
+  border-color: color-mix(in srgb, var(--accent) 18%, #f59e0b 28%);
+}
+.live-flow-status.warning {
+  color: #b45309;
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  border-color: color-mix(in srgb, #f59e0b 45%, var(--hairline-strong));
 }
 
 .log-pane {
@@ -4654,6 +4894,9 @@ button[disabled] {
     flex-wrap: nowrap;
   }
   .wf-header::-webkit-scrollbar { display: none; }
+  /* PlayBar: drop secondary labels so the time slider isn't squeezed and
+     "Live flow" / "Playback" don't render as a clipped "Li" / "Pla". The
+     play button, checkbox, time readout and slider remain functional. */
   .playbar { gap: 8px; padding: 6px 8px; }
   .playbar-label,
   .live-flow-toggle-label { display: none; }

@@ -23,6 +23,13 @@ test("trace aliases can preserve schematic label casing", () => {
 test("trace display names keep readable fallbacks without aliases", () => {
   assert.equal(traceDisplayName("v(n2)"), "V(n2)");
   assert.equal(traceDisplayName("v1#branch"), "I(V1)");
+  assert.equal(traceDisplayName("xamp.vsense#branch"), "I(XAMP.VSENSE)");
+  assert.equal(traceDisplayName("@m1[id]"), "I(M1 drain)");
+  assert.equal(traceDisplayName("@q1[ic]"), "I(Q1 collector)");
+  assert.equal(traceDisplayName("@m.xrelu.mpos[id]"), "I(M.XRELU.MPOS drain)");
+  assert.equal(traceDisplayName("@m1[gm]"), "gm(M1)");
+  assert.equal(traceDisplayName("@m1[vds]"), "Vds(M1)");
+  assert.equal(traceDisplayName("@m.xrelu.mpos[cgs]"), "Cgs(M.XRELU.MPOS)");
   assert.equal(traceDisplayName("out"), "V(out)");
   assert.equal(traceDisplayName("filter_out"), "V(filter_out)");
 });

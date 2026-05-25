@@ -60,7 +60,7 @@
 - [x] Support X/Y plots as a first-class plotting mode.
 - [x] Keep auto-run understandable: clear paused/running states and what edits trigger reruns.
 - [x] Add native-style ASCII RAW fixtures for WASM operating point, DC sweep, AC, and noise parsing so scale detection does not hide plottable vectors, reject native complex frequency scales, or drop integrated-noise totals appended after the spectral-density plot.
-- [ ] Continue validating browser/WASM ngspice results against native ngspice fixtures.
+- [ ] Continue validating browser/WASM ngspice results against native ngspice fixtures. Current coverage includes OP, transient, DC, AC, noise with integrated totals, savecurrents branch vectors for Live Flow, strict numeric parsing, and explicit rejection of unsupported extra RAW plots so stepped/multi-plot runs are not silently truncated.
 
 ## Netlist Import and Layout
 
@@ -105,10 +105,20 @@
 ## Real Circuit Authoring QA
 
 - [ ] Keep building nontrivial circuits by hand in the UI, running simulations, and inspecting waveforms.
-- [ ] Maintain a list of real workflow frictions found while building circuits, not only code-level defects.
+- [x] Maintain a list of real workflow frictions found while building circuits, not only code-level defects. See "Workflow Friction Log" below.
 - [ ] Test increasingly complex circuits: filters, rectifiers, op-amps, MOS logic, transistor biasing, subcircuits, and analog learning cells.
 - [ ] Verify every new circuit by hitting Run and inspecting the waveform/scope.
-- [ ] Add regression fixtures for the ReLU learning cell variants. Current coverage includes a pure MOS/R/C subcircuit export fixture and a root-schematic `SUBX` harness fixture that verifies all 12 public pins preserve their intended order, with no behavioral `B` sources or `max`/`tanh` expressions entering the generated netlist.
+- [x] Add regression fixtures for the ReLU learning cell variants. Current coverage includes a pure MOS/R/C subcircuit export fixture and a root-schematic `SUBX` harness fixture that verifies all 12 public pins preserve their intended order, with no behavioral `B` sources or `max`/`tanh` expressions entering the generated netlist. The pure-device fixture also verifies the improved PMOS pull-up branch, NMOS pull-down branch, and NMOS source-follower activation topology.
+
+## Workflow Friction Log
+
+These are product-level frictions found while drawing, importing, simulating, and inspecting real circuits in the app. Keep this list current as QA uncovers new user-facing gaps.
+
+- Dense imported MOS/R/C schematics can still look electrically correct but visually hard to parse when many labels stand in for long nets. Auto-layout now handles ReLU-like stacks better, but additional visual grouping and optional rail buses would help large analog blocks.
+- Live Flow needs clear provenance. Branch-current vectors from ngspice are authoritative, while resistor/capacitor fallback currents are derived from node voltages; the UI now distinguishes measured, estimated, and mixed coverage in status/tooltips, renders estimated streams amber while measured ngspice streams stay blue, and keeps hover/readout chips off component bodies, value labels, net labels, probes, mini-scopes, and each other when a clearer side or nearby segment is available.
+- Live Flow no-flow states should avoid fake precision. Numerical noise near zero now appears as `No flow now`, below-threshold sampled wire hovers show the actual current plus `below range`, and sub-femtoamp wire hovers use `<1.00 fA`.
+- Subcircuit blocks with many pins are functional and resizable, but complex reusable blocks need better default symbols and pin-side grouping so users do not have to resize and relabel by hand.
+- Scope and waveform views need to stay coupled to the user's circuit-building loop: every new drawn circuit should be run, checked in the scope, and recorded with any missing trace, aliasing, cursor, or Live Flow issue.
 
 ## Export, Sharing, and Persistence
 

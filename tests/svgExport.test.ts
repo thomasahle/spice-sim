@@ -12,7 +12,8 @@ test("schematic SVG export removes editor chrome and normalizes selected wires",
     new FakeElement("rect", "placement-draft-footprint"),
     new FakeElement("circle", "wire-vertex"),
     new FakeElement("polyline", "wire-hit-target"),
-    new FakeElement("polyline", "wire-live", [], { stroke: "var(--accent)", "stroke-width": "0.2" }),
+    new FakeElement("polyline", "wire-live wire-live-overlay", [], { stroke: "var(--accent)", "stroke-width": "0.18" }),
+    new FakeElement("polyline", "wire-live reverse", [], { stroke: "var(--accent)", "stroke-width": "0.2" }),
   ]);
 
   sanitizeExportLayer(layer as unknown as Element);
@@ -24,10 +25,12 @@ test("schematic SVG export removes editor chrome and normalizes selected wires",
   assert.equal(layer.querySelectorAll(".placement-draft-footprint").length, 0);
   assert.equal(layer.querySelectorAll(".wire-vertex").length, 0);
   assert.equal(layer.querySelectorAll(".wire-hit-target").length, 0);
+  assert.equal(layer.querySelectorAll(".wire-live-overlay").length, 0);
   const wire = layer.querySelectorAll(".wire-group polyline:not(.wire-hit-target)")[0] as FakeElement;
   assert.equal(wire.attributes.stroke, "var(--ink)");
   assert.equal(wire.attributes["stroke-width"], "0.12");
   assert.equal(wire.classList.has("wire-live"), false);
+  assert.equal(wire.classList.has("reverse"), false);
 });
 
 test("schematic SVG export preserves note colors without selected hover styling", () => {

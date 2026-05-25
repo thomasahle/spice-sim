@@ -2,6 +2,7 @@ import type { CircuitComponent, Probe, SchematicPage, Wire } from "./model";
 import { componentBoundsFor as geometryComponentBoundsFor } from "./geometry.ts";
 import { canvasValueLabel } from "./labelFormatting.ts";
 import { netLabelLayouts, valueLabelBounds, valueLabelOffsets } from "./labelPlacement.ts";
+import { estimateInlineMathTextWidth } from "./mathText.ts";
 
 export interface ScopeLayoutOptions {
   defaultDx: number;
@@ -174,7 +175,7 @@ function scopeProbeOverlapScore(bounds: Bounds, probes: Probe[], activeProbeId: 
     const weight = probe.id === activeProbeId ? 1.4 : 1;
     score += overlapArea(bounds, probeMarkerBounds(probe)) * weight;
     const label = probe.label?.trim();
-    if (label) score += overlapArea(bounds, probeLabelBounds(probe, label)) * weight;
+    if (label) score += overlapArea(bounds, probeScopeLabelBounds(probe, label)) * weight;
   }
   return score;
 }
@@ -188,8 +189,8 @@ function probeMarkerBounds(probe: Probe): Bounds {
   };
 }
 
-function probeLabelBounds(probe: Probe, label: string): Bounds {
-  const width = Math.max(2.6, label.length * 0.38 + 0.7);
+export function probeScopeLabelBounds(probe: Probe, label: string): Bounds {
+  const width = Math.max(2.6, estimateInlineMathTextWidth(label) * 0.42 + 0.7);
   return {
     x1: probe.x + 0.45,
     y1: probe.y - 0.92,

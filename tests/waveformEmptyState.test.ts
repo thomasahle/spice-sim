@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   hasPlottableWaveform,
   waveformPaneEmptyState,
+  waveformTraceBuckets,
   waveformTraceListEmptyMessage,
 } from "../src/editor/waveformEmptyState.ts";
 
@@ -48,4 +49,23 @@ test("trace list empty state distinguishes hidden internal traces", () => {
     ], false),
     "No visible traces. Use Show all to restore the plot.",
   );
+});
+
+test("trace buckets hide internal traces until the Internal toggle is enabled", () => {
+  const vectors = [
+    { name: "time", is_scale: true },
+    { name: "v(out)", is_scale: false },
+    { name: "@m1[id]", is_scale: false },
+    { name: "x1.u", is_scale: false },
+  ];
+
+  assert.deepEqual(
+    waveformTraceBuckets(vectors, false).visibleTraces.map((trace) => trace.name),
+    ["v(out)"],
+  );
+  assert.deepEqual(
+    waveformTraceBuckets(vectors, true).visibleTraces.map((trace) => trace.name),
+    ["v(out)", "@m1[id]", "x1.u"],
+  );
+  assert.equal(waveformTraceBuckets(vectors, false).hiddenInternalCount, 2);
 });

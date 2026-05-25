@@ -1,5 +1,7 @@
 // Core circuit model. Coordinates are in grid cells; the renderer scales to px.
 
+import { estimateInlineMathTextWidth } from "./mathText.ts";
+
 export type ComponentKind =
   | "R"
   | "V"
@@ -159,9 +161,25 @@ export function subcircuitPortCount(page: SchematicPage): number {
   return Math.min(MAX_SUBCIRCUIT_PINS, subcircuitPortLabels(page).length);
 }
 
+export function subcircuitPinLabelsForInstance(
+  doc: CircuitDoc,
+  component: CircuitComponent,
+): string[] {
+  const page = subcircuitPageForInstance(doc, component);
+  if (!page) return [];
+  return subcircuitPortLabels(page).slice(0, subcircuitPinCountForInstance(component));
+}
+
 export function subcircuitBodyWidth(component: CircuitComponent): number {
   const raw = Number(component.params?.w);
-  return clampFinite(raw, 4.8, 3.4, 16);
+  const n = subcircuitPinCountForInstance(component);
+  const pinsPerSide = Math.ceil(n / 2);
+  const pinCountWidth = Math.min(8, 4.8 + Math.max(0, pinsPerSide - 3) * 0.3);
+  const labelWidth = component.value.trim()
+    ? estimateInlineMathTextWidth(component.value.trim()) * 0.6 + 0.84
+    : 0;
+  const minWidth = Math.min(16, Math.max(3.4, labelWidth));
+  return clampFinite(raw, Math.max(pinCountWidth, minWidth), minWidth, 16);
 }
 
 export function subcircuitBodyHeight(component: CircuitComponent): number {

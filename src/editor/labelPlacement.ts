@@ -1,5 +1,6 @@
 import { componentVisualBoundsFor, wireIntersectsRect } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
+import { estimateInlineMathTextWidth } from "./mathText.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
 import type { CircuitComponent, Probe, SchematicPage, Wire } from "./model.ts";
 
@@ -324,7 +325,7 @@ function makeNetLabelLayout(
 }
 
 function netLabelWidth(text: string): number {
-  return Math.max(1.55, text.length * 0.38 + 0.72);
+  return Math.max(1.55, estimateInlineMathTextWidth(text) * 0.6 + 0.72);
 }
 
 function netLabelOverlapScore(
@@ -402,8 +403,8 @@ function labelBounds(c: CircuitComponent, offset: LabelOffset, text: string): Bo
   // too-small model is what causes dense labels to visually collide.
   const width =
     componentUsesCompactLabelModel(c)
-      ? Math.max(0.95, text.length * 0.26 + 0.42)
-      : Math.max(0.95, text.length * 0.28 + 0.44);
+      ? Math.max(0.95, estimateInlineMathTextWidth(text) * 0.41 + 0.42)
+      : Math.max(0.95, estimateInlineMathTextWidth(text) * 0.44 + 0.44);
   const height = 0.92;
   const baseline = c.y + offset.y;
   const y1 = baseline - height;
@@ -428,7 +429,7 @@ function probeMarkerBounds(probe: Probe): Bounds {
 }
 
 function probeLabelBounds(probe: Probe, label: string): Bounds {
-  const width = Math.max(2.6, label.length * 0.38 + 0.7);
+  const width = Math.max(2.6, estimateInlineMathTextWidth(label) * 0.6 + 0.7);
   return {
     x1: probe.x + 0.45,
     y1: probe.y - 0.92,

@@ -22,6 +22,11 @@ interface WorkerFailure {
 type WorkerReply = WorkerSuccess | WorkerFailure;
 
 const WASM_TIMEOUT_MS = 30_000;
+export const WASM_SPINIT_COMMANDS = [
+  "set noaskquit",
+  "set filetype=ascii",
+  "set savecurrents",
+].join("\n") + "\n";
 let wasmProbeCache: boolean | null = null;
 
 export function analysisDirective(analysis: Analysis): string {
@@ -219,10 +224,17 @@ export function parseAsciiRaw(raw: string): SimResult {
     }
   }
   const trailingLines = valueLines.slice(cursor);
-  if (trailingLines.length > 0 && !startsNextRawPlot(trailingLines)) {
-    throw new Error("Invalid ngspice RAW output: too many values");
+  let measurements: SimResult["measurements"] = [];
+  if (trailingLines.length > 0) {
+    if (!startsNextRawPlot(trailingLines)) {
+      throw new Error("Invalid ngspice RAW output: too many values");
+    }
+    const trailingPlot = parseHeaderValue(trailingLines, "Plotname");
+    if (trailingPlot.toLowerCase() !== "integrated noise") {
+      throw new Error(`Unsupported ngspice RAW output: additional plot "${trailingPlot}"`);
+    }
+    measurements = measurementsFromTrailingRawPlot(trailingLines);
   }
-  const measurements = measurementsFromTrailingRawPlot(trailingLines);
 
   return {
     plot,
@@ -322,7 +334,7 @@ self.onmessage = function(event) {
     },
     onRuntimeInitialized: function() {
       try {
-        self.FS.writeFile("/spinit", "set noaskquit\\nset filetype=ascii\\n");
+        self.FS.writeFile("/spinit", ${JSON.stringify(WASM_SPINIT_COMMANDS)});
         self.FS.writeFile("/input.cir", netlist);
         self.callMain(["-n", "-b", "-r", "/out.raw", "/input.cir"]);
       } catch (error) {

@@ -32,6 +32,7 @@ import {
   rotateNext,
   subcircuitBodyHeight,
   subcircuitBodyWidth,
+  subcircuitPinLabelsForInstance,
   subcircuitPortCount,
   subcircuitPortLabels,
   subcircuitPageForInstance,
@@ -40,6 +41,23 @@ import {
 } from "./model";
 import { ComponentGlyph, PaletteGlyph } from "./symbols";
 import { canvasValueLabel } from "./labelFormatting";
+import {
+  estimatePassiveLiveFlowCurrent,
+  liveFlowCurrentTraceCandidates,
+  liveFlowPhaseForId,
+  liveFlowReadoutArrow,
+  liveFlowReadoutBounds,
+  liveFlowReadoutPosition,
+  liveFlowReadoutSourceClass,
+  liveFlowReadoutText,
+  liveFlowReadoutWidth,
+  liveFlowStatus,
+  liveFlowVisualFromSample,
+  liveFlowWireHasVisibleLength,
+  wireFlowAttachmentForPoint,
+  wireFlowSampleFromCandidates,
+} from "./liveFlow";
+import type { LiveFlowSampleSource } from "./liveFlow";
 import {
   netLabelLayout,
   netLabelLayouts,
@@ -69,6 +87,7 @@ import { buildNetlist, coordKey, type FloatingPinDiagnostic, type ModelDiagnosti
 import { normalizeDoc } from "./docNormalize";
 import { connectedNetLabelIds, netLabelNearMisses, snapNetLabelDrag } from "./netLabelConnections";
 import { SvgInlineMathText } from "./mathTextSvg";
+import { estimateInlineMathTextWidth } from "./mathText.ts";
 import {
   NOTE_COLOR_PRESETS,
   noteColor,
@@ -128,7 +147,7 @@ import {
   formatMeasurementResultValue,
   measurementDirectivesFromText,
 } from "./measurementUnits";
-import { layoutProbeScopes } from "./scopeLayout";
+import { layoutProbeScopes, probeScopeLabelBounds } from "./scopeLayout";
 import { DEMOS } from "./demos";
 import { exportCsv, exportNetlist, exportSvg, onMenuEvent, openDoc, openNetlist, saveDoc } from "../sim/files";
 import { applyWheelPan } from "./panMath";
@@ -592,6 +611,9 @@ export function Editor() {
   const [runModelDiagnostics, setRunModelDiagnostics] = useState<ModelDiagnostic[]>([]);
   const [engineName, setEngineName] = useState<string>("");
   const [running, setRunning] = useState(false);
+  // Throttled mirror of `running`: only flips true after the sim has been in
+  // flight for ~120 ms so fast (<1 frame) auto-runs don't flash the spinner
+  // and the "Running…" text.
   const [runningVisible, setRunningVisible] = useState(false);
   useEffect(() => {
     if (!running) {
@@ -4441,7 +4463,7 @@ export function Editor() {
     }
     out.set("0", 0);
     return out;
-  }, [simulationStale, simResult, playTime, pinAnnotations, readings]);
+  }, [simResult, playTime, pinAnnotations, readings]);
 
   const transientScale = simResult?.vectors.find((v) => v.is_scale);
   const isTransient =
@@ -4555,61 +4577,191 @@ export function Editor() {
     [doc.directives],
   );
 
-  // Per-wire normalized current magnitude at playTime (driven by ngspice
-  // savecurrents output). Used to modulate flow-animation speed and opacity.
-  const wireCurrents = useMemo(() => {
-    const out = new Map<string, number>();
+  // Per-wire signed current samples at playTime (driven by ngspice
+  // savecurrents output). We keep both real current and normalized current:
+  // real current makes hover/status text useful, normalized current drives the
+  // visual speed, opacity, and direction.
+  const wireFlowSamples = useMemo(() => {
+    const out = new Map<string, { signedCurrent: number; normalizedCurrent: number; source: LiveFlowSampleSource }>();
     if (!simResult || !isTransient) return out;
     const scale = simResult.vectors.find((v) => v.is_scale);
     if (!scale) return out;
     const idx = findTimeIndex(scale.data, playTime);
+    const nearbyDerivativeIdx =
+      scale.data.length <= 1
+        ? -1
+        : idx > 0
+          ? idx - 1
+          : 1;
+    const nodeVoltageAt = (node: string | undefined, sampleIdx: number): number | undefined => {
+      if (!node) return undefined;
+      if (node === "0") return 0;
+      const trace = findNodeTrace(simResult.vectors, node, simResult.plot);
+      return trace && sampleIdx >= 0 && sampleIdx < trace.data.length
+        ? trace.data[sampleIdx]
+        : undefined;
+    };
+    const pinNode = (component: CircuitComponent, pinIdx: number): string | undefined => {
+      const p = pinWorldPos(component, pinIdx);
+      return pinAnnotations.nodes.posToNode.get(`${coordKey(p.x)},${coordKey(p.y)}`);
+    };
 
-    const componentCurrents = new Map<string, number>();
+    const componentCurrents = new Map<string, { current: number; source: LiveFlowSampleSource }>();
     for (const c of page.components) {
       const rd = pinAnnotations.refdes.get(c.id);
-      if (!rd) continue;
-      const rdL = rd.toLowerCase();
-      const candidates = [
-        `@${rdL}[i]`,
-        `${rdL}#branch`,
-        `@${rdL}[id]`,
-        `i(${rdL})`,
-      ];
-      for (const name of candidates) {
-        const v = findNamedTrace(simResult.vectors, [name], simResult.plot);
-        if (v && idx < v.data.length) {
-          componentCurrents.set(c.id, Math.abs(v.data[idx]));
-          break;
+      if (rd) {
+        const candidates = liveFlowCurrentTraceCandidates(c.kind, rd);
+        for (const name of candidates) {
+          const v = findNamedTrace(simResult.vectors, [name], simResult.plot);
+          if (v && idx < v.data.length) {
+            componentCurrents.set(c.id, { current: v.data[idx], source: "ngspice" });
+            break;
+          }
+        }
+      }
+      if (!componentCurrents.has(c.id) && (c.kind === "R" || c.kind === "C")) {
+        const n0 = pinNode(c, 0);
+        const n1 = pinNode(c, 1);
+        const pin0Voltage = nodeVoltageAt(n0, idx);
+        const pin1Voltage = nodeVoltageAt(n1, idx);
+        if (pin0Voltage === undefined || pin1Voltage === undefined) continue;
+        const previousPin0Voltage =
+          nearbyDerivativeIdx >= 0 ? nodeVoltageAt(n0, nearbyDerivativeIdx) : undefined;
+        const previousPin1Voltage =
+          nearbyDerivativeIdx >= 0 ? nodeVoltageAt(n1, nearbyDerivativeIdx) : undefined;
+        const deltaTime =
+          nearbyDerivativeIdx >= 0
+            ? Math.abs(scale.data[idx] - scale.data[nearbyDerivativeIdx])
+            : undefined;
+        const passiveCurrent = estimatePassiveLiveFlowCurrent({
+          kind: c.kind,
+          value: c.value,
+          pin0Voltage,
+          pin1Voltage,
+          previousPin0Voltage,
+          previousPin1Voltage,
+          deltaTime,
+        });
+        if (passiveCurrent !== null) {
+          componentCurrents.set(c.id, { current: passiveCurrent, source: "estimated" });
         }
       }
     }
 
     let maxI = 1e-15;
-    const raw = new Map<string, number>();
+    const raw = new Map<string, { current: number; source: LiveFlowSampleSource }>();
     for (const w of page.wires) {
-      if (w.points.length === 0) continue;
-      const [fx, fy] = w.points[0];
-      let bestId: string | null = null;
-      let bestD = 0.6;
+      if (!liveFlowWireHasVisibleLength(w.points)) continue;
+      const candidates = [];
       for (const c of page.components) {
-        for (let i = 0; i < getPinLayout(c).length; i++) {
+        const componentCurrent = componentCurrents.get(c.id);
+        if (!componentCurrent) continue;
+        const pins = getPinLayout(c);
+        for (let i = 0; i < pins.length; i++) {
           const p = pinWorldPos(c, i);
-          const d = Math.hypot(p.x - fx, p.y - fy);
-          if (d < bestD) {
-            bestD = d;
-            bestId = c.id;
+          const attachment = wireFlowAttachmentForPoint(w.points, p);
+          if (attachment) {
+            candidates.push({
+              componentCurrent: componentCurrent.current,
+              source: componentCurrent.source,
+              attachedPinIndex: i,
+              pinCount: pins.length,
+              attachedAtStart: attachment.attachedAtStart,
+              distance: attachment.distance,
+            });
           }
         }
       }
-      if (bestId) {
-        const cur = componentCurrents.get(bestId) ?? 0;
-        raw.set(w.id, cur);
-        if (cur > maxI) maxI = cur;
-      }
+      const sample = wireFlowSampleFromCandidates(candidates);
+      if (!sample) continue;
+      raw.set(w.id, { current: sample.signedCurrent, source: sample.source });
+      if (Math.abs(sample.signedCurrent) > maxI) maxI = Math.abs(sample.signedCurrent);
     }
-    for (const [id, cur] of raw) out.set(id, cur / maxI);
+    for (const [id, sample] of raw) {
+      out.set(id, {
+        signedCurrent: sample.current,
+        normalizedCurrent: sample.current / maxI,
+        source: sample.source,
+      });
+    }
     return out;
   }, [simResult, playTime, page.components, page.wires, pinAnnotations, isTransient]);
+  const liveFlowUiStatus = useMemo(() => {
+    let activeWireCount = 0;
+    let estimatedWireCount = 0;
+    let measuredWireCount = 0;
+    let sampledEstimatedWireCount = 0;
+    let sampledMeasuredWireCount = 0;
+    let strongestCurrent = 0;
+    const visibleWireCount = page.wires.filter((wire) => liveFlowWireHasVisibleLength(wire.points)).length;
+    for (const sample of wireFlowSamples.values()) {
+      if (sample.source === "estimated") sampledEstimatedWireCount += 1;
+      else sampledMeasuredWireCount += 1;
+      const visual = liveFlowVisualFromSample(sample);
+      if (visual.active) {
+        activeWireCount += 1;
+        if (sample.source === "estimated") estimatedWireCount += 1;
+        else measuredWireCount += 1;
+      }
+      if (Math.abs(sample.signedCurrent) > Math.abs(strongestCurrent)) {
+        strongestCurrent = sample.signedCurrent;
+      }
+    }
+    return liveFlowStatus({
+      enabled: liveFlow,
+      hasResult: Boolean(simResult),
+      analysisKind: doc.analysis.kind,
+      isTransient,
+      simulationStale,
+      floatingPinCount: runFloatingPins.length,
+      visibleWireCount,
+      activeWireCount,
+      sampledWireCount: wireFlowSamples.size,
+      sampledMeasuredWireCount,
+      sampledEstimatedWireCount,
+      measuredWireCount,
+      estimatedWireCount,
+      strongestCurrent,
+    });
+  }, [doc.analysis.kind, isTransient, liveFlow, page.wires, runFloatingPins.length, simResult, simulationStale, wireFlowSamples]);
+  const liveFlowReadoutObstacles = useMemo(() => {
+    const obstacles = page.components.map((component) => componentVisualBoundsFor(component, 0.18));
+    const valueOffsets = valueLabelOffsets(page, (component) =>
+      canvasValueLabel(component.kind, component.value),
+    );
+    const occupiedValueLabels = [];
+    for (const component of page.components) {
+      const text = canvasValueLabel(component.kind, component.value);
+      const offset = valueOffsets.get(component.id);
+      if (!text || !offset) continue;
+      const bounds = valueLabelBounds(component, offset, text);
+      occupiedValueLabels.push(bounds);
+      obstacles.push(bounds);
+    }
+    for (const layout of netLabelLayouts(page, occupiedValueLabels).values()) {
+      obstacles.push(layout.bounds);
+    }
+    for (const probe of page.probes) {
+      obstacles.push({
+        x1: probe.x - 0.58,
+        y1: probe.y - 0.58,
+        x2: probe.x + 0.58,
+        y2: probe.y + 0.58,
+      });
+      const label = probe.label?.trim();
+      if (label) obstacles.push(probeScopeLabelBounds(probe, label));
+    }
+    for (const { probe, visible, placement } of probeScopes) {
+      if (!visible) continue;
+      obstacles.push({
+        x1: probe.x + placement.dx,
+        y1: probe.y + placement.dy,
+        x2: probe.x + placement.dx + SCOPE_WIDTH,
+        y2: probe.y + placement.dy + SCOPE_HEIGHT,
+      });
+    }
+    return obstacles;
+  }, [page, probeScopes]);
 
   const floatingPinMarkers = useMemo(() => {
     if (runFloatingPins.length === 0) return [];
@@ -6268,50 +6420,126 @@ export function Editor() {
                 <line x1={0} y1={-10000} x2={0} y2={10000} className="canvas-axis" />
               </>
             )}
-            {page.wires.map((w) => {
-              const sel = selectedIds.has(w.id);
-              const hovered = hoverId === w.id;
-              const cur = wireCurrents.get(w.id) ?? 0;
-              const flowStyle: React.CSSProperties | undefined = liveActive
-                ? ({
-                    opacity: 0.3 + 0.7 * cur,
-                    "--flow-duration": `${Math.max(0.12, 0.9 - 0.78 * cur)}s`,
-                  } as React.CSSProperties)
-                : undefined;
-              return (
-                <g key={w.id} className={`wire-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}>
-                  <polyline
-                    points={w.points.map((p) => p.join(",")).join(" ")}
-                    fill="none"
-                    stroke="var(--ink)"
-                    opacity={0.001}
-                    strokeWidth={0.72}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    pointerEvents="all"
-                    className="wire-hit-target"
-                    data-wire-id={w.id}
-                  />
-                  <polyline
-                    points={w.points.map((p) => p.join(",")).join(" ")}
-                    fill="none"
-                    stroke={sel || hovered ? "var(--accent)" : liveActive ? "var(--accent)" : "var(--ink)"}
-                    strokeWidth={
-                      sel
-                        ? selectedSchematicStrokeWidth
-                        : hovered
-                          ? hoveredSchematicStrokeWidth
-                          : schematicStrokeWidth
-                    }
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className={liveActive ? "wire-live" : undefined}
-                    data-wire-id={w.id}
-                    style={flowStyle}
-                  />
-                </g>
-              );
-            })}
+            {(() => {
+              const placedFlowReadouts: Array<ReturnType<typeof liveFlowReadoutBounds>> = [];
+              return page.wires.map((w) => {
+                const sel = selectedIds.has(w.id);
+                const hovered = hoverId === w.id;
+                const flowSample = wireFlowSamples.get(w.id);
+                const flow = liveActive ? liveFlowVisualFromSample(flowSample) : null;
+                const wireFlowActive = Boolean(flow?.active);
+                const flowStyle: React.CSSProperties | undefined = wireFlowActive && flow
+                  ? ({
+                      opacity: flow.opacity,
+                      "--flow-duration": `${flow.durationSeconds}s`,
+                      "--flow-cycle": `${flow.dash + flow.gap}`,
+                      "--flow-dash": `${flow.dash}`,
+                      "--flow-gap": `${flow.gap}`,
+                      "--flow-offset": `${liveFlowPhaseForId(w.id)}`,
+                    } as React.CSSProperties)
+                  : undefined;
+                const flowReadoutText = liveFlowReadoutText(flowSample, wireFlowActive);
+                const wireTitle = liveActive ? flowReadoutText.title : undefined;
+                const showFlowReadout = Boolean(liveActive && (sel || hovered));
+                const flowReadoutWidth = liveFlowReadoutWidth(flowReadoutText);
+                const flowReadout = showFlowReadout
+                  ? liveFlowReadoutPosition(w.points, 0.38, {
+                      width: flowReadoutWidth,
+                      height: 0.64,
+                      obstacles: [...liveFlowReadoutObstacles, ...placedFlowReadouts],
+                    })
+                  : null;
+                if (flowReadout) {
+                  placedFlowReadouts.push(liveFlowReadoutBounds(
+                    flowReadout.x,
+                    flowReadout.y,
+                    flowReadoutWidth,
+                    0.64,
+                  ));
+                }
+                const flowReadoutArrow =
+                  flowReadout && flow && flowReadoutText.showArrow
+                    ? liveFlowReadoutArrow(flowReadout, flow.direction)
+                    : "";
+                return (
+                  <g key={w.id} className={`wire-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}>
+                    {wireTitle && <title>{wireTitle}</title>}
+                    <polyline
+                      points={w.points.map((p) => p.join(",")).join(" ")}
+                      fill="none"
+                      stroke="var(--ink)"
+                      opacity={0.001}
+                      strokeWidth={0.72}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      pointerEvents="all"
+                      className="wire-hit-target"
+                      data-wire-id={w.id}
+                    />
+                    <polyline
+                      points={w.points.map((p) => p.join(",")).join(" ")}
+                      fill="none"
+                      stroke={sel || hovered ? "var(--accent)" : "var(--ink)"}
+                      strokeWidth={
+                        sel
+                          ? selectedSchematicStrokeWidth
+                          : hovered
+                            ? hoveredSchematicStrokeWidth
+                            : schematicStrokeWidth
+                      }
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      data-wire-id={w.id}
+                    />
+                    {wireFlowActive && (
+                      <>
+                        <polyline
+                          points={w.points.map((p) => p.join(",")).join(" ")}
+                          fill="none"
+                          strokeWidth={schematicStrokeWidth * ((flow?.strokeMultiplier ?? 1.25) + 0.56)}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          pointerEvents="none"
+                          className="wire-live-casing"
+                          data-wire-id={w.id}
+                        />
+                        <polyline
+                          points={w.points.map((p) => p.join(",")).join(" ")}
+                          fill="none"
+                          strokeWidth={schematicStrokeWidth * (flow?.strokeMultiplier ?? 1.25)}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          pointerEvents="none"
+                          className={`wire-live wire-live-overlay ${flowSample?.source === "estimated" ? "estimated" : "measured"} ${flow?.direction === -1 ? "reverse" : ""}`}
+                          data-wire-id={w.id}
+                          style={flowStyle}
+                        />
+                      </>
+                    )}
+                    {flowReadout && (
+                      <foreignObject
+                        x={flowReadout.x - flowReadoutWidth / 2}
+                        y={flowReadout.y - 0.32}
+                        width={flowReadoutWidth}
+                        height={0.64}
+                        className="live-flow-readout-object"
+                        pointerEvents="none"
+                      >
+                        <div
+                          className={`live-flow-readout ${liveFlowReadoutSourceClass(flowSample)} ${wireFlowActive ? "active" : "inactive"}`}
+                          aria-label={flowReadoutText.title}
+                        >
+                          {flowSample && <span className="live-flow-readout-dot" aria-hidden="true" />}
+                          {flowReadoutText.showArrow && <strong aria-hidden="true">{flowReadoutArrow}</strong>}
+                          <span className="live-flow-readout-label">{flowReadoutText.label}</span>
+                          {flowReadoutText.detail && <small className="live-flow-readout-detail">{flowReadoutText.detail}</small>}
+                        </div>
+                      </foreignObject>
+                    )}
+                  </g>
+                );
+              });
+            })()}
 
             {wireJunctionDots.map((point) => (
               <circle
@@ -6460,6 +6688,9 @@ export function Editor() {
                         mirrored={draft.mirrored}
                         subxPins={draft.kind === "SUBX" ? getPinLayout(draft) : undefined}
                         subxLabel={draft.kind === "SUBX" ? draft.value : undefined}
+                        subxPinLabels={draft.kind === "SUBX" && selectedSubcircuitPage
+                          ? subcircuitPortLabels(selectedSubcircuitPage).slice(0, getPinLayout(draft).length)
+                          : undefined}
                       />
                       {getPinLayout(draft).map((p, i) => (
                         <circle
@@ -6782,6 +7013,7 @@ export function Editor() {
                       mirrored={c.mirrored}
                       subxPins={c.kind === "SUBX" ? getPinLayout(c) : undefined}
                       subxLabel={c.kind === "SUBX" ? (c.value || "X") : undefined}
+                      subxPinLabels={c.kind === "SUBX" ? subcircuitPinLabelsForInstance(doc, c) : undefined}
                     />
                     {getPinLayout(c).map((p, i) => (
                       <g key={i}>
@@ -6979,7 +7211,7 @@ export function Editor() {
               );
               const disconnected = !node;
               const label = p.label?.trim() ?? "";
-              const badgeW = Math.max(2.6, label.length * 0.38 + 0.7);
+              const badgeW = Math.max(2.6, estimateInlineMathTextWidth(label) * 0.42 + 0.7);
               const badgeX = p.x + 0.45;
               const badgeY = p.y - 0.92;
               const sel = selectedIds.has(p.id);
@@ -7025,15 +7257,16 @@ export function Editor() {
                         stroke={p.color}
                         strokeWidth={0.05}
                       />
-                      <text
+                      <SvgInlineMathText
                         x={badgeX + 0.28}
                         y={badgeY + 0.48}
                         fontSize={0.42}
-                        fill={p.color}
-                        fontWeight={600}
-                      >
-                        {label}
-                      </text>
+                        text={label}
+                        style={{
+                          fill: p.color,
+                          fontWeight: 600,
+                        }}
+                      />
                     </>
                   )}
                 </g>
@@ -7107,6 +7340,18 @@ export function Editor() {
           >
             Fit
           </button>
+          {!isTransient && liveFlowUiStatus.show && (
+            <span
+              className={`live-flow-status ${liveFlowUiStatus.tone} ${liveFlowUiStatus.source}`}
+              title={liveFlowUiStatus.title}
+              role="status"
+              aria-live="polite"
+              aria-label={`Live Flow: ${liveFlowUiStatus.label}. ${liveFlowUiStatus.title}`}
+            >
+              <span className="live-flow-source-dot" aria-hidden="true" />
+              <span className="live-flow-status-label">Live Flow: {liveFlowUiStatus.label}</span>
+            </span>
+          )}
         </div>
         </div>
 
@@ -7122,6 +7367,7 @@ export function Editor() {
             setSpeed={setPlaySpeed}
             liveFlow={liveFlow}
             setLiveFlow={setLiveFlow}
+            liveFlowStatus={liveFlowUiStatus}
           />
         )}
 
@@ -7947,9 +8193,9 @@ function collectPageBounds(p: SchematicPage, selected?: Set<string>): { xs: numb
     ys.push(probe.y);
     if (probeHasDisplayLabel(probe)) {
       const label = probe.label!.trim();
-      const width = Math.max(2.6, label.length * 0.38 + 0.7);
-      xs.push(probe.x + 0.45, probe.x + 0.45 + width);
-      ys.push(probe.y - 0.92, probe.y - 0.22);
+      const bounds = probeScopeLabelBounds(probe, label);
+      xs.push(bounds.x1, bounds.x2);
+      ys.push(bounds.y1, bounds.y2);
     }
   }
   return { xs, ys };

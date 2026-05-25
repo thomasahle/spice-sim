@@ -1,4 +1,5 @@
 import { getPinLayout, type CircuitComponent, type ComponentKind, type Rotation } from "./model.ts";
+import { estimateInlineMathTextWidth } from "./mathText.ts";
 
 export interface Rect {
   x1: number;
@@ -283,14 +284,18 @@ export function noteTextLines(value: string): string[] {
       wrapped.push("");
       continue;
     }
-    wrapped.push(...wrapNoteLine(line, 20));
+    if (lineHasMathEnvironment(line)) {
+      wrapped.push(line);
+      continue;
+    }
+    wrapped.push(...wrapNoteLine(line, NOTE_WRAP_RENDERED_WIDTH));
   }
   return wrapped.slice(0, 24);
 }
 
 export function noteWidth(lines: string[]): number {
-  const longest = Math.max(12, ...lines.map((line) => line.length));
-  return Math.min(10, Math.max(4.8, longest * 0.28 + 1.1));
+  const widest = Math.max(7.2, ...lines.map((line) => estimateInlineMathTextWidth(line)));
+  return Math.min(10, Math.max(4.8, widest * 0.44 + 1.1));
 }
 
 export function noteHeight(lines: string[]): number {
@@ -307,8 +312,10 @@ export function noteComponentHeight(c: CircuitComponent, lines = noteTextLines(c
   return Math.max(noteHeight(lines), Number.isFinite(raw) ? raw : 0);
 }
 
-function wrapNoteLine(line: string, maxChars: number): string[] {
-  if (line.length <= maxChars) return [line];
+const NOTE_WRAP_RENDERED_WIDTH = 12.8;
+
+function wrapNoteLine(line: string, maxRenderedWidth: number): string[] {
+  if (estimateInlineMathTextWidth(line) <= maxRenderedWidth) return [line];
   const words = line.split(/\s+/).filter(Boolean);
   const out: string[] = [];
   let current = "";
@@ -317,7 +324,7 @@ function wrapNoteLine(line: string, maxChars: number): string[] {
       current = word;
       continue;
     }
-    if (`${current} ${word}`.length <= maxChars) {
+    if (estimateInlineMathTextWidth(`${current} ${word}`) <= maxRenderedWidth) {
       current = `${current} ${word}`;
     } else {
       out.push(current);
@@ -325,16 +332,34 @@ function wrapNoteLine(line: string, maxChars: number): string[] {
     }
   }
   if (current) out.push(current);
-  return out.flatMap((part) => hardWrapNotePart(part, maxChars));
+  return out.flatMap((part) => hardWrapNotePart(part, maxRenderedWidth));
 }
 
-function hardWrapNotePart(part: string, maxChars: number): string[] {
-  if (part.length <= maxChars) return [part];
-  const out: string[] = [];
-  for (let i = 0; i < part.length; i += maxChars) {
-    out.push(part.slice(i, i + maxChars));
+function lineHasMathEnvironment(line: string): boolean {
+  return /\\begin\{[A-Za-z*]+\}/.test(line) && /\\end\{[A-Za-z*]+\}/.test(line);
+}
+
+function hardWrapNotePart(part: string, maxRenderedWidth: number): string[] {
+  if (estimateInlineMathTextWidth(part) <= maxRenderedWidth || looksLikeInlineMathToken(part)) {
+    return [part];
   }
+  const out: string[] = [];
+  let current = "";
+  for (const char of Array.from(part)) {
+    const candidate = `${current}${char}`;
+    if (current && estimateInlineMathTextWidth(candidate) > maxRenderedWidth) {
+      out.push(current);
+      current = char;
+      continue;
+    }
+    current = candidate;
+  }
+  if (current) out.push(current);
   return out;
+}
+
+function looksLikeInlineMathToken(part: string): boolean {
+  return /\\|[_^{}]/.test(part);
 }
 
 function rotateLocalPoint(point: { x: number; y: number }, rotation: Rotation): { x: number; y: number } {

@@ -10,6 +10,7 @@ interface SvgInlineMathTextProps {
   className?: string;
   textAnchor?: "start" | "middle" | "end";
   style?: CSSProperties;
+  transform?: string;
 }
 
 export function SvgInlineMathText({
@@ -20,6 +21,7 @@ export function SvgInlineMathText({
   className,
   textAnchor = "start",
   style,
+  transform,
 }: SvgInlineMathTextProps) {
   return (
     <text
@@ -29,6 +31,7 @@ export function SvgInlineMathText({
       textAnchor={textAnchor}
       className={className}
       style={style}
+      transform={transform}
     >
       {inlineMathTspans(parseInlineMathText(text), fontSize)}
     </text>

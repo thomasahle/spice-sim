@@ -5,6 +5,8 @@ import {
   boundsFromPoints,
   componentBoundsFor,
   componentVisualBoundsFor,
+  noteTextLines,
+  noteWidth,
   pointOnPolylineBody,
   wireIntersectsRect,
 } from "../src/editor/geometry.ts";
@@ -120,6 +122,28 @@ test("custom subcircuit bounds expand to the symbol dimensions", () => {
   assert.ok(visual.y2 > 23);
 });
 
+test("subcircuit bounds expand for rendered math labels", () => {
+  const plain: CircuitComponent = {
+    id: "xplain",
+    kind: "SUBX",
+    x: 0,
+    y: 0,
+    rotation: 0,
+    value: "relu_cell",
+    params: { npins: "2" },
+  };
+  const mathLabel: CircuitComponent = {
+    ...plain,
+    id: "xmath",
+    value: "very_long_block_{relu}^{train}",
+  };
+
+  const plainBounds = componentVisualBoundsFor(plain);
+  const mathBounds = componentVisualBoundsFor(mathLabel);
+
+  assert.ok(mathBounds.x2 - mathBounds.x1 > plainBounds.x2 - plainBounds.x1);
+});
+
 test("mirrored visual bounds follow asymmetric symbols", () => {
   const opamp: CircuitComponent = {
     id: "op",
@@ -137,4 +161,37 @@ test("mirrored visual bounds follow asymmetric symbols", () => {
     x2: 3,
     y2: 2.4,
   });
+});
+
+test("note text wrapping preserves pasted math environments", () => {
+  const lines = noteTextLines(
+    "h = \\begin{cases}u, & u > 0 \\\\ \\alpha u, & u \\le 0\\end{cases}\n" +
+      "\\begin{aligned}I_u &= I_{up} - I_{down} \\\\ h &\\approx \\max(0,u)\\end{aligned}",
+  );
+
+  assert.deepEqual(lines, [
+    "h = \\begin{cases}u, & u > 0 \\\\ \\alpha u, & u \\le 0\\end{cases}",
+    "\\begin{aligned}I_u &= I_{up} - I_{down} \\\\ h &\\approx \\max(0,u)\\end{aligned}",
+  ]);
+});
+
+test("note text wrapping uses rendered math width and keeps TeX tokens intact", () => {
+  assert.deepEqual(noteTextLines("\\mathcal{L}\\{h(t)\\} response"), [
+    "\\mathcal{L}\\{h(t)\\} response",
+  ]);
+
+  const plain = noteTextLines("Supercalifragilisticexpialidocious");
+  assert.ok(plain.length > 1);
+  assert.equal(plain.join(""), "Supercalifragilisticexpialidocious");
+
+  const mathToken = "V_{this_is_a_long_subscript_token}";
+  assert.deepEqual(noteTextLines(mathToken), [mathToken]);
+});
+
+test("note width uses rendered math notation rather than raw TeX length", () => {
+  const renderedMathWidth = noteWidth(["V_{TH} and \\Delta V_{GS} and I_{down}"]);
+  const rawTextWidth = noteWidth(["V_\\{TH\\} and \\\\Delta V_\\{GS\\} and I_\\{down\\}"]);
+
+  assert.ok(renderedMathWidth >= 4.8);
+  assert.ok(renderedMathWidth < rawTextWidth);
 });

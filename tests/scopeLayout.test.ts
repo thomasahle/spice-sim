@@ -4,7 +4,8 @@ import test from "node:test";
 import type { Probe, SchematicPage } from "../src/editor/model.ts";
 import { componentBoundsFor } from "../src/editor/geometry.ts";
 import { netLabelLayouts } from "../src/editor/labelPlacement.ts";
-import { layoutProbeScopes } from "../src/editor/scopeLayout.ts";
+import { estimateInlineMathTextWidth } from "../src/editor/mathText.ts";
+import { layoutProbeScopes, probeScopeLabelBounds } from "../src/editor/scopeLayout.ts";
 
 const options = { defaultDx: 0.9, defaultDy: -2.75, width: 4.6, height: 1.75 };
 
@@ -113,6 +114,18 @@ test("probe scopes avoid routed net label positions", () => {
 
   assert.ok(placement);
   assert.equal(scopeOverlapsRect(page.probes[0], placement, routedLabel.bounds), false);
+});
+
+test("probe label bounds use rendered inline math width", () => {
+  const p = { ...probe("math", 1, 2), label: "V_{TH}" };
+  const bounds = probeScopeLabelBounds(p, p.label);
+  const expectedWidth = Math.max(2.6, estimateInlineMathTextWidth(p.label) * 0.42 + 0.7);
+
+  assert.equal(Number((bounds.x2 - bounds.x1).toFixed(6)), Number(expectedWidth.toFixed(6)));
+  assert.notEqual(
+    Number((bounds.x2 - bounds.x1).toFixed(6)),
+    Number(Math.max(2.6, p.label.length * 0.38 + 0.7).toFixed(6)),
+  );
 });
 
 function pageWithProbes(probes: Probe[]): SchematicPage {

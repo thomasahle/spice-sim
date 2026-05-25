@@ -58,6 +58,27 @@ export function waveformTraceListEmptyMessage(
   return "No visible traces. Use Show all to restore the plot.";
 }
 
+export interface WaveformTraceBuckets<T> {
+  rawTraces: T[];
+  userTraces: T[];
+  visibleTraces: T[];
+  hiddenInternalCount: number;
+}
+
+export function waveformTraceBuckets<T extends Pick<SimVector, "name" | "is_scale">>(
+  vectors: T[],
+  showInternal: boolean,
+): WaveformTraceBuckets<T> {
+  const rawTraces = vectors.filter((v) => !v.is_scale);
+  const userTraces = rawTraces.filter((trace) => !isInternalTraceName(trace.name));
+  return {
+    rawTraces,
+    userTraces,
+    visibleTraces: showInternal ? rawTraces : userTraces,
+    hiddenInternalCount: rawTraces.length - userTraces.length,
+  };
+}
+
 export function isInternalTraceName(name: string): boolean {
   const n = name.toLowerCase();
   return n.startsWith("@") || n.includes(".") || /^x\d+\./.test(n) || /^e\.x\d+\./.test(n);

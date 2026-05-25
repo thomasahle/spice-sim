@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import type { LiveFlowStatus } from "./liveFlow";
 
 interface Props {
   tmin: number;
@@ -11,6 +12,7 @@ interface Props {
   setSpeed: (s: number) => void;
   liveFlow: boolean;
   setLiveFlow: (b: boolean) => void;
+  liveFlowStatus: LiveFlowStatus;
 }
 
 const SPEEDS = [0.1, 0.5, 1, 2, 5];
@@ -26,6 +28,7 @@ export function PlayBar({
   setSpeed,
   liveFlow,
   setLiveFlow,
+  liveFlowStatus,
 }: Props) {
   const lastWall = useRef<number>(0);
   const rafId = useRef<number | null>(null);
@@ -69,7 +72,7 @@ export function PlayBar({
       className="playbar"
       role="toolbar"
       aria-label="Transient playback"
-      title="Scrub or play the transient simulation time. Live flow animates wire current at the selected time."
+      title="Scrub or play the transient simulation time. Live Flow animates wire current at the selected time."
     >
       <span className="playbar-label">Playback</span>
       <button
@@ -120,16 +123,31 @@ export function PlayBar({
       </div>
       <label
         className="live-flow-toggle"
-        title="Animate current flow on wires at the selected transient time"
+        title={liveFlowStatus.title}
       >
         <input
           type="checkbox"
           checked={liveFlow}
           onChange={(e) => setLiveFlow(e.target.checked)}
-          aria-label="Show live current flow"
+          aria-label="Show Live Flow current animation"
         />
-        <span className="live-flow-toggle-label">Live flow</span>
+        <span className="live-flow-switch" aria-hidden="true">
+          <span className="live-flow-switch-knob" />
+        </span>
+        <span className="live-flow-toggle-label">Live Flow</span>
       </label>
+      {liveFlowStatus.show && (
+        <span
+          className={`live-flow-status ${liveFlowStatus.tone} ${liveFlowStatus.source}`}
+          title={liveFlowStatus.title}
+          role="status"
+          aria-live="polite"
+          aria-label={`Live Flow: ${liveFlowStatus.label}. ${liveFlowStatus.title}`}
+        >
+          <span className="live-flow-source-dot" aria-hidden="true" />
+          <span className="live-flow-status-label">{liveFlowStatus.label}</span>
+        </span>
+      )}
     </div>
   );
 }
