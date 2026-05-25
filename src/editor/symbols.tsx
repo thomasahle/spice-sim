@@ -329,10 +329,71 @@ export function SubxGlyph({
 }
 
 // Compact glyph for the palette (no rotation, small viewBox).
+// Bounding extent of each component's palette glyph in cell units, used to
+// pick a uniform viewBox and stroke width per icon so they all render at
+// roughly the same visual size and line weight in the floating tool strip.
+function paletteExtent(kind: ComponentKind): { w: number; h: number } {
+  switch (kind) {
+    case "R":
+      return { w: 3.6, h: 1.5 };
+    case "V":
+    case "I":
+    case "B":
+      return { w: 2.16, h: 3.7 };
+    case "C":
+      return { w: 2.04, h: 3.8 };
+    case "L":
+      return { w: 1.16, h: 3.8 };
+    case "D":
+      return { w: 1.5, h: 3.8 };
+    case "GND":
+      return { w: 1.8, h: 1.4 };
+    case "NPN":
+    case "PNP":
+      return { w: 3.05, h: 3.6 };
+    case "NMOS":
+    case "PMOS":
+      return { w: 2.25, h: 3.6 };
+    case "NMOS4":
+    case "PMOS4":
+      return { w: 2.85, h: 3.6 };
+    case "OPAMP":
+      return { w: 6.4, h: 4.8 };
+    case "LABEL":
+      return { w: 2.4, h: 0.9 };
+    case "NOTE":
+      return { w: 2.3, h: 1.8 };
+    default:
+      return { w: 3.0, h: 3.0 };
+  }
+}
+
+// Target visual look of the icon inside its 36-px slot:
+//  - the bigger of (w, h) fills `PALETTE_FILL` × 36 CSS pixels
+//  - all icons render with the same stroke weight in CSS pixels
+const PALETTE_RENDER = 36;
+const PALETTE_FILL = 0.72; // ~26 px of effective symbol area inside a 36 px box
+const PALETTE_STROKE_PX = 1.6;
+
+function paletteScale(kind: ComponentKind): { viewBox: string; strokeWidth: number } {
+  const { w, h } = paletteExtent(kind);
+  const naturalMax = Math.max(w, h);
+  const boxSize = naturalMax / PALETTE_FILL;
+  const half = boxSize / 2;
+  const strokeWidth = (PALETTE_STROKE_PX * boxSize) / PALETTE_RENDER;
+  return { viewBox: `${-half} ${-half} ${boxSize} ${boxSize}`, strokeWidth };
+}
+
 export function PaletteGlyph({ kind }: { kind: ComponentKind }) {
   if (kind === "SUBX") {
+    const boxSize = 6.4 / PALETTE_FILL;
+    const stroke = (PALETTE_STROKE_PX * boxSize) / PALETTE_RENDER;
     return (
-      <svg viewBox="-3.2 -1.75 6.4 3.5" width="42" height="28">
+      <svg
+        viewBox={`${-boxSize / 2} ${-boxSize / 4} ${boxSize} ${boxSize / 2}`}
+        width={PALETTE_RENDER + 8}
+        height={PALETTE_RENDER}
+      >
         <SubxGlyph
           pins={[
             { x: -3, y: -1 },
@@ -341,47 +402,15 @@ export function PaletteGlyph({ kind }: { kind: ComponentKind }) {
             { x: 3, y: 1 },
           ]}
           label="X"
-          strokeWidth={0.18}
+          strokeWidth={stroke}
         />
       </svg>
     );
   }
+  const { viewBox, strokeWidth } = paletteScale(kind);
   return (
-    <svg viewBox={paletteViewBox(kind)} width="36" height="36">
-      <ComponentGlyph kind={kind} strokeWidth={0.2} palette />
+    <svg viewBox={viewBox} width={PALETTE_RENDER} height={PALETTE_RENDER}>
+      <ComponentGlyph kind={kind} strokeWidth={strokeWidth} palette />
     </svg>
   );
-}
-
-function paletteViewBox(kind: ComponentKind): string {
-  switch (kind) {
-    case "R":
-      return "-1.95 -1.25 3.9 2.5";
-    case "V":
-    case "I":
-    case "B":
-      return "-1.7 -1.85 3.4 3.7";
-    case "C":
-    case "L":
-    case "D":
-      return "-1.65 -1.9 3.3 3.8";
-    case "GND":
-      return "-1.3 -0.15 2.6 1.55";
-    case "NPN":
-    case "PNP":
-    case "NMOS":
-    case "PMOS":
-      return "-1.95 -1.95 3.9 3.9";
-    case "NMOS4":
-    case "PMOS4":
-      return "-2.25 -1.95 4.75 3.9";
-    case "OPAMP":
-      return "-3.25 -2.65 6.75 5.3";
-    case "LABEL":
-      return "-0.25 -1.05 2.9 2.1";
-    case "NOTE":
-      return "-1.45 -1.2 2.9 2.4";
-    default:
-      return "-2 -2 4 4";
-  }
 }
