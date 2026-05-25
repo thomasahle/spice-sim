@@ -4305,11 +4305,16 @@ export function Editor() {
         selectedProbeList.length,
       )
     : null;
-  const runDisabled = running || engineOk === false;
+  // `runningVisible` is the 120 ms-throttled mirror of `running`. Using it
+  // here keeps the Run button (and its disabled / title state) stable across
+  // sub-frame auto-runs. Race-safety is still handled inside `runSimulation`
+  // via `latestRunIdRef`, so a click during a fast in-flight sim just
+  // supersedes the old one.
+  const runDisabled = runningVisible || engineOk === false;
   const runTitle =
     engineOk === false
       ? "Simulation engine offline"
-      : running
+      : runningVisible
         ? "Simulation is running"
         : "Run (⌘R)";
   // buildNetlist walks every page's components/wires/labels and is invoked
@@ -4414,7 +4419,7 @@ export function Editor() {
   const autoRunHasStimulus = page.components.some((c) => isSimulationStimulusKind(c.kind));
   const autoRunUi = describeAutoRunStatus({
     autoRun,
-    running,
+    running: runningVisible,
     engineOk,
     tool,
     interactionActive: canvasInteractionActive,
