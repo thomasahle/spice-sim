@@ -130,15 +130,17 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
           <line x1={0} y1={0.4} x2={0} y2={passiveLead} />
         </g>
       );
-    case "GND":
+    case "GND": {
+      const dy = palette ? -0.55 : 0;
       return (
         <g {...commonWithTransform}>
-          <line x1={0} y1={0} x2={0} y2={0.5} />
-          <line x1={-0.8} y1={0.5} x2={0.8} y2={0.5} />
-          <line x1={-0.5} y1={0.8} x2={0.5} y2={0.8} />
-          <line x1={-0.2} y1={1.1} x2={0.2} y2={1.1} />
+          <line x1={0} y1={dy + 0} x2={0} y2={dy + 0.5} />
+          <line x1={-0.8} y1={dy + 0.5} x2={0.8} y2={dy + 0.5} />
+          <line x1={-0.5} y1={dy + 0.8} x2={0.5} y2={dy + 0.8} />
+          <line x1={-0.2} y1={dy + 1.1} x2={0.2} y2={dy + 1.1} />
         </g>
       );
+    }
     case "NPN":
     case "PNP": {
       const npn = kind === "NPN";
@@ -189,13 +191,16 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
           <text x={mirrored ? 1.9 : -1.9} y={1.3} fontSize={0.7} fill={stroke} stroke="none">−</text>
         </g>
       );
-    case "LABEL":
+    case "LABEL": {
+      const dx = palette ? -1.2 : 0;
       return (
         <g {...commonWithTransform}>
-          {/* Small pennant / triangle pointing right with a horizontal stem */}
-          <polyline points="0,0 0.8,0 1.2,-0.4 2.4,-0.4 2.4,0.4 1.2,0.4 0.8,0" />
+          <polyline
+            points={`${dx},0 ${dx + 0.8},0 ${dx + 1.2},-0.4 ${dx + 2.4},-0.4 ${dx + 2.4},0.4 ${dx + 1.2},0.4 ${dx + 0.8},0`}
+          />
         </g>
       );
+    }
     case "NOTE":
       return (
         <g {...commonWithTransform}>
