@@ -64,10 +64,17 @@ export function ValueWithUnit({
 
   function onMagnitudeBlur() {
     // If the user typed a SPICE-style "10k" directly into the number box,
-    // snap the prefix into the dropdown so the two stay in sync.
+    // pull the prefix into the dropdown so the number field is a clean
+    // magnitude again. Trigger whenever the reparsed magnitude differs
+    // from what's in the box — the user typed something like "2.2k"
+    // even when the dropdown was already on "k" used to leave the trailing
+    // letter sitting in the number input.
     if (isComplexValue(magnitude)) return;
     const reparsed = parseValueUnit(magnitude, family);
-    if (reparsed.prefix && reparsed.prefix !== prefix) {
+    const needsSnap =
+      reparsed.magnitude !== magnitude.trim() ||
+      (reparsed.prefix && reparsed.prefix !== prefix);
+    if (needsSnap) {
       setMagnitude(reparsed.magnitude);
       setPrefix(reparsed.prefix);
       commit(reparsed.magnitude, reparsed.prefix);
