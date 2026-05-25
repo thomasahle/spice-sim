@@ -152,6 +152,39 @@ test("ASCII RAW parser recognizes DC sweep scale vectors without hiding node vol
   );
 });
 
+test("ASCII RAW parser recognizes v(v-sweep) as the DC sweep scale", () => {
+  // ngspice WASM emits the DC sweep variable wrapped in v(...) — the
+  // bare-name match `endsWith('-sweep')` previously missed it, leaving
+  // the result with no scale vector and the scope showing the
+  // "No waveform axis returned" empty state.
+  const raw = [
+    "Title: dc",
+    "Plotname: DC transfer characteristic",
+    "Flags: real",
+    "No. Variables: 2",
+    "No. Points: 3",
+    "Variables:",
+    "\t0\tv(v-sweep)\tvoltage",
+    "\t1\tv(out)\tvoltage",
+    "Values:",
+    "0\t\t0.000000000000000e+00",
+    "\t0.000000000000000e+00",
+    "1\t\t1.000000000000000e+00",
+    "\t5.000000000000000e-01",
+    "2\t\t2.000000000000000e+00",
+    "\t1.000000000000000e+00",
+  ].join("\n");
+
+  const result = parseAsciiRaw(raw);
+  assert.deepEqual(
+    result.vectors.map((v) => [v.name, v.is_scale]),
+    [
+      ["v(v-sweep)", true],
+      ["v(out)", false],
+    ],
+  );
+});
+
 test("ASCII RAW parser converts complex values to magnitude and phase", () => {
   const raw = [
     "Title: ac",

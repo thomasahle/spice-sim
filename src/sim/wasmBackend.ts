@@ -159,10 +159,15 @@ function parseRawScaleValue(text: string): number {
 function isScaleVector(name: string, unit: string): boolean {
   const normalized = name.toLowerCase();
   const normalizedUnit = unit.toLowerCase();
+  // ngspice WASM emits the DC-sweep variable as `v(v-sweep)` (or `i(v-sweep)`
+  // when sweeping a current source) rather than the bare `v-sweep` the
+  // native engine produces. Strip a leading single-letter accessor and the
+  // outer parens before checking, so both forms match.
+  const stripped = normalized.replace(/^[a-z]\(([^)]+)\)$/, "$1");
   return (
-    normalized === "time" ||
-    normalized === "frequency" ||
-    normalized.endsWith("-sweep") ||
+    stripped === "time" ||
+    stripped === "frequency" ||
+    stripped.endsWith("-sweep") ||
     normalizedUnit === "time" ||
     normalizedUnit === "frequency"
   );
