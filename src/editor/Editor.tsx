@@ -8473,40 +8473,49 @@ function formatVolts(v: number): string {
 }
 
 function ToolIcon({ tool }: { tool: Tool }) {
+  const common = {
+    viewBox: "0 0 24 24",
+    width: 36,
+    height: 36,
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.07,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
   if (tool === "select") {
     return (
-      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={0.95} strokeLinecap="round" strokeLinejoin="round">
-        <path d="M5 3l5 16 2-7 7-2z" />
+      <svg {...common}>
+        <path d="M6 3.5l4.6 14.4 2-5.3 5.3-2z" />
       </svg>
     );
   }
   if (tool === "wire") {
     return (
-      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={0.95} strokeLinecap="round">
-        <circle cx={5} cy={12} r={2.2} />
-        <circle cx={19} cy={12} r={2.2} />
-        <line x1={7} y1={12} x2={17} y2={12} />
+      <svg {...common}>
+        <circle cx={5} cy={12} r={2.4} />
+        <circle cx={19} cy={12} r={2.4} />
+        <line x1={7.4} y1={12} x2={16.6} y2={12} />
       </svg>
     );
   }
   if (tool === "probe") {
     return (
-      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={0.95} strokeLinecap="round" strokeLinejoin="round">
-        <path d="M4.5 16.5l5.2-5.2" />
-        <circle cx={12} cy={9} r={3.2} />
-        <circle cx={12} cy={9} r={0.8} fill="currentColor" stroke="none" />
-        <path d="M15.2 9h4.3" />
-        <path d="M18.2 6.3l1.8 2.7-1.8 2.7" />
+      <svg {...common}>
+        <circle cx={11} cy={10} r={4.2} />
+        <circle cx={11} cy={10} r={1} fill="currentColor" stroke="none" />
+        <line x1={4.5} y1={19.5} x2={8.2} y2={13.2} />
+        <path d="M16 10h4M18.3 7.5l2.2 2.5-2.2 2.5" />
       </svg>
     );
   }
   if (tool === "pan") {
     return (
-      <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth={0.95} strokeLinecap="round" strokeLinejoin="round">
-        <path d="M8.5 12.5V6.7a1.2 1.2 0 0 1 2.4 0v4.8" />
-        <path d="M10.9 11.5V5.8a1.2 1.2 0 0 1 2.4 0v5.7" />
-        <path d="M13.3 11.6V7a1.2 1.2 0 0 1 2.4 0v5.4" />
-        <path d="M15.7 12.4V9.2a1.2 1.2 0 0 1 2.4 0v4.2c0 4.1-2.5 6.6-6.1 6.6h-1.1c-2.3 0-3.6-1.1-4.9-3.2l-1.5-2.5a1.25 1.25 0 0 1 2.1-1.35L8 15.1" />
+      <svg {...common}>
+        <path d="M8.5 12.5V6.5a1.3 1.3 0 0 1 2.6 0v5" />
+        <path d="M11.1 11.5V5a1.3 1.3 0 0 1 2.6 0v6.5" />
+        <path d="M13.7 11.6V6.3a1.3 1.3 0 0 1 2.6 0v5.3" />
+        <path d="M16.3 12.4V8.7a1.3 1.3 0 0 1 2.6 0v5c0 4-2.6 6.5-6 6.5h-1.2c-2.3 0-3.6-1.1-4.9-3.1l-1.5-2.4a1.3 1.3 0 0 1 2.2-1.4l1 1.2" />
       </svg>
     );
   }
