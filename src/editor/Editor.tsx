@@ -592,6 +592,15 @@ export function Editor() {
   const [runModelDiagnostics, setRunModelDiagnostics] = useState<ModelDiagnostic[]>([]);
   const [engineName, setEngineName] = useState<string>("");
   const [running, setRunning] = useState(false);
+  const [runningVisible, setRunningVisible] = useState(false);
+  useEffect(() => {
+    if (!running) {
+      setRunningVisible(false);
+      return;
+    }
+    const t = setTimeout(() => setRunningVisible(true), 120);
+    return () => clearTimeout(t);
+  }, [running]);
   const [drag, setDrag] = useState<null | {
     initial: Map<string, { x: number; y: number }>;
     initialWires: Map<string, [number, number][]>;
@@ -5889,18 +5898,18 @@ export function Editor() {
             })}
           </div>
           <button
-            className={`tb-run ${running ? "running" : ""}`}
+            className={`tb-run ${runningVisible ? "running" : ""}`}
             onClick={runSimulation}
             disabled={runDisabled}
             title={runTitle}
-            aria-label={engineOk === false ? "Simulation engine unavailable" : running ? "Running simulation" : "Run simulation"}
+            aria-label={engineOk === false ? "Simulation engine unavailable" : runningVisible ? "Running simulation" : "Run simulation"}
           >
-            {running ? (
+            {runningVisible ? (
               <span className="tb-run-spinner" />
             ) : (
               <IconGlyph kind="play" />
             )}
-            <span>{engineOk === false ? "Unavailable" : running ? "Running…" : "Run"}</span>
+            <span>{engineOk === false ? "Unavailable" : runningVisible ? "Running…" : "Run"}</span>
           </button>
         </div>
         {(canvasNotice || disconnectedProbeIds.size > 0 || runFloatingPins.length > 0) && (
@@ -7204,7 +7213,7 @@ export function Editor() {
       engineOk={engineOk}
       engineName={engineName}
       analysisKind={doc.analysis.kind}
-      running={running}
+      running={runningVisible}
       status={status}
       autoRunLabel={autoRunUi.statusLabel}
       autoRunTitle={autoRunUi.title}
