@@ -1036,7 +1036,9 @@ button[disabled] {
   position: absolute;
   top: 14px;
   left: 14px;
-  z-index: 12;
+  /* Above .playbar / .wf-pane / .canvas-actions so the hover tooltips and
+     palette popovers extending past the canvas row stay on top. */
+  z-index: 40;
   width: 46px;
   display: flex;
   flex-direction: column;
@@ -2463,7 +2465,11 @@ button[disabled] {
 .canvas-wrap {
   position: relative;
   min-height: 0;
-  overflow: hidden;
+  /* `overflow: visible` lets floating overlays anchored to the canvas (tool
+     strip tooltips, palette popovers) extend down into the playbar / scope
+     pane instead of being clipped at the canvas row. The <svg> child is
+     self-clipping via its viewport, so the canvas itself still stays bound. */
+  overflow: visible;
   background:
     radial-gradient(circle at 20% 10%, rgba(10, 132, 255, 0.035), transparent 26%),
     linear-gradient(180deg, color-mix(in srgb, var(--bg-canvas) 94%, white 6%), var(--bg-canvas));
