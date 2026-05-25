@@ -4473,8 +4473,13 @@ export function Editor() {
   // Freeze live-flow when the last run flagged floating pins — the
   // dashed motion implies "this circuit is alive" which is misleading
   // when ngspice's result is built on top of broken connectivity.
+  // Auto-run keeps the overlay alive across the brief stale window so
+  // it doesn't blink off and back on every time the user nudges the doc.
   const liveActive =
-    isTransient && !simulationStale && liveFlow && runFloatingPins.length === 0;
+    isTransient
+    && (autoRun || !simulationStale)
+    && liveFlow
+    && runFloatingPins.length === 0;
   const nodeDisplayLabels = useMemo(() => {
     const labels = new Map<string, string>();
     for (const c of page.components) {
