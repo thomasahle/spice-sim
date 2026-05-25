@@ -28,6 +28,8 @@ export interface CircuitComponent {
   x: number; // grid cell of component origin
   y: number;
   rotation: Rotation;
+  /** Mirror the symbol around its local vertical axis before rotation. */
+  mirrored?: boolean;
   value: string; // SPICE value, e.g. "1k", "10", "DMOD"
   label?: string;
   /** Device-specific parameters: MOS L/W, BJT area, etc. */
@@ -99,6 +101,8 @@ export interface CircuitDoc {
   simSettings?: SimSettings;
 }
 
+export const MAX_SUBCIRCUIT_PINS = 64;
+
 export function currentPage(d: CircuitDoc): SchematicPage {
   return d.pages.find((p) => p.id === d.activePageId) ?? d.pages[0];
 }
@@ -110,6 +114,157 @@ export function updateCurrentPage(
   return {
     ...d,
     pages: d.pages.map((p) => (p.id === d.activePageId ? updater(p) : p)),
+  };
+}
+
+export function subcircuitPageForInstance(
+  d: CircuitDoc,
+  component: CircuitComponent,
+): SchematicPage | null {
+  if (component.kind !== "SUBX") return null;
+  const name = component.value.trim();
+  if (!name) return null;
+  return d.pages.slice(1).find((p) => p.id !== d.activePageId && p.name === name) ?? null;
+}
+
+export function parsePortOrder(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+export function orderedSubcircuitPortLabels(page: SchematicPage): string[] {
+  const labels = page.components.filter(
+    (component) => component.kind === "LABEL" && component.value.trim() !== "",
+  );
+  const hasExplicitPorts = labels.some((component) => component.params?.port === "1");
+  return orderedLabelPorts(hasExplicitPorts
+    ? labels.filter((component) => component.params?.port === "1")
+    : labels).map((component) => component.value.trim());
+}
+
+export function subcircuitPortLabels(page: SchematicPage): string[] {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const label of orderedSubcircuitPortLabels(page)) {
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+  }
+  return labels;
+}
+
+export function subcircuitPortCount(page: SchematicPage): number {
+  return Math.min(MAX_SUBCIRCUIT_PINS, subcircuitPortLabels(page).length);
+}
+
+export function subcircuitBodyWidth(component: CircuitComponent): number {
+  const raw = Number(component.params?.w);
+  return clampFinite(raw, 4.8, 3.4, 16);
+}
+
+export function subcircuitBodyHeight(component: CircuitComponent): number {
+  const raw = Number(component.params?.h);
+  const n = subcircuitPinCountForInstance(component);
+  const leftCount = Math.ceil(n / 2);
+  const rightCount = n - leftCount;
+  const autoHeight = Math.max(leftCount, rightCount, 1) - 1 + 1.2;
+  return clampFinite(raw, autoHeight, autoHeight, 24);
+}
+
+function subcircuitPinCountForInstance(component: CircuitComponent): number {
+  const raw = parseInt(component.params?.npins ?? "4", 10);
+  return Math.max(1, Math.min(MAX_SUBCIRCUIT_PINS, Number.isFinite(raw) ? raw : 4));
+}
+
+function clampFinite(value: number, fallback: number, min: number, max: number): number {
+  return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+}
+
+function orderedLabelPorts(ports: CircuitComponent[]): CircuitComponent[] {
+  const centerX = ports.length > 0
+    ? ports.reduce((sum, component) => sum + component.x, 0) / ports.length
+    : 0;
+  return [...ports].sort((a, b) => {
+    const orderA = parsePortOrder(a.params?.portOrder);
+    const orderB = parsePortOrder(b.params?.portOrder);
+    if (orderA !== null || orderB !== null) {
+      if (orderA === null) return 1;
+      if (orderB === null) return -1;
+      if (orderA !== orderB) return orderA - orderB;
+    }
+    const sideA = a.x <= centerX ? 0 : 1;
+    const sideB = b.x <= centerX ? 0 : 1;
+    if (sideA !== sideB) return sideA - sideB;
+    if (Math.abs(a.y - b.y) > 1e-9) return a.y - b.y;
+    if (Math.abs(a.x - b.x) > 1e-9) return a.x - b.x;
+    return a.value.localeCompare(b.value);
+  });
+}
+
+export function sanitizePageName(raw: string, fallback = "main"): string {
+  const name = raw.replace(/[^A-Za-z0-9_]/g, "_");
+  return name || fallback;
+}
+
+export function uniquePageName(
+  d: CircuitDoc,
+  raw: string,
+  pageId: string,
+  fallback = "main",
+): string {
+  const base = sanitizePageName(raw, fallback);
+  let name = base;
+  let suffix = 2;
+  const existing = new Set(
+    d.pages
+      .filter((p) => p.id !== pageId)
+      .map((p) => p.name.toLowerCase()),
+  );
+  while (existing.has(name.toLowerCase())) {
+    name = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  return name;
+}
+
+export function updatePageMeta(
+  d: CircuitDoc,
+  pageId: string,
+  patch: Partial<Pick<SchematicPage, "name" | "description">>,
+): CircuitDoc {
+  const page = d.pages.find((p) => p.id === pageId);
+  if (!page) return d;
+  const rootId = d.pages[0]?.id;
+  const fallbackName = page.id === rootId ? "main" : page.name || "sub";
+  const nextName =
+    patch.name !== undefined
+      ? uniquePageName(d, patch.name, pageId, fallbackName)
+      : page.name;
+  const nameChanged = nextName !== page.name;
+  const previousName = page.name;
+
+  return {
+    ...d,
+    pages: d.pages.map((p) => {
+      const nextComponents = nameChanged
+        ? p.components.map((component) =>
+            component.kind === "SUBX" && component.value.trim() === previousName
+              ? { ...component, value: nextName }
+              : component,
+          )
+        : p.components;
+      if (p.id !== pageId) {
+        return nextComponents === p.components ? p : { ...p, components: nextComponents };
+      }
+      return {
+        ...p,
+        ...patch,
+        name: nextName,
+        components: nextComponents,
+      };
+    }),
   };
 }
 
@@ -201,7 +356,7 @@ export const PIN_LAYOUTS: Record<ComponentKind, { x: number; y: number }[]> = {
   NOTE: [],
   // X-instance default = 4 pins. The actual pin count + positions are
   // overridden per-component via `getPinLayout` based on `params.npins`
-  // (so a single SUBX kind can host 1..16-pin subcircuits without needing
+  // (so a single SUBX kind can host many-pin subcircuits without needing
   // a static map entry per arity).
   SUBX: [
     { x: -3, y: -1 },
@@ -212,25 +367,34 @@ export const PIN_LAYOUTS: Record<ComponentKind, { x: number; y: number }[]> = {
 };
 
 /** Per-instance pin layout. Falls back to the static PIN_LAYOUTS for normal
- *  components; SUBX uses its `params.npins` to lay out 1..16 pins around a
+ *  components; SUBX uses its `params.npins` to lay out pins around a
  *  rectangle (left side first, then right side). */
 export function getPinLayout(
   c: CircuitComponent,
 ): { x: number; y: number }[] {
-  if (c.kind !== "SUBX") return PIN_LAYOUTS[c.kind];
-  const raw = parseInt(c.params?.npins ?? "4", 10);
-  const n = Math.max(1, Math.min(16, Number.isFinite(raw) ? raw : 4));
+  if (c.kind !== "SUBX") return mirrorPinLayoutIfNeeded(PIN_LAYOUTS[c.kind], c.mirrored);
+  const n = subcircuitPinCountForInstance(c);
   const leftCount = Math.ceil(n / 2);
   const rightCount = n - leftCount;
+  const pinX = subcircuitBodyWidth(c) / 2 + 0.6;
+  const bodyHeight = subcircuitBodyHeight(c);
+  const startY = (count: number) => count <= 1 ? 0 : -((bodyHeight - 1.2) / 2);
+  const stepY = (count: number) => count <= 1 ? 0 : (bodyHeight - 1.2) / (count - 1);
   const layout: { x: number; y: number }[] = [];
-  const startY = (count: number) => -((count - 1) * 1) / 2;
   for (let i = 0; i < leftCount; i++) {
-    layout.push({ x: -3, y: startY(leftCount) + i });
+    layout.push({ x: -pinX, y: startY(leftCount) + i * stepY(leftCount) });
   }
   for (let i = 0; i < rightCount; i++) {
-    layout.push({ x: 3, y: startY(rightCount) + i });
+    layout.push({ x: pinX, y: startY(rightCount) + i * stepY(rightCount) });
   }
-  return layout;
+  return mirrorPinLayoutIfNeeded(layout, c.mirrored);
+}
+
+function mirrorPinLayoutIfNeeded(
+  layout: { x: number; y: number }[],
+  mirrored: boolean | undefined,
+): { x: number; y: number }[] {
+  return mirrored ? layout.map((pin) => ({ x: -pin.x, y: pin.y })) : layout;
 }
 
 export function rotatePoint(

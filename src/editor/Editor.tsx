@@ -26,9 +26,16 @@ import {
   getPinLayout,
   makeId,
   makePage,
+  parsePortOrder,
   pinLabelForKind,
   pinWorldPos,
   rotateNext,
+  subcircuitBodyHeight,
+  subcircuitBodyWidth,
+  subcircuitPortCount,
+  subcircuitPortLabels,
+  subcircuitPageForInstance,
+  updatePageMeta,
   updateCurrentPage,
 } from "./model";
 import { ComponentGlyph, PaletteGlyph } from "./symbols";
@@ -39,7 +46,6 @@ import {
   valueLabelBounds,
   valueLabelOffsets,
 } from "./labelPlacement";
-import { draftMeasurement } from "./draftMeasurement";
 import {
   boundsFromPoints,
   componentBoundsFor,
@@ -59,12 +65,12 @@ import {
   sameTuple,
   wireIntersectsRect,
 } from "./geometry";
-import { buildNetlist, coordKey, type FloatingPinDiagnostic } from "./netlist";
+import { buildNetlist, coordKey, type FloatingPinDiagnostic, type ModelDiagnostic } from "./netlist";
 import { normalizeDoc } from "./docNormalize";
-import { importNetlist } from "./netlistImport";
-import { connectedNetLabelIds, netLabelNearMisses } from "./netLabelConnections";
+import { connectedNetLabelIds, netLabelNearMisses, snapNetLabelDrag } from "./netLabelConnections";
+import { SvgInlineMathText } from "./mathTextSvg";
 import {
-  NOTE_COLOR_PALETTE,
+  NOTE_COLOR_PRESETS,
   noteColor,
   noteFillColor,
   noteStrokeColor,
@@ -72,21 +78,31 @@ import {
 } from "./noteStyle";
 import {
   applyMosfetPreset,
+  BUILTIN_MODEL_DEFINITIONS,
   BUILTIN_MOSFET_MODELS,
   BUILTIN_MOSFET_PRESETS,
+  componentMatchesMosfetPreset,
+  defaultModelParams,
   modelDefinitionLine,
   modelTypesForKind,
   mosfetPresetKindForComponentKind,
   mosfetPresetFromComponent,
+  normalizeModelDefinition,
   parseModelDefinitions,
+  removeModelDefinitionInDoc,
   type ModelDefinition,
   type MosfetPreset,
+  type ModelDeviceType,
+  uniqueModelName,
+  updateModelDefinitionInDoc,
+  upsertModelDefinition,
 } from "./modelPresets";
 import { isAcStimulus, sourceValueWithAcStimulus } from "./sourceValues";
 import { isIndependentSourceKind, isSimulationStimulusKind } from "./sourceKinds";
 import { simulate, engineProbe } from "../sim/api";
 import type { SimResult } from "../sim/api";
 import { analysisToApi, analysisWithSweepSource, validateAnalysisSpec } from "./analysisValidation";
+import { describeAutoRunStatus } from "./autoRunStatus";
 import { AnalysisDialog } from "./AnalysisDialog";
 import { DirectivesPanel } from "./DirectivesPanel";
 import { SourceEditor } from "./SourceEditor";
@@ -125,11 +141,13 @@ import { inlineProbeScopeLabel, probeHasDisplayLabel, shouldRenderInlineProbeSco
 import { formatSimulationErrorLog, summarizeSimulationError } from "./simulationErrors";
 import { defaultVisibleTraceNames } from "./traceVisibility";
 import { analysisXAxisLabel, axisUnitFromLabel } from "./waveformAxis";
+import { hasPlottableWaveform, waveformPaneEmptyState } from "./waveformEmptyState";
 import {
   decodeSchematicClipboard,
   encodeSchematicClipboard,
   type SchematicClipboard,
 } from "./schematicClipboard";
+import { collectSelectedTopology } from "./selectionTopology";
 import {
   makeHistorySnapshot,
   popLatestHistorySnapshot,
@@ -139,22 +157,24 @@ import {
 } from "./editorHistory";
 import {
   componentFromDrag,
-  movePointWithAnchoredWire,
   moveAttachedWirePoints,
+  moveAttachedWirePointsAvoiding,
   moveProbesFromInsertedWireSpan,
   moveWirePointsWithAnchors,
+  moveWirePointsWithAnchorsAvoiding,
   placementConnectionWires,
   placementLength,
   placementWireCutSpan,
   removeLastWireDraftPoint,
-  reshapeDraggedWirePoint,
-  rotatedContactRoutes,
-  routeWireSegment,
-  translatedContactRoutes,
+  reshapeDraggedWirePointAvoiding,
+  rotatedContactRoutesAvoiding,
+  routeWireSegmentAvoiding,
+  translatedContactRoutesAvoiding,
   wireMovesAsRigidShape,
   type WireEndpointAnchors,
 } from "./placement";
 import {
+  movePointBetweenWirePaths,
   moveProbesWithPinMoves,
   moveUnmovedProbesWithChangedWirePaths,
   moveWirePointsToTargets,
@@ -162,6 +182,7 @@ import {
   wireConnectsMovedPins,
   wireEndpointMoveTargets,
 } from "./wireMotion";
+import { autoFormatWiresAvoiding, wireIdsForAutoFormat } from "./wireFormatting";
 import { pruneUnanchoredWireJunctions, pruneWiresAfterComponentDelete } from "./topologyCleanup";
 import {
   nearestConnectionTarget,
@@ -194,6 +215,18 @@ import {
   normalizeWireListPreservingJunctions,
   wirePathCoveredByWires,
 } from "./wireTopology";
+
+let netlistImportModulePromise: Promise<typeof import("./netlistImport")> | null = null;
+function loadNetlistImportModule() {
+  netlistImportModulePromise ??= import("./netlistImport");
+  return netlistImportModulePromise;
+}
+
+let autoLayoutModulePromise: Promise<typeof import("./autoLayout")> | null = null;
+function loadAutoLayoutModule() {
+  autoLayoutModulePromise ??= import("./autoLayout");
+  return autoLayoutModulePromise;
+}
 
 const STARTER_DEMO_IDS = new Set(["divider", "rc_step", "inverting_opamp"]);
 const STARTER_DEMOS = DEMOS.filter((demo) => STARTER_DEMO_IDS.has(demo.id));
@@ -339,7 +372,7 @@ const PALETTE_SECTIONS: { label: string; items: PaletteItem[] }[] = [
         kind: "GND",
         name: "Ground",
         hint: "G",
-        desc: "Reference node (0 V). Every circuit needs at least one ground for the simulator to converge.",
+        desc: "Reference node (0 V). Drag from an existing net to place and connect a ground stub.",
       },
     ],
   },
@@ -351,7 +384,7 @@ const PALETTE_SECTIONS: { label: string; items: PaletteItem[] }[] = [
         kind: "NPN",
         name: "NPN BJT",
         hint: "Q",
-        desc: "Click to place. Pins stay visible on selection and snap strongly while wiring.",
+        desc: "Drag to place and orient. C/B/E pins stay visible on selection and snap strongly while wiring.",
       },
       { tool: "PNP", kind: "PNP", name: "PNP BJT" },
       {
@@ -359,7 +392,7 @@ const PALETTE_SECTIONS: { label: string; items: PaletteItem[] }[] = [
         kind: "NMOS",
         name: "NMOS",
         hint: "M",
-        desc: "Click to place. Pins stay visible on selection and snap strongly while wiring.",
+        desc: "Drag to place and orient. D/G/S pins stay visible on selection and snap strongly while wiring.",
       },
       { tool: "PMOS", kind: "PMOS", name: "PMOS" },
       {
@@ -379,7 +412,7 @@ const PALETTE_SECTIONS: { label: string; items: PaletteItem[] }[] = [
         kind: "OPAMP",
         name: "Op-amp",
         hint: "O",
-        desc: "Click to place; wire the +, −, and OUT pins. Pins stay visible on selection and snap strongly while wiring.",
+        desc: "Drag to place and orient; wire the +, −, and OUT pins. Pins stay visible on selection and snap strongly while wiring.",
       },
     ],
   },
@@ -391,14 +424,14 @@ const PALETTE_SECTIONS: { label: string; items: PaletteItem[] }[] = [
         kind: "LABEL",
         name: "Net label",
         hint: "N",
-        desc: "Names a wire so it's easy to probe. Two labels with the same name are electrically connected.",
+        desc: "Drag onto a wire or pin to name that net. Two labels with the same name are electrically connected.",
       },
       {
         tool: "NOTE",
         kind: "NOTE",
         name: "Note",
         hint: "T",
-        desc: "Write a canvas note. Notes are visual comments and export as SPICE comment lines.",
+        desc: "Drag to place and size a canvas note. Notes are visual comments and export as SPICE comment lines.",
       },
     ],
   },
@@ -556,6 +589,7 @@ export function Editor() {
   const [log, setLog] = useState<string>("");
   const [runWarnings, setRunWarnings] = useState<string[]>([]);
   const [runFloatingPins, setRunFloatingPins] = useState<FloatingPinDiagnostic[]>([]);
+  const [runModelDiagnostics, setRunModelDiagnostics] = useState<ModelDiagnostic[]>([]);
   const [engineName, setEngineName] = useState<string>("");
   const [running, setRunning] = useState(false);
   const [drag, setDrag] = useState<null | {
@@ -596,6 +630,19 @@ export function Editor() {
     initialHeight: number;
     committed: boolean;
   }>(null);
+  const [subxResize, setSubxResize] = useState<null | {
+    componentId: string;
+    startWorld: { x: number; y: number };
+    initialWidth: number;
+    initialHeight: number;
+    minHeight: number;
+    committed: boolean;
+  }>(null);
+  const [textEdit, setTextEdit] = useState<null | {
+    componentId: string;
+    kind: "LABEL" | "NOTE";
+    value: string;
+  }>(null);
   const [marquee, setMarquee] = useState<null | {
     sx: number;
     sy: number;
@@ -615,6 +662,7 @@ export function Editor() {
   const [clipboard, setClipboard] = useState<SchematicClipboard | null>(null);
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [simResult, setSimResult] = useState<SimResult | null>(null);
+  const [simulationStale, setSimulationStale] = useState(false);
   const [waveformVisible, setWaveformVisible] = useState(true);
   const [waveformRunKey, setWaveformRunKey] = useState(0);
   const [selectedTraces, setSelectedTraces] = useState<Set<string>>(new Set());
@@ -756,6 +804,8 @@ export function Editor() {
   }, [liveFlow]);
 
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const textEditRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  const textEditCancelBlurRef = useRef(false);
   const spacePanRef = useRef(false);
   // Multi-touch gesture tracking. Touch pointers go into `activeTouches`
   // keyed by pointerId; when two touches are active simultaneously we enter
@@ -769,11 +819,26 @@ export function Editor() {
   // Derive the active page once per render so most editor code can treat
   // `page.components` etc as the source of truth.
   const page = currentPage(doc);
+  const activeTextEditId = textEdit?.componentId ?? null;
+  const activeTextEditKind = textEdit?.kind ?? null;
   useEffect(() => {
     if (showStartupEmptyCard && !activeSchematicIsEmpty(doc)) {
       setShowStartupEmptyCard(false);
     }
   }, [doc, showStartupEmptyCard]);
+  useEffect(() => {
+    if (!activeTextEditId || !activeTextEditKind) return;
+    const component = page.components.find((c) => c.id === activeTextEditId);
+    if (!component || component.kind !== activeTextEditKind) {
+      setTextEdit(null);
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      textEditRef.current?.focus();
+      textEditRef.current?.select();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [page.components, activeTextEditId, activeTextEditKind]);
   // Always-current refs to dodge stale closures inside global listeners.
   const docRef = useRef(doc);
   docRef.current = doc;
@@ -894,18 +959,7 @@ export function Editor() {
   }
 
   function updateActivePageMeta(patch: Partial<Pick<SchematicPage, "name" | "description">>) {
-    commit((d) => ({
-      ...d,
-      pages: d.pages.map((p) => {
-        if (p.id !== d.activePageId) return p;
-        const nextName = patch.name !== undefined ? patch.name.replace(/[^A-Za-z0-9_]/g, "_") : p.name;
-        return {
-          ...p,
-          ...patch,
-          name: nextName || "main",
-        };
-      }),
-    }));
+    commit((d) => updatePageMeta(d, d.activePageId, patch));
   }
 
   function resetInteractionState() {
@@ -991,10 +1045,12 @@ export function Editor() {
     editGenerationRef.current += 1;
     setReadings(null);
     setSimResult(null);
+    setSimulationStale(false);
     setSelectedTraces(new Set());
     setLog("");
     setRunWarnings([]);
     setRunFloatingPins([]);
+    setRunModelDiagnostics([]);
     setPlaying(false);
   }
 
@@ -1003,10 +1059,10 @@ export function Editor() {
     const hadResult = Boolean(simResultRef.current || readingsRef.current);
     const wasRunning = runningRef.current;
     setReadings(null);
-    setSimResult(null);
-    setSelectedTraces(new Set());
+    setSimulationStale(Boolean(simResultRef.current));
     setRunWarnings([]);
     setRunFloatingPins([]);
+    setRunModelDiagnostics([]);
     setPlaying(false);
     if (wasRunning) setRunning(false);
     if (hadResult || wasRunning) {
@@ -1020,6 +1076,7 @@ export function Editor() {
     latestRunIdRef.current += 1;
     setReadings(null);
     setSimResult(null);
+    setSimulationStale(false);
     setSelectedTraces(new Set());
     setPlaying(false);
     setRunning(false);
@@ -1098,6 +1155,8 @@ export function Editor() {
   scopeDragRef.current = scopeDrag;
   const noteResizeRef = useRef<typeof noteResize>(noteResize);
   noteResizeRef.current = noteResize;
+  const subxResizeRef = useRef<typeof subxResize>(subxResize);
+  subxResizeRef.current = subxResize;
   const placementDraftRef = useRef<typeof placementDraft>(placementDraft);
   placementDraftRef.current = placementDraft;
   const marqueeRef = useRef<typeof marquee>(marquee);
@@ -1192,11 +1251,13 @@ export function Editor() {
     const activeWireDrag = wireDragRef.current;
     const activeScopeDrag = scopeDragRef.current;
     const activeNoteResize = noteResizeRef.current;
+    const activeSubxResize = subxResizeRef.current;
     const hasInteraction = Boolean(
       activeDrag ||
         activeWireDrag ||
         activeScopeDrag ||
         activeNoteResize ||
+        activeSubxResize ||
         placementDraftRef.current ||
         marqueeRef.current ||
         panningRef.current,
@@ -1207,7 +1268,8 @@ export function Editor() {
       activeDrag?.committed ||
         activeWireDrag?.committed ||
         activeScopeDrag?.committed ||
-        activeNoteResize?.committed,
+        activeNoteResize?.committed ||
+        activeSubxResize?.committed,
     );
     if (hasCommittedPreview) {
       const popped = popLatestHistorySnapshot(pastRef.current);
@@ -1223,6 +1285,7 @@ export function Editor() {
     setWireDrag(null);
     setScopeDrag(null);
     setNoteResize(null);
+    setSubxResize(null);
     setPlacementDraft(null);
     setMarquee(null);
     setPanning(null);
@@ -1371,6 +1434,7 @@ export function Editor() {
         if (!confirmDiscardIfDirty()) return;
         const r = await openNetlist();
         if (!r) return;
+        const { importNetlist } = await loadNetlistImportModule();
         const imported = await importNetlist(r.text);
         commit(() => normalizeDoc(imported.doc));
         setFilePath(null);
@@ -1831,6 +1895,11 @@ export function Editor() {
     return target.closest("[data-note-resize-id]")?.getAttribute("data-note-resize-id") ?? null;
   }
 
+  function subxResizeIdFromTarget(target: EventTarget | null): string | null {
+    if (!(target instanceof Element)) return null;
+    return target.closest("[data-subx-resize-id]")?.getAttribute("data-subx-resize-id") ?? null;
+  }
+
   function hitKindForItem(item: CircuitComponent | Wire | Probe | null): "component" | "wire" | "probe" | null {
     if (!item) return null;
     if (page.probes.some((probe) => probe.id === item.id)) return "probe";
@@ -2012,6 +2081,11 @@ export function Editor() {
     dx: number,
     dy: number,
     orthogonal: boolean,
+    routingContext?: {
+      components: CircuitComponent[];
+      wires: Wire[];
+      ignoreComponentIds?: Set<string>;
+    },
   ): Wire[] {
     return normalizeWireList(
       wires.map((w) => {
@@ -2019,19 +2093,51 @@ export function Editor() {
         if (!init) return w;
         if (movingWireIds.has(w.id)) {
           const anchors = movingWireAnchors.get(w.id) ?? {};
+          const ignoreWireIds = new Set<string>([w.id]);
           return {
             ...w,
-            points: moveWirePointsWithAnchors(init, dx, dy, anchors, orthogonal),
+            points: routingContext
+              ? moveWirePointsWithAnchorsAvoiding(init, dx, dy, anchors, orthogonal, {
+                  components: routingContext.components,
+                  wires: routingContext.wires,
+                  ignoreComponentIds: routingContext.ignoreComponentIds,
+                  ignoreWireIds,
+                })
+              : moveWirePointsWithAnchors(init, dx, dy, anchors, orthogonal),
           };
         }
         const attached = attachedWirePoints.get(w.id);
         if (!attached) return w;
+        const ignoreWireIds = new Set<string>([w.id]);
         return {
           ...w,
-          points: moveAttachedWirePoints(init, attached, dx, dy, orthogonal),
+          points: routingContext
+            ? moveAttachedWirePointsAvoiding(init, attached, dx, dy, orthogonal, {
+                components: routingContext.components,
+                wires: routingContext.wires,
+                ignoreComponentIds: routingContext.ignoreComponentIds,
+                ignoreWireIds,
+              })
+            : moveAttachedWirePoints(init, attached, dx, dy, orthogonal),
         };
       }),
     );
+  }
+
+  function moveProbeOnChangedWirePath(
+    attachment: { wireId: string; point: { x: number; y: number } },
+    beforeWires: Map<string, [number, number][]>,
+    afterWires: Wire[],
+    dx: number,
+    dy: number,
+  ): { x: number; y: number } {
+    const before = beforeWires.get(attachment.wireId);
+    const after = afterWires.find((wire) => wire.id === attachment.wireId)?.points;
+    if (before && after) {
+      const moved = movePointBetweenWirePaths(attachment.point, before, after);
+      if (moved) return moved;
+    }
+    return normalizePoint({ x: attachment.point.x + dx, y: attachment.point.y + dy });
   }
 
   function applySelectionDragPreview(
@@ -2052,6 +2158,7 @@ export function Editor() {
       if (!init) return c;
       return { ...c, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
     });
+    const movingComponentIds = new Set(activeDrag.initial.keys());
     const movedWires = applyMovedWires(
       baseWires,
       activeDrag.initialWires,
@@ -2061,23 +2168,21 @@ export function Editor() {
       dx,
       dy,
       orthogonal,
+      { components: nextComponents, wires: baseWires, ignoreComponentIds: movingComponentIds },
     );
     let nextProbes = sourcePage.probes.map((pr) => {
       const wireAttachment = activeDrag.movingWireProbeAttachments.get(pr.id);
       if (wireAttachment) {
-        const wire = activeDrag.initialWires.get(wireAttachment.wireId);
-        return wire
-          ? {
-              ...pr,
-              ...movePointWithAnchoredWire(
-                wireAttachment.point,
-                wire,
-                dx,
-                dy,
-                activeDrag.movingWireAnchors.get(wireAttachment.wireId) ?? {},
-              ),
-            }
-          : pr;
+        return {
+          ...pr,
+          ...moveProbeOnChangedWirePath(
+            wireAttachment,
+            activeDrag.initialWires,
+            movedWires,
+            dx,
+            dy,
+          ),
+        };
       }
       const init = activeDrag.initial.get(pr.id);
       if (!init) return pr;
@@ -2088,6 +2193,8 @@ export function Editor() {
       dx,
       dy,
       orthogonal,
+      { ...sourcePage, components: nextComponents, wires: movedWires },
+      movingComponentIds,
     );
     const withContacts = appendConnectionWiresWithInsertedIds(movedWires, contactWires);
     nextProbes = moveUnmovedProbesWithChangedWirePaths(
@@ -2125,24 +2232,14 @@ export function Editor() {
     const initial = activeDrag.initial.get(label.id);
     if (!initial) return { delta: { x: dx, y: dy }, target: null };
 
-    const anchor = normalizePoint({ x: initial.x + dx, y: initial.y + dy });
-    const snapPage: SchematicPage = {
-      ...page,
-      components: page.components.filter((component) => component.id !== label.id),
-    };
-    const snap = nearestConnectionTarget(snapPage, anchor.x, anchor.y, 0.7, {
+    const snap = snapNetLabelDrag(page, label.id, initial, activeDrag.startWorld, { x: dx, y: dy }, 0.7, {
       ...WIRING_SNAP,
       pinRadius: 0.8,
       wirePointRadius: 0.8,
       segmentRadius: 0.6,
       snapPoint,
     });
-    if (!snap) return { delta: { x: dx, y: dy }, target: null };
-
-    return {
-      delta: normalizePoint({ x: snap.x - initial.x, y: snap.y - initial.y }),
-      target: snap,
-    };
+    return { delta: normalizePoint(snap.delta), target: snap.target };
   }
 
   function componentFromPlacementDraft(
@@ -2153,10 +2250,14 @@ export function Editor() {
       draft.kind === "SUBX"
         ? docRef.current.pages.find((p) => p.id === selectedSubcircuitPageId && p.id !== docRef.current.activePageId)
         : null;
-    const subcircuitPinCount = subcircuitPage
-      ? Math.max(1, Math.min(16, subcircuitPinsForPage(subcircuitPage).length))
-      : 0;
-    const base = componentFromDrag(draft.kind, draft.start, draft.end, id);
+    const subcircuitPinCount = subcircuitPage ? subcircuitPortCount(subcircuitPage) : 0;
+    const base = componentFromDrag(
+      draft.kind,
+      draft.start,
+      draft.end,
+      id,
+      subcircuitPage ? { npins: String(subcircuitPinCount) } : undefined,
+    );
     const noteCount = currentPage(docRef.current).components.filter((component) => component.kind === "NOTE").length;
     const withNoteDefaults = withDefaultNoteColor(base, noteCount);
     const withSubcircuit: CircuitComponent = subcircuitPage
@@ -2268,6 +2369,7 @@ export function Editor() {
     const targetWireId = wireIdFromTarget(e.target);
     const targetComponentId = componentIdFromTarget(e.target);
     const targetNoteResizeId = noteResizeIdFromTarget(e.target);
+    const targetSubxResizeId = subxResizeIdFromTarget(e.target);
 
     if (tool === "select" && targetNoteResizeId) {
       const note = page.components.find(
@@ -2282,6 +2384,25 @@ export function Editor() {
         startWorld: raw,
         initialWidth: noteComponentWidth(note, lines),
         initialHeight: noteComponentHeight(note, lines),
+        committed: false,
+      });
+      return;
+    }
+
+    if (tool === "select" && targetSubxResizeId) {
+      const component = page.components.find(
+        (candidate) => candidate.id === targetSubxResizeId && candidate.kind === "SUBX",
+      );
+      if (!component) return;
+      const minHeight = subcircuitBodyHeight({ ...component, params: { ...component.params, h: "" } });
+      setSelectedIds(new Set([component.id]));
+      setHoverId(null);
+      setSubxResize({
+        componentId: component.id,
+        startWorld: raw,
+        initialWidth: subcircuitBodyWidth(component),
+        initialHeight: subcircuitBodyHeight(component),
+        minHeight,
         committed: false,
       });
       return;
@@ -2364,10 +2485,11 @@ export function Editor() {
         const prev = activeDraft[activeDraft.length - 1];
         const route = [
           ...activeDraft,
-          ...routeWireSegment(
+          ...routeWireSegmentAvoiding(
             { x: prev[0], y: prev[1] },
             { x: target[0], y: target[1] },
             snapToGrid,
+            { components: page.components, wires: page.wires },
           ).slice(1),
         ];
         // If we landed on a pin and have ≥1 real segment, commit the wire.
@@ -2479,6 +2601,10 @@ export function Editor() {
     if (kindTool === "SUBX" && !subcircuitPage) {
       showCanvasNotice("Choose a schematic from the Subcircuits menu first.");
       selectTool("select");
+      return;
+    }
+    if (kindTool === "SUBX" && subcircuitPage && subcircuitPortCount(subcircuitPage) === 0) {
+      showCanvasNotice(`Add port labels to "${subcircuitPage.name}" before placing it as a subcircuit.`);
       return;
     }
     const start =
@@ -2593,6 +2719,46 @@ export function Editor() {
       return;
     }
 
+    if (subxResize) {
+      setHoverId(null);
+      const delta = subxResize.committed
+        ? canvasDragDelta(subxResize.startWorld, raw, snapToGridRef.current)
+        : canvasDragDeltaAfterThreshold(subxResize.startWorld, raw, snapToGridRef.current);
+      if (!delta) return;
+      const width = normalizeCoord(Math.max(3.4, subxResize.initialWidth + delta.x));
+      const height = normalizeCoord(Math.max(subxResize.minHeight, subxResize.initialHeight + delta.y));
+      if (
+        !subxResize.committed &&
+        width === subxResize.initialWidth &&
+        height === subxResize.initialHeight
+      ) {
+        return;
+      }
+      if (!subxResize.committed) {
+        pushPast(historySnapshot());
+        setFuture([]);
+        setSubxResize({ ...subxResize, committed: true });
+      }
+      previewMutate((d) =>
+        updateCurrentPage(d, (p) => ({
+          ...p,
+          components: p.components.map((component) =>
+            component.id === subxResize.componentId && component.kind === "SUBX"
+              ? {
+                  ...component,
+                  params: {
+                    ...component.params,
+                    w: String(width),
+                    h: String(height),
+                  },
+                }
+              : component,
+          ),
+        })),
+      );
+      return;
+    }
+
     if (scopeDrag) {
       setHoverId(null);
       const delta = scopeDrag.committed
@@ -2665,11 +2831,16 @@ export function Editor() {
             if (w.id !== wireId) return w;
             return {
               ...w,
-              points: reshapeDraggedWirePoint(
+              points: reshapeDraggedWirePointAvoiding(
                 wireDrag.initialPoints,
                 pointIdx,
                 [nx, ny],
                 !snapToGridRef.current,
+                {
+                  components: p.components,
+                  wires: p.wires,
+                  ignoreWireIds: new Set([wireId]),
+                },
               ),
             };
           }),
@@ -2773,6 +2944,9 @@ export function Editor() {
     if (noteResize) {
       setNoteResize(null);
     }
+    if (subxResize) {
+      setSubxResize(null);
+    }
     if (wireDrag) {
       if (wireDrag.committed) {
         const finalWire = currentPage(docRef.current).wires.find(
@@ -2810,10 +2984,11 @@ export function Editor() {
         const start = activeWireDraft[activeWireDraft.length - 1];
         const route = [
           ...activeWireDraft,
-          ...routeWireSegment(
+          ...routeWireSegmentAvoiding(
             { x: start[0], y: start[1] },
             target,
             snapToGrid,
+            { components: page.components, wires: page.wires },
           ).slice(1),
         ];
         commitWireRoute(route);
@@ -2859,6 +3034,11 @@ export function Editor() {
             snapToGrid,
             insertedInline,
             () => makeId("w"),
+            {
+              components: [...p.components, c],
+              wires: nextWires,
+              ignoreComponentIds: new Set([c.id]),
+            },
           );
           addedStubCount = placementWires.length;
           for (const w of placementWires) {
@@ -2944,11 +3124,25 @@ export function Editor() {
     const items: ContextMenuEntry[] = [];
     if (working.size > 0) {
       const hasSelectedComponents = page.components.some((c) => working.has(c.id));
+      const autoFormatCount = wireIdsForAutoFormat(page, working).size;
       if (hasSelectedComponents) {
         items.push({ label: "Rotate", shortcut: "⇧R", onSelect: () => rotateSelected() });
+        items.push({ label: "Mirror", onSelect: () => mirrorSelected() });
       }
       items.push(
         { label: "Fit Selection", shortcut: "⇧2", onSelect: () => fitSelectionToContent() },
+        {
+          label: "Auto arrange selection",
+          disabled: !hasSelectedComponents,
+          onSelect: () => {
+            void autoArrangeSchematic(working);
+          },
+        },
+        {
+          label: "Auto format wiring",
+          disabled: autoFormatCount === 0,
+          onSelect: () => autoFormatWiring(working),
+        },
         { divider: true },
         { label: "Copy", shortcut: "⌘C", onSelect: () => void copySelectionToClipboard() },
         { label: "Duplicate", shortcut: "⌘D", onSelect: () => duplicateSelection() },
@@ -2964,6 +3158,13 @@ export function Editor() {
     } else {
       items.push(
         { label: "Fit to Content", shortcut: "⇧F", onSelect: () => fitToContent() },
+        {
+          label: "Auto arrange schematic",
+          onSelect: () => {
+            void autoArrangeSchematic(new Set());
+          },
+        },
+        { label: "Auto format wiring", onSelect: () => autoFormatWiring(new Set()) },
         {
           label: gridVisible ? "Hide Grid" : "Show Grid",
           shortcut: "⇧G",
@@ -2995,7 +3196,30 @@ export function Editor() {
     setContextMenu({ x: e.clientX, y: e.clientY, items });
   }
 
-  function onCanvasDoubleClick() {
+  function onCanvasDoubleClick(e: React.MouseEvent<SVGSVGElement>) {
+    const targetComponentId = componentIdFromTarget(e.target);
+    if (targetComponentId) {
+      const component = page.components.find((c) => c.id === targetComponentId);
+      if (component?.kind === "LABEL" || component?.kind === "NOTE") {
+        e.preventDefault();
+        e.stopPropagation();
+        beginTextEdit(component);
+        return;
+      }
+      if (component?.kind === "SUBX") {
+        e.preventDefault();
+        e.stopPropagation();
+        const targetPage = subcircuitPageForInstance(docRef.current, component);
+        if (!targetPage) {
+          showCanvasNotice(`No schematic named "${component.value || "subcircuit"}"`);
+          return;
+        }
+        commit((d) => ({ ...d, activePageId: targetPage.id }));
+        resetInteractionState();
+        setStatus(`Opened subcircuit: ${targetPage.name}`);
+        return;
+      }
+    }
     const activeDraft = wireDraftRef.current;
     if (tool === "wire" && activeDraft && activeDraft.length >= 2) {
       commitWireRoute(activeDraft);
@@ -3085,6 +3309,49 @@ export function Editor() {
     );
   }
 
+  function mirrorSelected(selection: Set<string> = selectedIds) {
+    if (selection.size === 0) return;
+    const selected = new Set(selection);
+    commit((d) =>
+      updateCurrentPage(d, (p) => {
+        const pinMoves = collectMirroredPinMoves(p.components, selected);
+        const contactWires = buildRotatedPinContactWires(
+          p.components,
+          p.wires,
+          selected,
+          pinMoves,
+          snapToGridRef.current,
+        );
+        let nextWires = moveWiresToRotatedPins(p.wires, pinMoves, snapToGridRef.current);
+        for (const wire of contactWires) {
+          nextWires = addWireWithJunctions({ wires: nextWires }, wire).wires;
+        }
+        const nextComponents = p.components.map((c) =>
+          selected.has(c.id) ? { ...c, mirrored: c.mirrored ? undefined : true } : c,
+        );
+        const movedPinProbes = moveProbesWithPinMoves(
+          p.probes,
+          pinMoves,
+          p.components,
+          p.wires,
+          selected,
+        );
+        const nextProbes = moveUnmovedProbesWithChangedWirePaths(
+          movedPinProbes,
+          p.probes,
+          p.wires,
+          nextWires,
+        );
+        return {
+          ...p,
+          components: nextComponents,
+          wires: pruneUnanchoredWireJunctions(nextWires, nextComponents, nextProbes),
+          probes: nextProbes,
+        };
+      }),
+    );
+  }
+
   function nudgeSelection(dx: number, dy: number) {
     const selected = selRef.current;
     if (selected.size === 0) return;
@@ -3100,14 +3367,13 @@ export function Editor() {
     } =
       collectDragMotion(selected, p);
     if (initial.size === 0 && initialWires.size === 0) return;
-    const contactWires = buildTranslatedPinContactWires(
-      directContactPins,
-      dx,
-      dy,
-      snapToGridRef.current,
-    );
     commit((d) =>
       updateCurrentPage(d, (page) => {
+        const nextComponents = page.components.map((c) => {
+          const init = initial.get(c.id);
+          if (!init) return c;
+          return { ...c, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
+        });
         const movedWires = applyMovedWires(
           page.wires,
           initialWires,
@@ -3117,33 +3383,28 @@ export function Editor() {
           dx,
           dy,
           snapToGridRef.current,
+          { components: nextComponents, wires: page.wires, ignoreComponentIds: selected },
         );
-        const nextComponents = page.components.map((c) => {
-          const init = initial.get(c.id);
-          if (!init) return c;
-          return { ...c, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
-        });
         let nextProbes = page.probes.map((pr) => {
           const wireAttachment = movingWireProbeAttachments.get(pr.id);
           if (wireAttachment) {
-            const wire = initialWires.get(wireAttachment.wireId);
-            return wire
-              ? {
-                  ...pr,
-                  ...movePointWithAnchoredWire(
-                    wireAttachment.point,
-                    wire,
-                    dx,
-                    dy,
-                    movingWireAnchors.get(wireAttachment.wireId) ?? {},
-                  ),
-                }
-              : pr;
+            return {
+              ...pr,
+              ...moveProbeOnChangedWirePath(wireAttachment, initialWires, movedWires, dx, dy),
+            };
           }
           const init = initial.get(pr.id);
           if (!init) return pr;
           return { ...pr, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
         });
+        const contactWires = buildTranslatedPinContactWires(
+          directContactPins,
+          dx,
+          dy,
+          snapToGridRef.current,
+          { ...page, components: nextComponents, wires: movedWires },
+          selected,
+        );
         const nextWires = appendConnectionWires(movedWires, contactWires);
         nextProbes = moveUnmovedProbesWithChangedWirePaths(
           nextProbes,
@@ -3158,6 +3419,40 @@ export function Editor() {
           wires: pruneUnanchoredWireJunctions(nextWires, nextComponents, nextProbes),
         };
       }),
+    );
+  }
+
+  function autoFormatWiring(selection: Set<string> = selectedIds) {
+    commit((d) =>
+      updateCurrentPage(d, (p) => {
+        const targetWireIds = wireIdsForAutoFormat(p, selection);
+        if (targetWireIds.size === 0) return p;
+        const formattedPage = autoFormatWiresAvoiding(p, targetWireIds);
+        return {
+          ...formattedPage,
+          wires: pruneUnanchoredWireJunctions(formattedPage.wires, p.components, p.probes),
+        };
+      }),
+    );
+    const count = wireIdsForAutoFormat(page, selection).size;
+    setStatus(count > 0 ? `Auto-formatted ${count} wire${count === 1 ? "" : "s"}` : "No wires to format");
+  }
+
+  async function autoArrangeSchematic(selection: Set<string> = selectedIds) {
+    const sourcePage = currentPage(docRef.current);
+    const { autoArrangePage } = await loadAutoLayoutModule();
+    const result = await autoArrangePage(sourcePage, selection);
+    if (result.movedComponentIds.length === 0) {
+      setStatus("No components to arrange");
+      return;
+    }
+    commit((d) =>
+      updateCurrentPage(d, (p) => (p.id === sourcePage.id ? result.page : p)),
+    );
+    const scope = selection.size > 0 ? "selection" : "schematic";
+    const wireText = result.formattedWireIds.length === 1 ? "wire" : "wires";
+    setStatus(
+      `Auto-arranged ${scope} and formatted ${result.formattedWireIds.length} ${wireText}`,
     );
   }
 
@@ -3218,6 +3513,61 @@ export function Editor() {
     );
   }
 
+  function beginTextEdit(component: CircuitComponent) {
+    if (component.kind !== "LABEL" && component.kind !== "NOTE") return;
+    textEditCancelBlurRef.current = false;
+    setSelectedIds(new Set([component.id]));
+    setTool("select");
+    setDrag(null);
+    setWireDrag(null);
+    setScopeDrag(null);
+    setNoteResize(null);
+    setPlacementDraft(null);
+    setWireDraft(null);
+    updateWireGesture(null);
+    setTextEdit({
+      componentId: component.id,
+      kind: component.kind,
+      value: component.value,
+    });
+  }
+
+  function cancelTextEdit() {
+    textEditCancelBlurRef.current = true;
+    setTextEdit(null);
+  }
+
+  function commitTextEdit(value = textEdit?.value ?? "") {
+    textEditCancelBlurRef.current = false;
+    if (!textEdit) return;
+    const nextValue = textEdit.kind === "LABEL" ? value.trim() : value;
+    const component = page.components.find((c) => c.id === textEdit.componentId);
+    if (component && component.value !== nextValue) {
+      updateValue(textEdit.componentId, nextValue);
+      setStatus(`${COMPONENT_LABELS[textEdit.kind]} updated`);
+    }
+    setTextEdit(null);
+  }
+
+  function onTextEditKeyDown(e: ReactKeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
+    e.stopPropagation();
+    if (!textEdit) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      cancelTextEdit();
+      return;
+    }
+    if (textEdit.kind === "LABEL" && e.key === "Enter") {
+      e.preventDefault();
+      commitTextEdit();
+      return;
+    }
+    if (textEdit.kind === "NOTE" && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      commitTextEdit();
+    }
+  }
+
   function updateComponentModel(id: string, value: string) {
     commit((d) => {
       const nextDoc = updateCurrentPage(d, (p) => ({
@@ -3226,6 +3576,30 @@ export function Editor() {
       }));
       return ensureBuiltinModelDirective(nextDoc, value);
     });
+  }
+
+  function addSharedModel(type: ModelDeviceType) {
+    const model: ModelDefinition = {
+      name: uniqueModelName(modelDefinitions, `${type}_MODEL`),
+      type,
+      params: defaultModelParams(type),
+    };
+    commit((d) => ({
+      ...d,
+      directives: upsertModelDefinition(d.directives, model),
+    }));
+    setStatus(`Added model: ${model.name}`);
+  }
+
+  function updateSharedModel(previous: ModelDefinition, next: ModelDefinition) {
+    const normalized = normalizeModelDefinition(next);
+    if (!normalized) return;
+    commit((d) => updateModelDefinitionInDoc(d, previous, normalized));
+  }
+
+  function removeSharedModel(model: ModelDefinition) {
+    commit((d) => removeModelDefinitionInDoc(d, model));
+    setStatus(`Removed model: ${model.name}`);
   }
 
   function updateComponentPosition(id: string, axis: "x" | "y", raw: string) {
@@ -3247,14 +3621,11 @@ export function Editor() {
       directContactPins,
     } =
       collectDragMotion(new Set([id]));
-    const contactWires = buildTranslatedPinContactWires(
-      directContactPins,
-      dx,
-      dy,
-      snapToGridRef.current,
-    );
     commit((d) =>
       updateCurrentPage(d, (p) => {
+        const nextComponents = p.components.map((c) =>
+          c.id === id ? { ...c, ...normalizePoint({ x: c.x + dx, y: c.y + dy }) } : c,
+        );
         const movedWires = applyMovedWires(
           p.wires,
           initialWires,
@@ -3264,31 +3635,28 @@ export function Editor() {
           dx,
           dy,
           snapToGridRef.current,
-        );
-        const nextComponents = p.components.map((c) =>
-          c.id === id ? { ...c, ...normalizePoint({ x: c.x + dx, y: c.y + dy }) } : c,
+          { components: nextComponents, wires: p.wires, ignoreComponentIds: new Set([id]) },
         );
         let nextProbes = p.probes.map((pr) => {
           const wireAttachment = movingWireProbeAttachments.get(pr.id);
           if (wireAttachment) {
-            const wire = initialWires.get(wireAttachment.wireId);
-            return wire
-              ? {
-                  ...pr,
-                  ...movePointWithAnchoredWire(
-                    wireAttachment.point,
-                    wire,
-                    dx,
-                    dy,
-                    movingWireAnchors.get(wireAttachment.wireId) ?? {},
-                  ),
-                }
-              : pr;
+            return {
+              ...pr,
+              ...moveProbeOnChangedWirePath(wireAttachment, initialWires, movedWires, dx, dy),
+            };
           }
           const init = initial.get(pr.id);
           if (!init) return pr;
           return { ...pr, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
         });
+        const contactWires = buildTranslatedPinContactWires(
+          directContactPins,
+          dx,
+          dy,
+          snapToGridRef.current,
+          { ...p, components: nextComponents, wires: movedWires },
+          new Set([id]),
+        );
         const nextWires = appendConnectionWires(movedWires, contactWires);
         nextProbes = moveUnmovedProbesWithChangedWirePaths(
           nextProbes,
@@ -3333,6 +3701,32 @@ export function Editor() {
     );
   }
 
+  function setLabelPort(id: string, enabled: boolean) {
+    commit((d) =>
+      updateCurrentPage(d, (p) => {
+        const existingOrders = p.components
+          .filter((component) => component.id !== id && component.kind === "LABEL" && component.params?.port === "1")
+          .map((component) => parsePortOrder(component.params?.portOrder) ?? 0);
+        const nextOrder = Math.max(0, ...existingOrders) + 1;
+        return {
+          ...p,
+          components: p.components.map((c) => {
+            if (c.id !== id) return c;
+            const params = { ...(c.params ?? {}) };
+            if (enabled) {
+              params.port = "1";
+              if (!parsePortOrder(params.portOrder)) params.portOrder = String(nextOrder);
+            } else {
+              params.port = "0";
+              delete params.portOrder;
+            }
+            return { ...c, params };
+          }),
+        };
+      }),
+    );
+  }
+
   function applyPresetToComponent(id: string, presetId: string) {
     const component = page.components.find((c) => c.id === id);
     const presetKind = component ? mosfetPresetKindForComponentKind(component.kind) : null;
@@ -3352,17 +3746,23 @@ export function Editor() {
     setStatus(`Applied preset: ${preset.name}`);
   }
 
-  function saveSelectedMosfetPreset(component: CircuitComponent) {
-    const presetKind = mosfetPresetKindForComponentKind(component.kind);
-    if (!presetKind) return;
-    const name = window.prompt("Preset name", `${presetKind} custom`);
-    const preset = mosfetPresetFromComponent(component, name ?? "");
-    if (!preset) return;
+  function persistCustomMosfetPreset(component: CircuitComponent, name: string): MosfetPreset | null {
+    const preset = mosfetPresetFromComponent(component, name);
+    if (!preset) return null;
     const next = mergeMosfetPresets([...customMosfetPresets, preset], []);
     setCustomMosfetPresets(next);
     saveCustomMosfetPresets(next);
     setSelectedMosfetPresetId((prev) => ({ ...prev, [preset.kind]: preset.id }));
     updateParam(component.id, "preset", preset.id);
+    return preset;
+  }
+
+  function saveSelectedMosfetPreset(component: CircuitComponent) {
+    const presetKind = mosfetPresetKindForComponentKind(component.kind);
+    if (!presetKind) return;
+    const name = window.prompt("Preset name", `${presetKind} custom`);
+    const preset = persistCustomMosfetPreset(component, name ?? "");
+    if (!preset) return;
     setStatus(`Saved preset: ${preset.name}`);
   }
 
@@ -3381,12 +3781,22 @@ export function Editor() {
   function setDefaultMosfetPresetForComponent(component: CircuitComponent) {
     const presetKind = mosfetPresetKindForComponentKind(component.kind);
     if (!presetKind) return;
-    setDefaultMosfetPreset(
-      presetKind,
-      component.params?.preset ??
-        selectedMosfetPresetId[presetKind] ??
-        defaultMosfetPresetId(presetKind),
+    const matchingPreset = mosfetPresets.find((preset) =>
+      componentMatchesMosfetPreset(component, preset),
     );
+    if (matchingPreset) {
+      if (component.params?.preset !== matchingPreset.id) {
+        updateParam(component.id, "preset", matchingPreset.id);
+      }
+      setDefaultMosfetPreset(presetKind, matchingPreset.id);
+      return;
+    }
+
+    const name = window.prompt("Preset name", `${presetKind} custom`);
+    const preset = persistCustomMosfetPreset(component, name ?? "");
+    if (!preset) return;
+    setDefaultMosfetPreset(preset.kind, preset.id);
+    setStatus(`Saved and set default: ${preset.name}`);
   }
 
   function updateProbeLabel(id: string, label: string) {
@@ -3432,11 +3842,7 @@ export function Editor() {
 
   async function copySelectionToClipboard() {
     const p = currentPage(docRef.current);
-    const next = {
-      components: p.components.filter((c) => selRef.current.has(c.id)),
-      wires: p.wires.filter((w) => selRef.current.has(w.id)),
-      probes: p.probes.filter((pr) => selRef.current.has(pr.id)),
-    };
+    const next = collectSelectedTopology(p, selRef.current);
     if (next.components.length === 0 && next.wires.length === 0 && next.probes.length === 0) {
       return;
     }
@@ -3514,9 +3920,7 @@ export function Editor() {
 
   function duplicateSelection() {
     const p = currentPage(docRef.current);
-    const comps = p.components.filter((c) => selRef.current.has(c.id));
-    const wires = p.wires.filter((w) => selRef.current.has(w.id));
-    const probes = p.probes.filter((pr) => selRef.current.has(pr.id));
+    const { components: comps, wires, probes } = collectSelectedTopology(p, selRef.current);
     if (comps.length === 0 && wires.length === 0 && probes.length === 0) return;
     const newComps = comps.map((c) => ({
       ...c,
@@ -3670,6 +4074,7 @@ export function Editor() {
       setLog("Simulation engine offline. Launch the Tauri app for native ngspice, or use a browser build with a WASM simulator backend.");
       setRunWarnings([]);
       setRunFloatingPins([]);
+      setRunModelDiagnostics([]);
       return;
     }
     if (currentPage(docRef.current).components.length === 0) {
@@ -3677,6 +4082,7 @@ export function Editor() {
       setStatus("✗ Place at least one component from the palette before running.");
       setRunWarnings([]);
       setRunFloatingPins([]);
+      setRunModelDiagnostics([]);
       return;
     }
     const analysisIssues = validateAnalysisSpec(docRef.current.analysis);
@@ -3687,6 +4093,7 @@ export function Editor() {
       setLog("Fix simulation settings before running:\n" + messages.map((m) => `  • ${m}`).join("\n"));
       setRunWarnings(messages);
       setRunFloatingPins([]);
+      setRunModelDiagnostics([]);
       return;
     }
     const runId = latestRunIdRef.current + 1;
@@ -3695,8 +4102,30 @@ export function Editor() {
     setRunning(true);
     setStatus("Building netlist…");
     const result = buildNetlist(docRef.current);
-    setRunWarnings(result.warnings);
+    const runIssues = [...result.errors, ...result.warnings];
+    setRunWarnings(runIssues);
     setRunFloatingPins(result.floatingPins);
+    setRunModelDiagnostics(result.modelDiagnostics);
+      if (result.errors.length > 0) {
+        setReadings(null);
+        setSimResult(null);
+        setSimulationStale(false);
+        setSelectedTraces(new Set());
+      setPlaying(false);
+      setWaveformVisible(false);
+      setStatus(
+        `✗ Netlist has ${result.errors.length} error${result.errors.length === 1 ? "" : "s"}`,
+      );
+      setLog(
+        "Fix netlist errors before running:\n" +
+          result.errors.map((m) => `  • ${m}`).join("\n") +
+          (result.warnings.length
+            ? "\n\nNetlist warnings:\n" + result.warnings.map((m) => `  • ${m}`).join("\n")
+            : ""),
+      );
+      setRunning(false);
+      return;
+    }
     try {
       setStatus("Running ngspice…");
       const apiAnalysis = analysisToApi(docRef.current.analysis);
@@ -3710,6 +4139,7 @@ export function Editor() {
         log: sim.log,
         measurements: sim.measurements,
       });
+      setSimulationStale(false);
       setWaveformVisible(true);
       setWaveformRunKey((key) => key + 1);
       const scale = sim.vectors.find((v) => v.is_scale);
@@ -3739,6 +4169,7 @@ export function Editor() {
       const summary = summarizeSimulationError(raw);
       setReadings(null);
       setSimResult(null);
+      setSimulationStale(false);
       setSelectedTraces(new Set());
       setPlaying(false);
       setWaveformVisible(false);
@@ -3804,6 +4235,15 @@ export function Editor() {
   const lastSelectedProbe = selectedProbeList[selectedProbeList.length - 1] ?? null;
   const selectedObjectCount =
     selectedList.length + selectedWireList.length + selectedProbeList.length;
+  const selectedAutoFormatWireCount = useMemo(
+    () => wireIdsForAutoFormat(page, selectedIds).size,
+    [page, selectedIds],
+  );
+  const arrangeableComponentCount = useMemo(
+    () => page.components.filter((component) => component.kind !== "NOTE").length,
+    [page.components],
+  );
+  const showInspectorActions = selectedObjectCount > 0 || arrangeableComponentCount > 0 || page.wires.length > 0;
   const selectionBounds = useMemo(() => {
     if (tool !== "select" || selectedObjectCount <= 1) return null;
     const bounds = collectPageBounds(page, selectedIds);
@@ -3833,7 +4273,12 @@ export function Editor() {
   // rebuild. The annotations driven from this (refdes labels, hover node
   // names) don't materially change while a component is being moved; reuse
   // the previous result until the drag commits at pointerup.
-  const isDragging = drag !== null || wireDrag !== null || scopeDrag !== null || noteResize !== null;
+  const isDragging =
+    drag !== null ||
+    wireDrag !== null ||
+    scopeDrag !== null ||
+    noteResize !== null ||
+    subxResize !== null;
   const lastPinAnnotationsRef = useRef<ReturnType<typeof buildNetlist> | null>(null);
   const pinAnnotations = useMemo(() => {
     if (isDragging && lastPinAnnotationsRef.current) {
@@ -3912,13 +4357,26 @@ export function Editor() {
     wireDrag,
     scopeDrag,
     noteResize,
+    subxResize,
     placementDraft,
     marquee,
     panning,
     wireDraft,
     wireGesture,
   });
-  const autoRunPaused = autoRun && (tool !== "select" || canvasInteractionActive);
+  const autoRunComponentCount = page.components.length;
+  const autoRunHasGround = page.components.some((c) => c.kind === "GND");
+  const autoRunHasStimulus = page.components.some((c) => isSimulationStimulusKind(c.kind));
+  const autoRunUi = describeAutoRunStatus({
+    autoRun,
+    running,
+    engineOk,
+    tool,
+    interactionActive: canvasInteractionActive,
+    componentCount: autoRunComponentCount,
+    hasGround: autoRunHasGround,
+    hasStimulus: autoRunHasStimulus,
+  });
 
   // Auto-run: debounced sim re-run on any doc change.
   const runRef = useRef<() => void>(() => {});
@@ -3935,23 +4393,15 @@ export function Editor() {
     // Preview drags mutate the document while the Select tool is active. Wait
     // for pointer-up/cancel so ngspice never runs against transient geometry.
     if (canvasInteractionActive) return;
-    if (running) return;
-    if (engineOk === false) return; // skip storms when ngspice unavailable
-    if (page.components.length === 0) return;
-    // Skip auto-run on incomplete circuits. Need at least one GND reference,
-    // a source-of-some-kind, and 2+ components. Avoids running OP on a
-    // single dangling resistor or capacitor — wastes CPU and produces a
-    // nonsense plot.
-    const hasGnd = page.components.some((c) => c.kind === "GND");
-    const hasSource = page.components.some((c) => isSimulationStimulusKind(c.kind));
-    if (!hasGnd || !hasSource || page.components.length < 2) return;
+    if (!autoRunUi.runnable) return;
     const t = setTimeout(() => runRef.current(), 400);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, autoRun, engineOk, tool, canvasInteractionActive]);
+  }, [doc, autoRunUi.runnable, tool, canvasInteractionActive]);
 
   // Voltage overlay readings interpolated at playTime when a transient result exists.
   const liveReadings = useMemo(() => {
+    if (simulationStale) return null;
     if (!simResult) return readings;
     const scale = simResult.vectors.find((v) => v.is_scale);
     if (!scale || scale.data.length <= 1) return readings;
@@ -3969,7 +4419,7 @@ export function Editor() {
     }
     out.set("0", 0);
     return out;
-  }, [simResult, playTime, pinAnnotations, readings]);
+  }, [simulationStale, simResult, playTime, pinAnnotations, readings]);
 
   const transientScale = simResult?.vectors.find((v) => v.is_scale);
   const isTransient =
@@ -3980,7 +4430,7 @@ export function Editor() {
   // dashed motion implies "this circuit is alive" which is misleading
   // when ngspice's result is built on top of broken connectivity.
   const liveActive =
-    isTransient && liveFlow && runFloatingPins.length === 0;
+    isTransient && !simulationStale && liveFlow && runFloatingPins.length === 0;
   const nodeDisplayLabels = useMemo(() => {
     const labels = new Map<string, string>();
     for (const c of page.components) {
@@ -4174,7 +4624,7 @@ export function Editor() {
     : null;
   const modelDefinitions = useMemo(() => {
     const byKey = new Map<string, ModelDefinition>();
-    for (const model of BUILTIN_MOSFET_MODELS) {
+    for (const model of BUILTIN_MODEL_DEFINITIONS) {
       byKey.set(`${model.type}:${model.name}`, model);
     }
     for (const model of parseModelDefinitions(doc.directives)) {
@@ -4182,6 +4632,47 @@ export function Editor() {
     }
     return Array.from(byKey.values());
   }, [doc.directives]);
+  const customModelDefinitions = useMemo(
+    () => parseModelDefinitions(doc.directives),
+    [doc.directives],
+  );
+  const sharedModelRows = useMemo(() => {
+    const byKey = new Map<
+      string,
+      { model: ModelDefinition; source: "builtin" | "custom" }
+    >();
+    for (const model of BUILTIN_MODEL_DEFINITIONS) {
+      byKey.set(`${model.type}:${model.name.toLowerCase()}`, {
+        model,
+        source: "builtin",
+      });
+    }
+    for (const model of customModelDefinitions) {
+      byKey.set(`${model.type}:${model.name.toLowerCase()}`, {
+        model,
+        source: "custom",
+      });
+    }
+    return Array.from(byKey.values()).sort((a, b) =>
+      a.model.type === b.model.type
+        ? a.model.name.localeCompare(b.model.name)
+        : a.model.type.localeCompare(b.model.type),
+    );
+  }, [customModelDefinitions]);
+  const modelUsageCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const schematic of doc.pages) {
+      for (const component of schematic.components) {
+        const value = component.value.trim();
+        if (!value) continue;
+        for (const type of modelTypesForKind(component.kind)) {
+          const key = `${type}:${value.toLowerCase()}`;
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+      }
+    }
+    return counts;
+  }, [doc.pages]);
   const mosfetPresets = useMemo(
     () => mergeMosfetPresets(BUILTIN_MOSFET_PRESETS, customMosfetPresets),
     [customMosfetPresets],
@@ -4212,6 +4703,10 @@ export function Editor() {
   function selectSubcircuitTool(pageId: string) {
     const target = docRef.current.pages.find((p) => p.id === pageId);
     if (!target) return;
+    if (subcircuitPortCount(target) === 0) {
+      showCanvasNotice(`Add port labels to "${target.name}" before placing it as a subcircuit.`);
+      return;
+    }
     setSelectedSubcircuitPageId(pageId);
     selectTool("SUBX");
     setStatus(`Subcircuit tool: ${target.name}`);
@@ -4236,6 +4731,24 @@ export function Editor() {
     setPan({
       x: rect.width / 2 - pin.x * CELL * zoom,
       y: rect.height / 2 - pin.y * CELL * zoom,
+    });
+  }
+
+  function selectModelDiagnostic(diagnostic: ModelDiagnostic) {
+    const targetPage = docRef.current.pages.find((p) => p.id === diagnostic.pageId);
+    if (!targetPage) return;
+    const component = targetPage.components.find((c) => c.id === diagnostic.componentId);
+    if (!component) return;
+    if (docRef.current.activePageId !== targetPage.id) {
+      commit((d) => ({ ...d, activePageId: targetPage.id }));
+    }
+    setSelectedIds(new Set([diagnostic.componentId]));
+    setTool("select");
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setPan({
+      x: rect.width / 2 - component.x * CELL * zoom,
+      y: rect.height / 2 - component.y * CELL * zoom,
     });
   }
 
@@ -4545,9 +5058,9 @@ export function Editor() {
           </div>
         </div>
 
-        {selectedObjectCount > 0 && (
+        {showInspectorActions && (
           <div className="sidebar-section">
-            <div className="section-label">Inspector</div>
+            <div className="section-label">{selectedObjectCount > 0 ? "Inspector" : "Canvas"}</div>
             <div className="inspector">
               {lastSelected ? (
                 <>
@@ -4707,17 +5220,23 @@ export function Editor() {
                             onChange={(e) => updateParam(lastSelected.id, "color", e.target.value)}
                             aria-label="Note color"
                           />
-                          <div className="note-color-swatches" aria-label="Suggested note colors">
-                            {NOTE_COLOR_PALETTE.map((color) => (
+                          <div className="note-color-swatches" aria-label="Annotation color presets">
+                            {NOTE_COLOR_PRESETS.map((preset) => (
                               <button
-                                key={color}
+                                key={preset.id}
                                 type="button"
                                 className="note-color-swatch"
-                                style={{ backgroundColor: color }}
-                                aria-label={`Set note color ${color}`}
-                                aria-pressed={noteColor(lastSelected).toLowerCase() === color.toLowerCase()}
-                                onClick={() => updateParam(lastSelected.id, "color", color)}
-                              />
+                                aria-label={`Set note preset: ${preset.label}`}
+                                aria-pressed={noteColor(lastSelected).toLowerCase() === preset.color.toLowerCase()}
+                                title={preset.label}
+                                onClick={() => updateParam(lastSelected.id, "color", preset.color)}
+                              >
+                                <span
+                                  className="note-color-swatch-dot"
+                                  style={{ backgroundColor: preset.color }}
+                                />
+                                <span>{preset.label}</span>
+                              </button>
                             ))}
                           </div>
                         </div>
@@ -4753,12 +5272,58 @@ export function Editor() {
                           type="checkbox"
                           checked={lastSelected.params?.port === "1"}
                           onChange={(e) =>
-                            updateParam(lastSelected.id, "port", e.target.checked ? "1" : "0")
+                            setLabelPort(lastSelected.id, e.target.checked)
                           }
                         />
                         <span>Expose as pin</span>
                       </label>
                     </Row>
+                  )}
+                  {lastSelected.kind === "LABEL" &&
+                    doc.pages[0]?.id !== page.id &&
+                    lastSelected.params?.port === "1" && (
+                      <Row label="Pin order">
+                        <input
+                          className="value-input"
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={lastSelected.params?.portOrder ?? ""}
+                          placeholder="Auto"
+                          onChange={(e) => updateParam(lastSelected.id, "portOrder", e.target.value)}
+                          title="External subcircuit pin order used by the generated .subckt line and placed SUBX symbol"
+                        />
+                      </Row>
+                    )}
+                  {lastSelected.kind === "SUBX" && (
+                    <>
+                      <Row label="Symbol width">
+                        <input
+                          className="value-input"
+                          type="number"
+                          min="3.4"
+                          max="16"
+                          step="0.1"
+                          value={lastSelected.params?.w ?? ""}
+                          placeholder="4.8"
+                          onChange={(e) => updateParam(lastSelected.id, "w", e.target.value)}
+                          title="Subcircuit body width in grid units"
+                        />
+                      </Row>
+                      <Row label="Symbol height">
+                        <input
+                          className="value-input"
+                          type="number"
+                          min="2"
+                          max="24"
+                          step="0.1"
+                          value={lastSelected.params?.h ?? ""}
+                          placeholder="Auto"
+                          onChange={(e) => updateParam(lastSelected.id, "h", e.target.value)}
+                          title="Subcircuit body height in grid units; pins spread along each side"
+                        />
+                      </Row>
+                    </>
                   )}
                   {mosfetPresetKindForComponentKind(lastSelected.kind) && (
                     <>
@@ -4939,12 +5504,40 @@ export function Editor() {
               ) : null}
               <div className="inspector-actions">
                 {selectedList.length > 0 && <button onClick={() => rotateSelected()}>Rotate</button>}
+                {selectedList.length > 0 && <button onClick={() => mirrorSelected()}>Mirror</button>}
+                <button
+                  onClick={() => {
+                    void autoArrangeSchematic(selectedList.length > 0 ? selectedIds : new Set());
+                  }}
+                  disabled={arrangeableComponentCount === 0}
+                  title={
+                    selectedList.length > 0
+                      ? "Arrange selected components with ELK and re-route their wires"
+                      : arrangeableComponentCount > 0
+                        ? "Arrange the whole schematic with ELK and re-route its wires"
+                        : "Add components to arrange"
+                  }
+                >
+                  Auto arrange
+                </button>
+                <button
+                  onClick={() => autoFormatWiring()}
+                  disabled={selectedAutoFormatWireCount === 0}
+                  title={
+                    selectedAutoFormatWireCount === 0
+                      ? "Add wires, or select wires or connected components to re-route"
+                      : selectedObjectCount > 0
+                        ? "Re-route selected wiring around components and existing wires without moving components"
+                        : "Re-route all wiring around components and existing wires without moving components"
+                  }
+                >
+                  Format wires
+                </button>
                 <button onClick={duplicateSelection}>Duplicate</button>
                 {/* Delete intentionally omitted — Delete/Backspace keyboard
                    shortcuts and the right-click menu already cover it, and
                    a destructive button this close to common edits invites
-                   accidents. Mirror will live here once the underlying
-                   `mirrored` flag lands on the component model (TODO). */}
+                   accidents. */}
               </div>
               {selectedObjectCount > 1 && (
                 <div className="multi-hint">
@@ -5008,6 +5601,110 @@ export function Editor() {
 
         <div className="sidebar-section">
           <div className="section-label">Models & measurements</div>
+          <div className="models-panel">
+            <div className="models-panel-head">
+              <div>
+                <strong>Shared models</strong>
+                <span>Used by model-backed devices across the schematic.</span>
+              </div>
+              <div className="models-add-row">
+                {(["NMOS", "PMOS", "D", "NPN", "PNP"] satisfies ModelDeviceType[]).map((type) => (
+                  <button key={type} type="button" onClick={() => addSharedModel(type)}>
+                    + {type}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="model-list">
+              {sharedModelRows.map(({ model, source }) => {
+                const isCustom = source === "custom";
+                const key = `${model.type}:${model.name}`;
+                const usageCount = modelUsageCounts.get(`${model.type}:${model.name.toLowerCase()}`) ?? 0;
+                return (
+                  <div key={key} className={`model-card ${isCustom ? "custom" : "builtin"}`}>
+                    <div className="model-card-top">
+                      {isCustom ? (
+                        <>
+                          <input
+                            className="model-name-input"
+                            value={model.name}
+                            onChange={(e) =>
+                              updateSharedModel(model, {
+                                ...model,
+                                name: e.target.value,
+                              })
+                            }
+                            aria-label={`${model.name} model name`}
+                            spellCheck={false}
+                          />
+                          <select
+                            className="model-type-select"
+                            value={model.type}
+                            onChange={(e) =>
+                              updateSharedModel(model, {
+                                ...model,
+                                type: e.target.value as ModelDeviceType,
+                              })
+                            }
+                            aria-label={`${model.name} model type`}
+                          >
+                            {(["NMOS", "PMOS", "D", "NPN", "PNP"] satisfies ModelDeviceType[]).map(
+                              (type) => (
+                                <option key={type} value={type}>
+                                  {type}
+                                </option>
+                              ),
+                            )}
+                          </select>
+                          <button
+                            type="button"
+                            className="model-remove-btn"
+                            onClick={() => removeSharedModel(model)}
+                            title={
+                              usageCount > 0
+                                ? `Remove model ${model.name}; ${usageCount} component${usageCount === 1 ? "" : "s"} will switch to the default ${model.type} model`
+                                : `Remove model ${model.name}`
+                            }
+                            aria-label={`Remove model ${model.name}`}
+                          >
+                            ×
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <strong>{model.name}</strong>
+                          <span className="model-type-chip">{model.type}</span>
+                          <span className="model-source-chip">Built-in</span>
+                        </>
+                      )}
+                      {usageCount > 0 && (
+                        <span className="model-usage-chip">
+                          {usageCount} use{usageCount === 1 ? "" : "s"}
+                        </span>
+                      )}
+                    </div>
+                    {isCustom ? (
+                      <textarea
+                        className="model-params-input"
+                        value={model.params}
+                        onChange={(e) =>
+                          updateSharedModel(model, {
+                            ...model,
+                            params: e.target.value,
+                          })
+                        }
+                        aria-label={`${model.name} model parameters`}
+                        spellCheck={false}
+                        rows={2}
+                      />
+                    ) : (
+                      <code className="model-params-code">{model.params}</code>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
           <DirectivesPanel
             value={doc.directives}
             onChange={(next) =>
@@ -5063,6 +5760,22 @@ export function Editor() {
                   const fp = runFloatingPins.find((pin) =>
                     warning.includes(`${pin.refdes} ${pin.pinLabel ? `${pin.pinLabel} pin` : `pin ${pin.pinIdx + 1}`}`),
                   );
+                  const modelDiagnostic = runModelDiagnostics.find((diagnostic) =>
+                    diagnostic.warning === warning,
+                  );
+                  if (modelDiagnostic) {
+                    return (
+                      <button
+                        key={`${warning}-${i}`}
+                        type="button"
+                        className="run-warning-row clickable"
+                        onClick={() => selectModelDiagnostic(modelDiagnostic)}
+                      >
+                        <span>{warning}</span>
+                        <span className="run-warning-action">Show component</span>
+                      </button>
+                    );
+                  }
                   if (!fp) {
                     return (
                       <div key={`${warning}-${i}`} className="run-warning-row">
@@ -5228,7 +5941,7 @@ export function Editor() {
             <div className="empty-canvas-card">
               <div className="empty-canvas-title">Schematic is empty</div>
               <div className="empty-canvas-hint">
-                Pick a tool from the strip on the left and click in the
+                Pick a tool from the strip on the left and drag in the
                 canvas, or load one of these starters.
               </div>
               <div className="empty-canvas-demos">
@@ -5262,7 +5975,6 @@ export function Editor() {
                 aria-pressed={tool === item.tool}
                 aria-keyshortcuts={item.hint}
                 aria-describedby={tooltipId}
-                title={`${item.name}${item.hint ? ` (${item.hint})` : ""}`}
               >
                 {itemKind ? <PaletteGlyph kind={itemKind} /> : <ToolIcon tool={item.tool} />}
                 {item.hint && <span className="tool-hint">{item.hint}</span>}
@@ -5304,7 +6016,6 @@ export function Editor() {
                 aria-pressed={groupActive}
                 aria-haspopup="dialog"
                 aria-expanded={activeToolGroupId === group.id}
-                title={`${group.label}: ${group.summary}`}
               >
                 <PaletteGlyph kind={displayKind as ComponentKind} />
                 <span className="tool-group-corner" />
@@ -5326,7 +6037,6 @@ export function Editor() {
             aria-pressed={tool === "SUBX"}
             aria-haspopup="dialog"
             aria-expanded={subcircuitMenuOpen}
-            title="Subcircuits"
           >
             <PaletteGlyph kind="SUBX" />
             <span className="tool-group-corner" />
@@ -5430,6 +6140,7 @@ export function Editor() {
                   ) : (
                     subcircuitPages.map((subPage) => {
                       const pins = subcircuitPinsForPage(subPage);
+                      const hasPorts = pins.length > 0;
                       const active = tool === "SUBX" && selectedSubcircuitPageId === subPage.id;
                       return (
                         <button
@@ -5438,6 +6149,8 @@ export function Editor() {
                           className={`tool-popover-row ${active ? "active" : ""}`}
                           onClick={() => selectSubcircuitTool(subPage.id)}
                           aria-pressed={active}
+                          disabled={!hasPorts}
+                          title={hasPorts ? undefined : "Add port labels in this schematic to expose subcircuit pins"}
                         >
                           <span className="tool-popover-icon">
                             <PaletteGlyph kind="SUBX" />
@@ -5445,7 +6158,11 @@ export function Editor() {
                           <span className="tool-popover-copy">
                             <span className="tool-popover-name">{subPage.name}</span>
                             <span className="tool-popover-desc">
-                              {subPage.description?.trim() || `${pins.length} pin${pins.length === 1 ? "" : "s"} from net labels`}
+                              {subPage.description?.trim() || (
+                                hasPorts
+                                  ? `${pins.length} pin${pins.length === 1 ? "" : "s"} from net labels`
+                                  : "No exposed pins. Mark net labels as ports to place this schematic."
+                              )}
                             </span>
                           </span>
                         </button>
@@ -5589,10 +6306,11 @@ export function Editor() {
               const tip = snapTarget ?? cursor;
               const preview = [
                 ...wireDraft,
-                ...routeWireSegment(
+                ...routeWireSegmentAvoiding(
                   { x: last[0], y: last[1] },
                   tip,
                   snapToGrid,
+                  { components: page.components, wires: page.wires },
                 ).slice(1),
               ];
               return (
@@ -5604,24 +6322,6 @@ export function Editor() {
                     strokeWidth={0.12}
                     strokeDasharray="0.3 0.2"
                   />
-                  {(() => {
-                    const measurement = draftMeasurement(preview.map(([x, y]) => ({ x, y })));
-                    if (!measurement) return null;
-                    return (
-                      <g className="draft-measure" transform={`translate(${measurement.x} ${measurement.y})`}>
-                        <rect
-                          x={-measurement.width / 2}
-                          y={-0.32}
-                          width={measurement.width}
-                          height={0.54}
-                          rx={0.14}
-                        />
-                        <text x={0} y={0.08} textAnchor="middle">
-                          {measurement.label}
-                        </text>
-                      </g>
-                    );
-                  })()}
                 </>
               );
             })()}
@@ -5652,6 +6352,7 @@ export function Editor() {
 
             {placementDraft && (() => {
               const { component: draft } = componentFromPlacementDraft(placementDraft, "__placement");
+              const draftBounds = componentVisualBoundsFor(draft, 0.24);
               const pins = getPinLayout(draft).map((_, idx) => pinWorldPos(draft, idx));
               const endpointLabels = pins.map((_, idx) => pinLabelForKind(draft.kind, idx) ?? `${idx + 1}`);
               const canInsertInline = pins.length === 2 && placementLength(placementDraft) >= 0.35;
@@ -5674,18 +6375,14 @@ export function Editor() {
                 snapToGrid,
                 inlineInsertion,
                 () => "__stub",
+                {
+                  components: [...page.components, draft],
+                  wires: page.wires,
+                  ignoreComponentIds: new Set([draft.id]),
+                },
               );
               return (
                 <g className="placement-draft" pointerEvents="none">
-                  {pins.length >= 2 && (
-                    <line
-                      x1={pins[0].x}
-                      y1={pins[0].y}
-                      x2={pins[pins.length - 1].x}
-                      y2={pins[pins.length - 1].y}
-                      className="placement-draft-axis"
-                    />
-                  )}
                   {stubs.map((stub, idx) => (
                     <polyline
                       key={idx}
@@ -5693,6 +6390,14 @@ export function Editor() {
                       className="placement-draft-stub"
                     />
                   ))}
+                  <rect
+                    x={draftBounds.x1}
+                    y={draftBounds.y1}
+                    width={draftBounds.x2 - draftBounds.x1}
+                    height={draftBounds.y2 - draftBounds.y1}
+                    rx={0.28}
+                    className="placement-draft-footprint"
+                  />
                   {draft.kind === "NOTE" ? (() => {
                     const lines = noteTextLines(draft.value);
                     const width = noteComponentWidth(draft, lines);
@@ -5712,13 +6417,16 @@ export function Editor() {
                             strokeWidth: 0.075,
                           }}
                         />
-                        <text x={draft.x + 0.45} y={draft.y + 0.72} fontSize={0.32} className="note-text">
-                          {lines.slice(0, 3).map((line, idx) => (
-                            <tspan key={idx} x={draft.x + 0.45} dy={idx === 0 ? 0 : 0.45}>
-                              {line || " "}
-                            </tspan>
-                          ))}
-                        </text>
+                        {lines.slice(0, 3).map((line, idx) => (
+                          <SvgInlineMathText
+                            key={idx}
+                            x={draft.x + 0.45}
+                            y={draft.y + 0.72 + idx * 0.45}
+                            fontSize={0.32}
+                            className="note-text"
+                            text={line || " "}
+                          />
+                        ))}
                       </>
                     );
                   })() : (
@@ -5727,6 +6435,7 @@ export function Editor() {
                         kind={draft.kind}
                         selected
                         strokeWidth={selectedSchematicStrokeWidth}
+                        mirrored={draft.mirrored}
                         subxPins={draft.kind === "SUBX" ? getPinLayout(draft) : undefined}
                         subxLabel={draft.kind === "SUBX" ? draft.value : undefined}
                       />
@@ -5860,16 +6569,48 @@ export function Editor() {
                           rx={0.18}
                           className={`net-label-chip ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}
                         />
-                        <text
+                        <SvgInlineMathText
                           x={layout.textX}
                           y={layout.textY}
                           fontSize={0.46}
                           textAnchor="middle"
                           className="net-label-text"
-                        >
-                          {label}
-                        </text>
+                          text={label}
+                        />
                       </>
+                    )}
+                    {textEdit?.componentId === c.id && (
+                      <foreignObject
+                        x={(layout?.chipX ?? c.x + 0.42) - 0.02}
+                        y={(layout?.chipY ?? c.y - 0.44) - 0.02}
+                        width={(layout?.chipW ?? 2.1) + 0.04}
+                        height={(layout?.chipH ?? 0.88) + 0.04}
+                        className="canvas-text-editor-object"
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onDoubleClick={(event) => event.stopPropagation()}
+                      >
+                        <input
+                          ref={(node) => {
+                            textEditRef.current = node;
+                          }}
+                          className="canvas-text-editor label-editor"
+                          value={textEdit.value}
+                          onChange={(event) =>
+                            setTextEdit((edit) =>
+                              edit?.componentId === c.id ? { ...edit, value: event.target.value } : edit,
+                            )
+                          }
+                          onBlur={() => {
+                            if (textEditCancelBlurRef.current) {
+                              textEditCancelBlurRef.current = false;
+                              return;
+                            }
+                            commitTextEdit();
+                          }}
+                          onKeyDown={onTextEditKeyDown}
+                          aria-label="Edit net label"
+                        />
+                      </foreignObject>
                     )}
                   </g>
                 );
@@ -5909,13 +6650,49 @@ export function Editor() {
                         strokeWidth: noteActive ? 0.075 : 0.05,
                       }}
                     />
-                    <text x={c.x + 0.45} y={c.y + 0.72} fontSize={0.32} className="note-text">
-                      {lines.map((line, idx) => (
-                        <tspan key={idx} x={c.x + 0.45} dy={idx === 0 ? 0 : 0.45}>
-                          {line || " "}
-                        </tspan>
-                      ))}
-                    </text>
+                    {lines.map((line, idx) => (
+                      <SvgInlineMathText
+                        key={idx}
+                        x={c.x + 0.45}
+                        y={c.y + 0.72 + idx * 0.45}
+                        fontSize={0.32}
+                        className="note-text"
+                        text={line || " "}
+                      />
+                    ))}
+                    {textEdit?.componentId === c.id && (
+                      <foreignObject
+                        x={c.x + 0.28}
+                        y={c.y + 0.25}
+                        width={Math.max(1.2, width - 0.56)}
+                        height={Math.max(0.8, height - 0.5)}
+                        className="canvas-text-editor-object"
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onDoubleClick={(event) => event.stopPropagation()}
+                      >
+                        <textarea
+                          ref={(node) => {
+                            textEditRef.current = node;
+                          }}
+                          className="canvas-text-editor note-editor"
+                          value={textEdit.value}
+                          onChange={(event) =>
+                            setTextEdit((edit) =>
+                              edit?.componentId === c.id ? { ...edit, value: event.target.value } : edit,
+                            )
+                          }
+                          onBlur={() => {
+                            if (textEditCancelBlurRef.current) {
+                              textEditCancelBlurRef.current = false;
+                              return;
+                            }
+                            commitTextEdit();
+                          }}
+                          onKeyDown={onTextEditKeyDown}
+                          aria-label="Edit note"
+                        />
+                      </foreignObject>
+                    )}
                     {showResizeHandle && (
                       <rect
                         x={c.x + width - 0.34}
@@ -5937,6 +6714,8 @@ export function Editor() {
               const connectionToolActive = tool === "wire" || tool === "probe";
               const activeConnectionGesture = Boolean(wireDraft) || Boolean(wireGesture);
               const activeDevice = isActiveMultiPinKind(c.kind);
+              const showSubxResizeHandle =
+                c.kind === "SUBX" && tool === "select" && (sel || hovered || subxResize?.componentId === c.id);
               const terminalTone =
                 c.kind === "GND"
                   ? "hidden"
@@ -5978,6 +6757,7 @@ export function Editor() {
                       kind={c.kind}
                       selected={sel}
                       strokeWidth={sel ? selectedSchematicStrokeWidth : schematicStrokeWidth}
+                      mirrored={c.mirrored}
                       subxPins={c.kind === "SUBX" ? getPinLayout(c) : undefined}
                       subxLabel={c.kind === "SUBX" ? (c.value || "X") : undefined}
                     />
@@ -5986,7 +6766,7 @@ export function Editor() {
                         <circle
                           cx={p.x}
                           cy={p.y}
-                          r={0.24}
+                          r={0.42}
                           className="component-pin-hit"
                           data-connection-handle="true"
                         />
@@ -6002,8 +6782,8 @@ export function Editor() {
                         <circle
                           cx={p.x}
                           cy={p.y}
-                          r={showPinTargets ? 0.22 : 0.18}
-                          className={`component-pin ${sel ? "selected" : ""}`}
+                          r={showPinTargets ? 0.2 : 0.14}
+                          className={`component-pin ${sel ? "selected" : ""} ${showPinTargets ? terminalTone : "idle"}`}
                           data-connection-handle="true"
                         />
                       </g>
@@ -6033,18 +6813,28 @@ export function Editor() {
                     const labelY = c.y + off.y;
                     return (
                       <g className="component-value-label" pointerEvents="none">
-                        <text
+                        <SvgInlineMathText
                           x={labelX}
                           y={labelY}
                           textAnchor={off.anchor}
                           className="component-value-text"
                           fontSize={canvasValueFontSize}
-                        >
-                          {valueLabel}
-                        </text>
+                          text={valueLabel}
+                        />
                       </g>
                     );
                   })()}
+                  {showSubxResizeHandle && (
+                    <rect
+                      x={bounds.x2 - 0.34}
+                      y={bounds.y2 - 0.34}
+                      width={0.46}
+                      height={0.46}
+                      rx={0.11}
+                      className="note-resize-handle subx-resize-handle"
+                      data-subx-resize-id={c.id}
+                    />
+                  )}
 	                </g>
 	              );
 	            })}
@@ -6177,6 +6967,7 @@ export function Editor() {
                 <g
                   key={p.id}
                   className={`probe-marker ${sel ? "selected" : ""} ${hov ? "hovered" : ""} ${disconnected ? "disconnected" : ""}`}
+                  data-probe-id={p.id}
                 >
                   <title>{node ? `Probe: ${node}` : "Probe"}</title>
                   {(sel || hov || disconnected) && (
@@ -6279,17 +7070,11 @@ export function Editor() {
             type="button"
             className={autoRun ? "active" : ""}
             onClick={() => setAutoRun((v) => !v)}
-            title={
-              autoRunPaused
-                ? "Auto-run is paused while a drawing tool is active. Press Run or switch to Select to resume."
-                : autoRun
-                  ? "Re-run automatically when the circuit changes"
-                  : "Click to re-run automatically when the circuit changes"
-            }
-            aria-label="Toggle auto-run"
+            title={autoRunUi.title}
+            aria-label={`${autoRunUi.title} Toggle auto-run.`}
             aria-pressed={autoRun}
           >
-            Auto: {autoRunPaused ? "Paused" : autoRun ? "On" : "Off"}
+            {autoRunUi.buttonLabel}
           </button>
           <span>Zoom: {Math.round(zoom * 100)}%</span>
           <button
@@ -6330,6 +7115,7 @@ export function Editor() {
             directives={doc.directives}
             measurements={simResult.measurements}
             runWarnings={runWarnings}
+            stale={simulationStale}
             onToggleTrace={(name) => {
               const next = new Set(selectedTraces);
               if (next.has(name)) next.delete(name);
@@ -6345,10 +7131,28 @@ export function Editor() {
         {simResult && hasWaveform(simResult) && !waveformVisible && (
           <div className="wf-collapsed">
             <div>
-              <strong>Waveform hidden</strong>
-              <span>{simResult.plot}</span>
+              <strong>{simulationStale ? "Previous waveform hidden" : "Waveform hidden"}</strong>
+              <span>{simulationStale ? `${simResult.plot} · stale` : simResult.plot}</span>
             </div>
             <button onClick={() => setWaveformVisible(true)}>Show waveform</button>
+          </div>
+        )}
+
+        {simResult && !hasWaveform(simResult) && waveformVisible && (
+          <div className="wf-collapsed wf-empty-result" role="status">
+            <div className="wf-empty-copy">
+              <strong>
+                {simulationStale
+                  ? `Previous ${waveformPaneEmptyState(simResult.plot, simResult.vectors).title.toLowerCase()}`
+                  : waveformPaneEmptyState(simResult.plot, simResult.vectors).title}
+              </strong>
+              <span>
+                {simulationStale
+                  ? "The schematic has changed since this run. Press Run to update the result."
+                  : waveformPaneEmptyState(simResult.plot, simResult.vectors).detail}
+              </span>
+            </div>
+            <button onClick={() => setWaveformVisible(false)}>Hide</button>
           </div>
         )}
 
@@ -6391,11 +7195,12 @@ export function Editor() {
       analysisKind={doc.analysis.kind}
       running={running}
       status={status}
-      autoRun={autoRun}
-      autoRunPaused={autoRunPaused}
+      autoRunLabel={autoRunUi.statusLabel}
+      autoRunTitle={autoRunUi.title}
       nNodes={pinAnnotations.nodes.rootToName.size}
       nComponents={electricalComponentCount(page)}
       plot={simResult?.plot ?? null}
+      plotStale={simulationStale}
       selection={selectionStatus}
     />
     </>
@@ -6408,11 +7213,12 @@ function StatusBar({
   analysisKind,
   running,
   status,
-  autoRun,
-  autoRunPaused,
+  autoRunLabel,
+  autoRunTitle,
   nNodes,
   nComponents,
   plot,
+  plotStale,
   selection,
 }: {
   engineOk: boolean | null;
@@ -6420,11 +7226,12 @@ function StatusBar({
   analysisKind: CircuitDoc["analysis"]["kind"];
   running: boolean;
   status: string;
-  autoRun: boolean;
-  autoRunPaused: boolean;
+  autoRunLabel: string;
+  autoRunTitle: string;
   nNodes: number;
   nComponents: number;
   plot: string | null;
+  plotStale: boolean;
   selection: string | null;
 }) {
   const isError = status.startsWith("✗");
@@ -6468,14 +7275,14 @@ function StatusBar({
         <code>{analysisKind.toUpperCase()}</code>
       </div>
       {plot && (
-        <div className="group">
+        <div className="group" title={plotStale ? "Previous simulation result; rerun to update." : undefined}>
           <span>Plot</span>
-          <code>{plot}</code>
+          <code>{plotStale ? `${plot} stale` : plot}</code>
         </div>
       )}
-      <div className="group">
+      <div className="group" title={autoRunTitle}>
         <span>Auto</span>
-        <code>{autoRunPaused ? "paused" : autoRun ? "on" : "off"}</code>
+        <code>{autoRunLabel}</code>
       </div>
       {selection && (
         <div className="group selection" title={`${selection} selected`}>
@@ -6515,22 +7322,7 @@ function activeSchematicIsEmpty(doc: CircuitDoc): boolean {
 }
 
 function subcircuitPinsForPage(page: SchematicPage): string[] {
-  const pins: string[] = [];
-  const seen = new Set<string>();
-  const hasExplicitPorts = page.components.some(
-    (component) => component.kind === "LABEL" && component.params?.port === "1",
-  );
-  for (const component of page.components) {
-    if (component.kind !== "LABEL") continue;
-    if (hasExplicitPorts && component.params?.port !== "1") continue;
-    const pin = component.value.trim();
-    if (!pin) continue;
-    const key = pin.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    pins.push(pin);
-  }
-  return pins;
+  return subcircuitPortLabels(page);
 }
 
 function NetlistModal({
@@ -6676,8 +7468,7 @@ function safeExportName(name: string): string {
 }
 
 function hasWaveform(r: { vectors: { is_scale: boolean; data: number[] }[] }): boolean {
-  const scale = r.vectors.find((v) => v.is_scale);
-  return !!scale && scale.data.length > 1;
+  return hasPlottableWaveform(r.vectors);
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -6801,19 +7592,19 @@ function isActiveMultiPinKind(kind: ComponentKind): boolean {
 function toolDescriptionFor(kind: ComponentKind, fallback?: string): string | undefined {
   switch (kind) {
     case "NPN":
-      return "Click to place. C/B/E pins stay visible on selection and snap strongly while wiring.";
+      return "Drag to place and orient. C/B/E pins stay visible on selection and snap strongly while wiring.";
     case "PNP":
-      return "Click to place. C/B/E pins stay visible on selection and snap strongly while wiring.";
+      return "Drag to place and orient. C/B/E pins stay visible on selection and snap strongly while wiring.";
     case "NMOS":
-      return "Click to place. D/G/S pins stay visible on selection and snap strongly while wiring.";
+      return "Drag to place and orient. D/G/S pins stay visible on selection and snap strongly while wiring.";
     case "PMOS":
-      return "Click to place. D/G/S pins stay visible on selection and snap strongly while wiring.";
+      return "Drag to place and orient. D/G/S pins stay visible on selection and snap strongly while wiring.";
     case "NMOS4":
-      return "Click to place. D/G/S/B pins stay visible on selection; use this when bulk must not be tied to source.";
+      return "Drag to place and orient. D/G/S/B pins stay visible on selection; use this when bulk must not be tied to source.";
     case "PMOS4":
-      return "Click to place. D/G/S/B pins stay visible on selection; use this when bulk must not be tied to source.";
+      return "Drag to place and orient. D/G/S/B pins stay visible on selection; use this when bulk must not be tied to source.";
     case "OPAMP":
-      return "Click to place; wire the +, - and OUT pins. Pins stay visible on selection and snap strongly while wiring.";
+      return "Drag to place and orient; wire the +, - and OUT pins. Pins stay visible on selection and snap strongly while wiring.";
     default:
       return fallback;
   }
@@ -7205,6 +7996,23 @@ function collectRotatedPinMoves(
   return moves;
 }
 
+function collectMirroredPinMoves(
+  components: CircuitComponent[],
+  selected: Set<string>,
+): PinMove[] {
+  const moves: PinMove[] = [];
+  for (const c of components) {
+    if (!selected.has(c.id)) continue;
+    const mirrored = { ...c, mirrored: c.mirrored ? undefined : true };
+    for (let i = 0; i < getPinLayout(c).length; i++) {
+      const from = pinWorldPos(c, i);
+      const to = pinWorldPos(mirrored, i);
+      if (!samePoint(from, to)) moves.push({ from, to });
+    }
+  }
+  return moves;
+}
+
 function collectDirectContactPins(
   components: CircuitComponent[],
   wires: Wire[],
@@ -7280,7 +8088,11 @@ function buildRotatedPinContactWires(
     seen.add(key);
     contactMoves.push(move);
   }
-  return rotatedContactRoutes(contactMoves, orthogonal).map((points) => ({
+  return rotatedContactRoutesAvoiding(contactMoves, orthogonal, {
+    components,
+    wires,
+    ignoreComponentIds: selected,
+  }).map((points) => ({
     id: makeId("w"),
     points,
   }));
@@ -7350,8 +8162,14 @@ function buildTranslatedPinContactWires(
   dx: number,
   dy: number,
   orthogonal: boolean,
+  routingPage: SchematicPage,
+  movingComponentIds: Set<string>,
 ): Wire[] {
-  return translatedContactRoutes(contacts, dx, dy, orthogonal).map((points) => ({
+  return translatedContactRoutesAvoiding(contacts, dx, dy, orthogonal, {
+    components: routingPage.components,
+    wires: routingPage.wires,
+    ignoreComponentIds: movingComponentIds,
+  }).map((points) => ({
     id: makeId("w"),
     points,
   }));

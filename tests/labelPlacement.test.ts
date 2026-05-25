@@ -77,6 +77,75 @@ test("vertical passive labels prefer a side placement when clear", () => {
   assert.deepEqual(offset, { x: 1.65, y: 0.25, anchor: "start" });
 });
 
+test("passive labels can step farther away in dense layouts", () => {
+  const resistor: CircuitComponent = { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "10k" };
+  const blockers: CircuitComponent[] = [
+    { id: "below", kind: "R", x: 0, y: 1.45, rotation: 0, value: "1k" },
+    { id: "above", kind: "R", x: 0, y: -1.15, rotation: 0, value: "1k" },
+    { id: "right", kind: "R", x: 1.75, y: 0.25, rotation: 90, value: "1k" },
+    { id: "left", kind: "R", x: -1.75, y: 0.25, rotation: 90, value: "1k" },
+  ];
+
+  const offset = valueLabelOffset(resistor, page([resistor, ...blockers]), "very long resistor value");
+  const bounds = valueLabelBounds(resistor, offset, "very long resistor value");
+
+  assert.deepEqual(offset, { x: 2.85, y: 0.25, anchor: "start" });
+  assert.equal(
+    blockers.some((blocker) => rectsIntersect(bounds, componentVisualBoundsFor(blocker, 0.18))),
+    false,
+  );
+});
+
+test("passive labels can use secondary lanes when all primary lanes are blocked", () => {
+  const resistor: CircuitComponent = { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "10k" };
+  const blockers: CircuitComponent[] = [
+    { id: "below", kind: "R", x: 0, y: 1.45, rotation: 0, value: "1k" },
+    { id: "above", kind: "R", x: 0, y: -1.15, rotation: 0, value: "1k" },
+    { id: "right", kind: "R", x: 1.75, y: 0.25, rotation: 90, value: "1k" },
+    { id: "left", kind: "R", x: -1.75, y: 0.25, rotation: 90, value: "1k" },
+    { id: "far-right", kind: "R", x: 2.85, y: 0.25, rotation: 90, value: "1k" },
+    { id: "far-left", kind: "R", x: -2.85, y: 0.25, rotation: 90, value: "1k" },
+  ];
+
+  const offset = valueLabelOffset(resistor, page([resistor, ...blockers]), "long label");
+  const bounds = valueLabelBounds(resistor, offset, "long label");
+
+  assert.deepEqual(offset, { x: 3.95, y: 0.25, anchor: "start" });
+  assert.equal(
+    blockers.some((blocker) => rectsIntersect(bounds, componentVisualBoundsFor(blocker, 0.18))),
+    false,
+  );
+});
+
+test("vertical passive labels can use farther side lanes in dense layouts", () => {
+  const capacitor: CircuitComponent = { id: "c1", kind: "C", x: 0, y: 0, rotation: 0, value: "10n" };
+  const blockers: CircuitComponent[] = [
+    { id: "right", kind: "R", x: 1.65, y: 0.25, rotation: 90, value: "1k" },
+    { id: "left", kind: "R", x: -1.65, y: 0.25, rotation: 90, value: "1k" },
+    { id: "below", kind: "R", x: 0, y: 1.7, rotation: 0, value: "1k" },
+    { id: "above", kind: "R", x: 0, y: -1.45, rotation: 0, value: "1k" },
+  ];
+
+  const offset = valueLabelOffset(capacitor, page([capacitor, ...blockers]), "very long capacitor value");
+  const bounds = valueLabelBounds(capacitor, offset, "very long capacitor value");
+
+  assert.deepEqual(offset, { x: 2.65, y: 0.25, anchor: "start" });
+  assert.equal(
+    blockers.some((blocker) => rectsIntersect(bounds, componentVisualBoundsFor(blocker, 0.18))),
+    false,
+  );
+});
+
+test("transistor labels prefer a cleaner top or bottom position over the gate side", () => {
+  const nmos: CircuitComponent = { id: "m1", kind: "NMOS", x: 0, y: 0, rotation: 0, value: "NM" };
+  const blocker: CircuitComponent = { id: "r1", kind: "R", x: 2.4, y: 0, rotation: 0, value: "1k" };
+
+  const offset = valueLabelOffset(nmos, page([nmos, blocker]), "NM");
+
+  assert.notDeepEqual(offset, { x: -1.55, y: 0.2, anchor: "end" });
+  assert.equal(offset.anchor, "middle");
+});
+
 test("component value labels avoid labels already placed on nearby components", () => {
   const first: CircuitComponent = { id: "v1", kind: "V", x: 0, y: 0, rotation: 0, value: "SIN(0 1 1k)" };
   const second: CircuitComponent = { id: "v2", kind: "V", x: 8.5, y: -0.5, rotation: 0, value: "SIN(0 1 1k)" };
@@ -95,6 +164,21 @@ test("component value labels avoid probe label chips", () => {
   const offset = valueLabelOffset(resistor, schematic, "1kΩ");
 
   assert.notDeepEqual(offset, { x: 0, y: 1.45, anchor: "middle" });
+});
+
+test("component value labels avoid routed net-label chip positions", () => {
+  const resistor: CircuitComponent = { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" };
+  const label: CircuitComponent = { id: "lbl", kind: "LABEL", x: 1.5, y: 1.45, rotation: 0, value: "out" };
+  const blocker: CircuitComponent = { id: "r2", kind: "R", x: 4, y: 1.45, rotation: 0, value: "1k" };
+  const schematic = page([resistor, label, blocker]);
+  const routedLabel = netLabelLayout(label, schematic, "out");
+
+  assert.deepEqual(routedLabel.bounds, { x1: -0.78, y1: 1.01, x2: 1.08, y2: 1.8900000000000001 });
+
+  const offset = valueLabelOffset(resistor, schematic, "1kΩ");
+  const bounds = valueLabelBounds(resistor, offset, "1kΩ");
+
+  assert.equal(rectsIntersect(bounds, routedLabel.bounds), false);
 });
 
 test("source labels stay close when nearby component overlap is only incidental", () => {

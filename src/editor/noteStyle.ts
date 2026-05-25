@@ -1,15 +1,17 @@
 import type { CircuitComponent } from "./model.ts";
 
-export const NOTE_COLOR_PALETTE = [
-  "#34c759",
-  "#af52de",
-  "#ff9f0a",
-  "#0a84ff",
-  "#ff453a",
-  "#30d158",
-  "#bf5af2",
-  "#ff9500",
+export const NOTE_COLOR_PRESETS = [
+  { id: "preactivation", label: "Preactivation", color: "#34c759" },
+  { id: "activation", label: "Activation", color: "#af52de" },
+  { id: "learning", label: "Learning", color: "#ff9f0a" },
+  { id: "signal", label: "Signal path", color: "#0a84ff" },
+  { id: "warning", label: "Warning", color: "#ff453a" },
+  { id: "measurement", label: "Measurement", color: "#30d158" },
+  { id: "control", label: "Control", color: "#bf5af2" },
+  { id: "reference", label: "Reference", color: "#ff9500" },
 ] as const;
+
+export const NOTE_COLOR_PALETTE = NOTE_COLOR_PRESETS.map((preset) => preset.color);
 
 export function noteColorForIndex(index: number): string {
   const normalized = Math.max(0, Math.floor(index));

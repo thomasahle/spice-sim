@@ -65,6 +65,31 @@ let httpAvailable = false;
 export function nextHttpProbeCache(previous: boolean, ok: boolean): boolean {
   return previous || ok;
 }
+
+export function engineErrorMessage(payload: unknown, fallback: string): string {
+  const message = messageFromUnknown(payload);
+  return message || fallback;
+}
+
+function messageFromUnknown(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (value instanceof Error) return value.message.trim();
+  if (Array.isArray(value)) {
+    return value.map(messageFromUnknown).filter(Boolean).join("\n");
+  }
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  for (const key of ["error", "message", "details", "stderr", "stdout", "log"]) {
+    const nested = messageFromUnknown(record[key]);
+    if (nested) return nested;
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 async function probeHttp(): Promise<boolean> {
   if (httpAvailable) return true;
   try {
@@ -116,7 +141,7 @@ export async function simulate(
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({ error: r.statusText }));
-      throw new Error((err as { error?: string }).error ?? r.statusText);
+      throw new Error(engineErrorMessage(err, r.statusText));
     }
     return (await r.json()) as SimResult;
   }

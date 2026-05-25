@@ -17,11 +17,21 @@ import {
   type MeasurementDirectiveInfo,
 } from "./measurementUnits";
 import { traceDisplayName } from "./traceNames";
-import { fallbackWaveformTab, isWaveformTabEnabled, type ViewTab } from "./waveformTabs";
+import {
+  fallbackWaveformTab,
+  isWaveformTabEnabled,
+  waveformTabUnavailableReason,
+  type ViewTab,
+} from "./waveformTabs";
 import { defaultXyTraceNames, nearestXySample, pairedXySamples, voltageTraceNames, type XySample } from "./xyPlot";
 import { axisUnitFromLabel } from "./waveformAxis";
 import { traceAxisLabel, traceValueUnit } from "./traceUnits";
 import { computeSweepMetrics } from "./dcSweepMetrics";
+import { orderedPlotPathsForHighlight, tracePathRenderStyles } from "./waveformTraceStyles";
+import { isInternalTraceName, waveformTraceListEmptyMessage } from "./waveformEmptyState";
+import { computeMetrics, type TraceMetrics } from "./waveformMetrics";
+import { computeFFT, nextPow2, resampleUniform } from "./waveformFft";
+export { computeMetrics, type TraceMetrics } from "./waveformMetrics";
 
 type YMode = "linear" | "db";
 
@@ -34,58 +44,6 @@ const VIEW_TABS: { kind: ViewTab; label: string }[] = [
   { kind: "info", label: "Info" },
 ];
 
-export interface TraceMetrics {
-  vpp: number;
-  vmin: number;
-  vmax: number;
-  vmean: number;
-  vrms: number;
-  /** Estimated fundamental frequency via zero crossings; NaN if not detectable. */
-  freqHz: number;
-}
-
-export function computeMetrics(scale: number[], data: number[]): TraceMetrics {
-  let vmin = Infinity;
-  let vmax = -Infinity;
-  let sum = 0;
-  let sumSq = 0;
-  let n = 0;
-  for (const v of data) {
-    if (!Number.isFinite(v)) continue;
-    if (v < vmin) vmin = v;
-    if (v > vmax) vmax = v;
-    sum += v;
-    sumSq += v * v;
-    n++;
-  }
-  if (n === 0) {
-    return { vpp: NaN, vmin: NaN, vmax: NaN, vmean: NaN, vrms: NaN, freqHz: NaN };
-  }
-  const vmean = sum / n;
-  const vrms = Math.sqrt(sumSq / n);
-  const vpp = vmax - vmin;
-  // Frequency via zero crossings of (data - mean) — pairs make one period.
-  let crossings = 0;
-  let lastSign = 0;
-  for (let i = 0; i < data.length; i++) {
-    const v = data[i] - vmean;
-    const s = v > 0 ? 1 : v < 0 ? -1 : 0;
-    if (s !== 0 && lastSign !== 0 && s !== lastSign) crossings++;
-    if (s !== 0) lastSign = s;
-  }
-  let freqHz = NaN;
-  if (
-    crossings >= 2 &&
-    scale.length === data.length &&
-    scale.length > 1 &&
-    Number.isFinite(scale[scale.length - 1] - scale[0])
-  ) {
-    const dt = scale[scale.length - 1] - scale[0];
-    if (dt > 0) freqHz = crossings / (2 * dt);
-  }
-  return { vpp, vmin, vmax, vmean, vrms, freqHz };
-}
-
 interface Props {
   plot: string;
   vectors: SimVector[];
@@ -96,6 +54,7 @@ interface Props {
   directives?: string;
   measurements?: Measurement[];
   runWarnings?: string[];
+  stale?: boolean;
   onToggleTrace: (name: string) => void;
   onSetVisibleTraces: (names: Set<string>) => void;
   onShowAllTraces: () => void;
@@ -128,16 +87,6 @@ function buildColorMap(traces: { name: string }[]): Map<string, string> {
   return m;
 }
 
-function isInternalTraceName(name: string): boolean {
-  const n = name.toLowerCase();
-  return (
-    n.startsWith("@") ||
-    n.includes(".") ||
-    /^x\d+\./.test(n) ||
-    /^e\.x\d+\./.test(n)
-  );
-}
-
 export function WaveformViewer({
   plot,
   vectors,
@@ -148,6 +97,7 @@ export function WaveformViewer({
   directives = "",
   measurements = [],
   runWarnings = [],
+  stale = false,
   onToggleTrace,
   onSetVisibleTraces,
   onShowAllTraces,
@@ -167,6 +117,7 @@ export function WaveformViewer({
   const [xyYName, setXyYName] = useState("");
   const [exportStatus, setExportStatus] = useState("");
   const [focusedTrace, setFocusedTrace] = useState<string | null>(null);
+  const [activeTraceName, setActiveTraceName] = useState<string | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -188,7 +139,6 @@ export function WaveformViewer({
   const colorMap = useMemo(() => buildColorMap(rawTraces), [rawTraces]);
   const isAc = isAcPlot(plot);
   const isTran = isTransientPlot(plot);
-  const isDc = isDcPlot(plot);
   const fftActive = !!(showFft && isTran && rawScale && rawScale.data.length > 8);
 
   // If FFT mode is on, replace scale with frequency axis and replace each
@@ -253,14 +203,21 @@ export function WaveformViewer({
   const { plotPath, yPx, yMin, yMax, xMin, xMax } = useMemo(() => {
     return computePlot(scale, shown, size, logX);
   }, [scale, shown, size, logX]);
+  const highlightedTraceName =
+    (focusedTrace && plotPath.some((p) => p.name === focusedTrace) ? focusedTrace : null) ??
+    (activeTraceName && plotPath.some((p) => p.name === activeTraceName) ? activeTraceName : null);
   const orderedPlotPath = useMemo(() => {
-    if (!focusedTrace) return plotPath;
-    return [...plotPath].sort((a, b) => {
-      if (a.name === focusedTrace) return 1;
-      if (b.name === focusedTrace) return -1;
-      return 0;
-    });
-  }, [focusedTrace, plotPath]);
+    return orderedPlotPathsForHighlight(plotPath, highlightedTraceName);
+  }, [highlightedTraceName, plotPath]);
+  const traceRenderStyles = useMemo(
+    () => tracePathRenderStyles(plotPath, highlightedTraceName),
+    [highlightedTraceName, plotPath],
+  );
+
+  useEffect(() => {
+    if (!activeTraceName) return;
+    if (!traces.some((trace) => trace.name === activeTraceName)) setActiveTraceName(null);
+  }, [activeTraceName, traces]);
 
   function onMove(e: React.MouseEvent) {
     const rect = (e.target as Element).getBoundingClientRect();
@@ -291,6 +248,7 @@ export function WaveformViewer({
   }
 
   function handleTraceClick(name: string) {
+    setActiveTraceName(name);
     if (!traceFilterActive) {
       if (traces.length <= 1) return;
       onSetVisibleTraces(new Set(traces.map((t) => t.name).filter((n) => n !== name)));
@@ -305,16 +263,16 @@ export function WaveformViewer({
   }
 
   function viewTabTitle(kind: ViewTab): string | undefined {
+    const unavailable = waveformTabUnavailableReason(kind, { plot, xyAvailable });
+    if (unavailable) return unavailable;
     if (kind === "xy") {
-      return xyAvailable
-        ? visibleTraces.length >= 2
-          ? "Plot one visible simulated vector against another"
-          : "Plot any available trace against another"
-        : "Run a simulation with at least two traces";
+      return visibleTraces.length >= 2
+        ? "Plot one visible simulated vector against another"
+        : "Plot any available trace against another";
     }
-    if (kind === "ac") return isAc ? "Magnitude / phase tables" : "Run an AC sweep to enable";
-    if (kind === "dc") return isDc ? "DC sweep table" : "Run a DC sweep to enable";
-    if (kind === "bode") return isAc ? "Bode plot — magnitude (dB) + phase (deg)" : "Run an AC sweep to enable";
+    if (kind === "ac") return "Magnitude / phase tables";
+    if (kind === "dc") return "DC sweep table";
+    if (kind === "bode") return "Bode plot — magnitude (dB) + phase (deg)";
     if (kind === "info") return "Log + measurements summary";
     return undefined;
   }
@@ -401,7 +359,7 @@ export function WaveformViewer({
                 aria-disabled={!enabled}
                 tabIndex={enabled && tab === viewTab.kind ? 0 : -1}
                 data-waveform-tab={viewTab.kind}
-                aria-label={viewTab.label}
+                aria-label={enabled ? viewTab.label : `${viewTab.label} unavailable: ${viewTabTitle(viewTab.kind)}`}
                 className={`wf-tab ${tab === viewTab.kind ? "active" : ""} ${!enabled ? "dim" : ""}`}
                 onKeyDown={onViewTabKeyDown}
                 onClick={() => {
@@ -479,6 +437,13 @@ export function WaveformViewer({
         </button>
       </div>
 
+      {stale && (
+        <div className="wf-stale-banner" role="status">
+          <strong>Previous run</strong>
+          <span>The schematic changed after this simulation. Press Run to update the waveform.</span>
+        </div>
+      )}
+
       {tab === "info" && (
         <InfoTab
           plot={plot}
@@ -533,7 +498,7 @@ export function WaveformViewer({
         <div className="wf-body">
           <div className="wf-trace-list">
             {traces.length === 0 ? (
-              <div className="wf-trace-empty">no traces</div>
+              <div className="wf-trace-empty">{waveformTraceListEmptyMessage(vectors, showInternal)}</div>
             ) : (
               <ul className="wf-trace-rows">
                 {traces.map((t) => {
@@ -545,7 +510,7 @@ export function WaveformViewer({
                   return (
                     <li
                       key={t.name}
-                      className={`wf-trow ${active ? "on" : "off"}`}
+                      className={`wf-trow ${active ? "on" : "off"} ${highlightedTraceName === t.name ? "selected" : ""}`}
                       role="button"
                       tabIndex={0}
                       aria-pressed={active}
@@ -695,7 +660,9 @@ export function WaveformViewer({
           )}
           {/* traces */}
           {orderedPlotPath.map((p) => {
-            const focused = p.name === focusedTrace;
+            const focused = p.name === highlightedTraceName;
+            const style = traceRenderStyles.get(p.name);
+            const duplicateCount = style?.duplicateCount ?? 1;
             const color = colorMap.get(p.name) ?? TRACE_COLORS[0];
             return (
               <g key={p.name} className={focused ? "wf-trace-path focused" : "wf-trace-path"}>
@@ -714,10 +681,12 @@ export function WaveformViewer({
                   d={p.d}
                   fill="none"
                   stroke={color}
-                  strokeWidth={focused ? 2.35 : 1.5}
+                  strokeWidth={focused ? 2.35 : duplicateCount > 1 ? 1.8 : 1.5}
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  opacity={focused || shown.length <= 1 ? 1 : 0.84}
+                  strokeDasharray={style?.strokeDasharray}
+                  strokeDashoffset={style?.strokeDashoffset}
+                  opacity={focused || shown.length <= 1 ? 1 : duplicateCount > 1 ? 0.95 : 0.84}
                 />
               </g>
             );
@@ -2012,84 +1981,4 @@ function plotBadge(plot: string): string {
   if (isAcPlot(plot)) return "Plot: AC";
   if (isDcPlot(plot)) return "Plot: DC";
   return `Plot: ${plot}`;
-}
-
-// ---- FFT helpers ---------------------------------------------------------
-
-function nextPow2(n: number): number {
-  let p = 1;
-  while (p < n) p <<= 1;
-  return p;
-}
-
-function resampleUniform(scale: number[], data: number[], N: number): { samples: Float64Array; dt: number } {
-  const samples = new Float64Array(N);
-  if (scale.length < 2 || N < 2) return { samples, dt: 1 };
-  const xMin = scale[0];
-  const xMax = scale[scale.length - 1];
-  const dt = (xMax - xMin) / (N - 1);
-  let j = 0;
-  for (let i = 0; i < N; i++) {
-    const t = xMin + i * dt;
-    while (j < scale.length - 2 && scale[j + 1] < t) j++;
-    const x0 = scale[j];
-    const x1 = scale[j + 1];
-    const span = x1 - x0;
-    const f = span > 0 ? (t - x0) / span : 0;
-    samples[i] = data[j] * (1 - f) + data[j + 1] * f;
-  }
-  return { samples, dt };
-}
-
-function fftInPlace(re: Float64Array, im: Float64Array): void {
-  const n = re.length;
-  for (let i = 1, j = 0; i < n; i++) {
-    let bit = n >> 1;
-    for (; j & bit; bit >>= 1) j ^= bit;
-    j ^= bit;
-    if (i < j) {
-      const tr = re[i]; re[i] = re[j]; re[j] = tr;
-      const ti = im[i]; im[i] = im[j]; im[j] = ti;
-    }
-  }
-  for (let len = 2; len <= n; len <<= 1) {
-    const half = len >> 1;
-    const ang = (-2 * Math.PI) / len;
-    const wRe = Math.cos(ang);
-    const wIm = Math.sin(ang);
-    for (let i = 0; i < n; i += len) {
-      let curRe = 1;
-      let curIm = 0;
-      for (let k = 0; k < half; k++) {
-        const x = i + k;
-        const y = i + k + half;
-        const er = re[y] * curRe - im[y] * curIm;
-        const ei = re[y] * curIm + im[y] * curRe;
-        re[y] = re[x] - er;
-        im[y] = im[x] - ei;
-        re[x] += er;
-        im[x] += ei;
-        const newRe = curRe * wRe - curIm * wIm;
-        const newIm = curRe * wIm + curIm * wRe;
-        curRe = newRe;
-        curIm = newIm;
-      }
-    }
-  }
-}
-
-function computeFFT(scale: number[], data: number[], N: number): number[] {
-  const { samples } = resampleUniform(scale, data, N);
-  // Hann window
-  for (let i = 0; i < N; i++) {
-    const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (N - 1));
-    samples[i] *= w;
-  }
-  const im = new Float64Array(N);
-  fftInPlace(samples, im);
-  const mag: number[] = [];
-  for (let i = 1; i < N / 2; i++) {
-    mag.push((2 * Math.sqrt(samples[i] * samples[i] + im[i] * im[i])) / N);
-  }
-  return mag;
 }

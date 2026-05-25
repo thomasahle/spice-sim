@@ -139,6 +139,7 @@ test("select intent reserves wire reshaping for explicit visible handles", () =>
 test("canvas activity detection pauses background work during live gestures", () => {
   assert.equal(hasActiveCanvasInteraction({}), false);
   assert.equal(hasActiveCanvasInteraction({ drag: { committed: false } }), true);
+  assert.equal(hasActiveCanvasInteraction({ subxResize: { committed: false } }), true);
   assert.equal(hasActiveCanvasInteraction({ wireDraft: [[0, 0]] }), true);
   assert.equal(hasActiveCanvasInteraction({ panning: { x: 10, y: 20 } }), true);
 });

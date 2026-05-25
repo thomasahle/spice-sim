@@ -106,24 +106,61 @@ function parseCount(lines: string[], key: string): number {
   return count;
 }
 
+function parseRawNumber(text: string): number {
+  const value = text.trim();
+  if (/^[+-]?nan$/i.test(value)) return Number.NaN;
+  if (/^[+]?inf(?:inity)?$/i.test(value)) return Number.POSITIVE_INFINITY;
+  if (/^-inf(?:inity)?$/i.test(value)) return Number.NEGATIVE_INFINITY;
+  if (!/^[+-]?(?:(?:\d+\.?\d*)|(?:\.\d+))(?:[eE][+-]?\d+)?$/.test(value)) {
+    throw new Error(`Invalid ngspice RAW numeric value: ${text}`);
+  }
+  return Number(value);
+}
+
 function parseRawValue(text: string, complex: boolean): { value: number; phase?: number } {
   const cleaned = text.trim().replace(/[()]/g, "");
-  if (cleaned === "") return { value: Number.NaN };
+  if (cleaned === "") {
+    throw new Error("Invalid ngspice RAW numeric value: empty");
+  }
   const parts = cleaned.includes(",") ? cleaned.split(",") : cleaned.split(/\s+/);
-  if (complex && parts.length >= 2) {
-    const real = Number.parseFloat(parts[0]);
-    const imag = Number.parseFloat(parts[1]);
+  if (complex) {
+    if (parts.length !== 2) {
+      throw new Error(`Invalid ngspice RAW complex value: ${text}`);
+    }
+    const real = parseRawNumber(parts[0]);
+    const imag = parseRawNumber(parts[1]);
     return {
       value: Math.hypot(real, imag),
       phase: (Math.atan2(imag, real) * 180) / Math.PI,
     };
   }
-  return { value: Number.parseFloat(parts[0]) };
+  if (parts.length !== 1) {
+    throw new Error(`Invalid ngspice RAW numeric value: ${text}`);
+  }
+  return { value: parseRawNumber(parts[0]) };
 }
 
-function isScaleVector(index: number, name: string): boolean {
+function parseRawScaleValue(text: string): number {
+  const cleaned = text.trim().replace(/[()]/g, "");
+  if (cleaned === "") {
+    throw new Error("Invalid ngspice RAW numeric value: empty");
+  }
+  const parts = cleaned.includes(",") ? cleaned.split(",") : cleaned.split(/\s+/);
+  if (parts.length === 1) return parseRawNumber(parts[0]);
+  if (parts.length === 2) return parseRawNumber(parts[0]);
+  throw new Error(`Invalid ngspice RAW numeric value: ${text}`);
+}
+
+function isScaleVector(name: string, unit: string): boolean {
   const normalized = name.toLowerCase();
-  return index === 0 || normalized === "time" || normalized === "frequency" || normalized.endsWith("-sweep");
+  const normalizedUnit = unit.toLowerCase();
+  return (
+    normalized === "time" ||
+    normalized === "frequency" ||
+    normalized.endsWith("-sweep") ||
+    normalizedUnit === "time" ||
+    normalizedUnit === "frequency"
+  );
 }
 
 export function parseAsciiRaw(raw: string): SimResult {
@@ -149,11 +186,11 @@ export function parseAsciiRaw(raw: string): SimResult {
     variables.push({ name: match[2], unit: match[3].trim() });
   }
 
-  const vectors: SimVector[] = variables.map((variable, index) => ({
+  const vectors: SimVector[] = variables.map((variable) => ({
     name: variable.name,
-    is_scale: isScaleVector(index, variable.name),
+    is_scale: isScaleVector(variable.name, variable.unit),
     data: [],
-    phase: complex && !isScaleVector(index, variable.name) ? [] : undefined,
+    phase: complex && !isScaleVector(variable.name, variable.unit) ? [] : undefined,
   }));
 
   const valueLines = lines.slice(valuesIndex + 1).filter((line) => line.trim() !== "");
@@ -170,20 +207,73 @@ export function parseAsciiRaw(raw: string): SimResult {
       if (vector == null) {
         throw new Error("Invalid ngspice RAW output: variable index out of range");
       }
-      const parsed = parseRawValue(valueText, complex && !vector.is_scale);
-      vector.data.push(parsed.value);
-      if (vector.phase != null) {
-        vector.phase.push(parsed.phase ?? 0);
+      if (vector.is_scale) {
+        vector.data.push(parseRawScaleValue(valueText));
+      } else {
+        const parsed = parseRawValue(valueText, complex);
+        vector.data.push(parsed.value);
+        if (vector.phase != null) {
+          vector.phase.push(parsed.phase ?? 0);
+        }
       }
     }
   }
+  const trailingLines = valueLines.slice(cursor);
+  if (trailingLines.length > 0 && !startsNextRawPlot(trailingLines)) {
+    throw new Error("Invalid ngspice RAW output: too many values");
+  }
+  const measurements = measurementsFromTrailingRawPlot(trailingLines);
 
   return {
     plot,
     vectors,
     log: "",
-    measurements: [],
+    measurements,
   };
+}
+
+function startsNextRawPlot(lines: string[]): boolean {
+  if (!/^Title:/i.test(lines[0]?.trim() ?? "")) return false;
+  return lines.some((line) => /^Plotname:/i.test(line.trim())) &&
+    lines.some((line) => /^No\. Variables:/i.test(line.trim())) &&
+    lines.some((line) => /^Variables:/i.test(line.trim())) &&
+    lines.some((line) => /^Values:/i.test(line.trim()));
+}
+
+function measurementsFromTrailingRawPlot(lines: string[]): SimResult["measurements"] {
+  if (lines.length === 0) return [];
+  if (!startsNextRawPlot(lines)) return [];
+  const plot = parseHeaderValue(lines, "Plotname").toLowerCase();
+  if (plot !== "integrated noise") return [];
+  const variableCount = parseCount(lines, "No. Variables");
+  const pointCount = parseCount(lines, "No. Points");
+  if (pointCount !== 1) return [];
+  const variablesIndex = lines.findIndex((line) => line.trim().toLowerCase() === "variables:");
+  const valuesIndex = lines.findIndex((line) => line.trim().toLowerCase() === "values:");
+  if (variablesIndex < 0 || valuesIndex < 0 || valuesIndex <= variablesIndex) return [];
+
+  const variables: RawVariable[] = [];
+  for (let i = 0; i < variableCount; i += 1) {
+    const line = lines[variablesIndex + 1 + i]?.trim() ?? "";
+    const match = /^(\d+)\s+(\S+)\s+(.+)$/.exec(line);
+    if (!match) return [];
+    variables.push({ name: match[2], unit: match[3].trim() });
+  }
+
+  const valueLines = lines.slice(valuesIndex + 1).filter((line) => line.trim() !== "");
+  if (valueLines.length < variableCount) return [];
+  return variables.map((variable, index) => {
+    const line = valueLines[index];
+    const tokens = line.trim().split(/\s+/);
+    const valueText = index === 0 && tokens.length > 1 ? tokens.slice(1).join(" ") : tokens.join(" ");
+    const value = parseRawValue(valueText, false).value;
+    return {
+      name: variable.name,
+      value,
+      at: null,
+      raw: `${variable.name} = ${value}`,
+    };
+  });
 }
 
 function cleanNgspiceStartupLog(log: string | undefined): string {
@@ -315,9 +405,11 @@ export async function simulateWithWasm(netlist: string, analysis: Analysis): Pro
       .join("\n");
     const ngspiceError = extractNgspiceError(ngspiceLog);
     if (ngspiceError) {
-      throw new Error(`${ngspiceError}\n\nEngine details:\n${wrapper}${ngspiceLog ? "\n" + ngspiceLog : ""}`);
+      throw new Error(`${ngspiceError}\n\nEngine details:\n${wrapper}${ngspiceLog ? "\n" + ngspiceLog : ""}`, {
+        cause: e,
+      });
     }
-    throw new Error(ngspiceLog ? `${wrapper}\n\n${ngspiceLog}` : wrapper);
+    throw new Error(ngspiceLog ? `${wrapper}\n\n${ngspiceLog}` : wrapper, { cause: e });
   }
 }
 

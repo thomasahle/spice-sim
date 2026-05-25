@@ -1,4 +1,4 @@
-import type { ComponentKind, CircuitComponent } from "./model";
+import type { ComponentKind, CircuitComponent, CircuitDoc } from "./model";
 
 export type ModelDeviceType = "D" | "NPN" | "PNP" | "NMOS" | "PMOS";
 
@@ -60,7 +60,26 @@ export function modelTypesForKind(kind: ComponentKind): ModelDeviceType[] {
   }
 }
 
-export const BUILTIN_MOSFET_MODELS: ModelDefinition[] = [
+export function modelAppliesToKind(type: ModelDeviceType, kind: ComponentKind): boolean {
+  return modelTypesForKind(kind).includes(type);
+}
+
+export const BUILTIN_MODEL_DEFINITIONS: ModelDefinition[] = [
+  {
+    name: "DMOD",
+    type: "D",
+    params: "",
+  },
+  {
+    name: "BJTN",
+    type: "NPN",
+    params: "",
+  },
+  {
+    name: "BJTP",
+    type: "PNP",
+    params: "",
+  },
   {
     name: "NCH",
     type: "NMOS",
@@ -82,6 +101,10 @@ export const BUILTIN_MOSFET_MODELS: ModelDefinition[] = [
     params: "LEVEL=1 VTO=-0.70 KP=70e-6 LAMBDA=0.03 GAMMA=0.4 PHI=0.7",
   },
 ];
+
+export const BUILTIN_MOSFET_MODELS: ModelDefinition[] = BUILTIN_MODEL_DEFINITIONS.filter(
+  (model) => model.type === "NMOS" || model.type === "PMOS",
+);
 
 export const BUILTIN_MOSFET_PRESETS: MosfetPreset[] = [
   {
@@ -127,6 +150,149 @@ export function modelDefinitionLine(model: ModelDefinition): string {
   return `.model ${model.name} ${model.type}${params ? ` (${params})` : ""}`;
 }
 
+export function defaultModelParams(type: ModelDeviceType): string {
+  switch (type) {
+    case "PMOS":
+      return "LEVEL=1 VTO=-0.70 KP=70e-6 LAMBDA=0.03 GAMMA=0.4 PHI=0.7";
+    case "NMOS":
+      return "LEVEL=1 VTO=0.70 KP=180e-6 LAMBDA=0.03 GAMMA=0.4 PHI=0.7";
+    case "D":
+      return "IS=1e-14 N=1";
+    case "NPN":
+      return "IS=1e-15 BF=100";
+    case "PNP":
+      return "IS=1e-15 BF=80";
+  }
+}
+
+export function defaultModelName(type: ModelDeviceType): string {
+  switch (type) {
+    case "D":
+      return "DMOD";
+    case "NPN":
+      return "BJTN";
+    case "PNP":
+      return "BJTP";
+    case "NMOS":
+      return "NCH";
+    case "PMOS":
+      return "PCH";
+  }
+}
+
+export function uniqueModelName(models: ModelDefinition[], base: string): string {
+  const cleanBase = sanitizeModelName(base) || "MODEL";
+  const used = new Set(models.map((model) => model.name.toLowerCase()));
+  if (!used.has(cleanBase.toLowerCase())) return cleanBase;
+  for (let idx = 2; idx < 1000; idx++) {
+    const candidate = `${cleanBase}_${idx}`;
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+  return `${cleanBase}_${Date.now().toString(36)}`;
+}
+
+export function upsertModelDefinition(
+  directives: string,
+  model: ModelDefinition,
+): string {
+  const normalized = normalizeModelDefinition(model);
+  if (!normalized) return directives;
+  const lines = splitDirectiveLines(directives);
+  let replaced = false;
+  const nextLines = lines.map((line) => {
+    const current = parseModelLine(line);
+    if (!current || !sameModelKey(current, normalized)) return line;
+    replaced = true;
+    return modelDefinitionLine(normalized);
+  });
+  if (!replaced) nextLines.push(modelDefinitionLine(normalized));
+  return joinDirectiveLines(nextLines);
+}
+
+export function updateModelDefinition(
+  directives: string,
+  previous: ModelDefinition,
+  next: ModelDefinition,
+): string {
+  const normalizedNext = normalizeModelDefinition(next);
+  if (!normalizedNext) return directives;
+  const lines = splitDirectiveLines(directives);
+  let replaced = false;
+  const nextLines = lines.flatMap((line) => {
+    const current = parseModelLine(line);
+    if (!current || !sameModelKey(current, previous)) return [line];
+    if (replaced) return [];
+    replaced = true;
+    return [modelDefinitionLine(normalizedNext)];
+  });
+  if (!replaced) nextLines.push(modelDefinitionLine(normalizedNext));
+  return joinDirectiveLines(nextLines);
+}
+
+export function removeModelDefinition(
+  directives: string,
+  model: ModelDefinition,
+): string {
+  return joinDirectiveLines(
+    splitDirectiveLines(directives).filter((line) => {
+      const current = parseModelLine(line);
+      return !current || !sameModelKey(current, model);
+    }),
+  );
+}
+
+export function removeModelDefinitionInDoc(
+  doc: CircuitDoc,
+  model: ModelDefinition,
+  replacementName = defaultModelName(model.type),
+): CircuitDoc {
+  return {
+    ...doc,
+    directives: removeModelDefinition(doc.directives, model),
+    pages: doc.pages.map((schematic) => ({
+      ...schematic,
+      components: schematic.components.map((component) => {
+        if (!modelAppliesToKind(model.type, component.kind)) return component;
+        if (component.value.trim().toLowerCase() !== model.name.toLowerCase()) {
+          return component;
+        }
+        return {
+          ...component,
+          value: replacementName,
+          params: {
+            ...(component.params ?? {}),
+            preset: "",
+          },
+        };
+      }),
+    })),
+  };
+}
+
+export function updateModelDefinitionInDoc(
+  doc: CircuitDoc,
+  previous: ModelDefinition,
+  next: ModelDefinition,
+): CircuitDoc {
+  const normalized = normalizeModelDefinition(next);
+  if (!normalized) return doc;
+  return {
+    ...doc,
+    directives: updateModelDefinition(doc.directives, previous, normalized),
+    pages: doc.pages.map((schematic) => ({
+      ...schematic,
+      components: schematic.components.map((component) => {
+        if (!modelAppliesToKind(previous.type, component.kind)) return component;
+        if (!modelAppliesToKind(normalized.type, component.kind)) return component;
+        if (component.value.trim().toLowerCase() !== previous.name.toLowerCase()) {
+          return component;
+        }
+        return { ...component, value: normalized.name };
+      }),
+    })),
+  };
+}
+
 export function mosfetPresetFromComponent(
   component: CircuitComponent,
   name: string,
@@ -145,6 +311,19 @@ export function mosfetPresetFromComponent(
     L: component.params?.L ?? "1u",
     custom: true,
   };
+}
+
+export function componentMatchesMosfetPreset(
+  component: CircuitComponent,
+  preset: MosfetPreset,
+): boolean {
+  const kind = mosfetPresetKindForComponentKind(component.kind);
+  if (!kind || kind !== preset.kind) return false;
+  return (
+    mosfetModelName(component) === preset.model &&
+    (component.params?.W ?? "10u") === preset.W &&
+    (component.params?.L ?? "1u") === preset.L
+  );
 }
 
 export function applyMosfetPreset(
@@ -171,10 +350,43 @@ export function mosfetPresetKindForComponentKind(
   return null;
 }
 
+function mosfetModelName(component: CircuitComponent): string {
+  const kind = mosfetPresetKindForComponentKind(component.kind);
+  if (component.value.trim()) return component.value.trim();
+  return kind === "PMOS" ? "PCH" : "NCH";
+}
+
 function stripOuterParens(value: string): string {
   const trimmed = value.trim();
   if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
     return trimmed.slice(1, -1).trim();
   }
   return trimmed;
+}
+
+export function normalizeModelDefinition(model: ModelDefinition): ModelDefinition | null {
+  const name = sanitizeModelName(model.name);
+  if (!name) return null;
+  return {
+    name,
+    type: model.type.toUpperCase() as ModelDeviceType,
+    params: stripOuterParens(model.params).trim(),
+  };
+}
+
+function sanitizeModelName(name: string): string {
+  return name.trim().replace(/[^A-Za-z0-9_.$-]/g, "_");
+}
+
+function sameModelKey(a: ModelDefinition, b: ModelDefinition): boolean {
+  return a.type === b.type && a.name.toLowerCase() === b.name.toLowerCase();
+}
+
+function splitDirectiveLines(directives: string): string[] {
+  const trimmed = directives.replace(/\s+$/g, "");
+  return trimmed ? trimmed.split(/\r?\n/) : [];
+}
+
+function joinDirectiveLines(lines: string[]): string {
+  return lines.join("\n");
 }

@@ -115,21 +115,47 @@ function bestValueLabelOffset(
   text: string,
   occupiedLabels: Bounds[],
 ): LabelOffset {
-  const candidates = labelCandidates(component);
+  const candidates = expandedLabelCandidates(component);
   let best = candidates[0];
   let bestScore = Infinity;
-  for (const candidate of candidates) {
+  for (let idx = 0; idx < candidates.length; idx++) {
+    const candidate = candidates[idx];
     const bounds = labelBounds(component, candidate, text);
     const score =
       labelOverlapScore(component, page, bounds) +
       labelToLabelScore(bounds, occupiedLabels) +
-      offsetDistance(candidate, candidates[0]) * 4;
+      offsetDistance(candidate, candidates[0]) * 4 +
+      idx * 3;
     if (score < bestScore) {
       best = candidate;
       bestScore = score;
     }
   }
   return best;
+}
+
+function expandedLabelCandidates(c: CircuitComponent): LabelOffset[] {
+  const candidates = labelCandidates(c);
+  const extra: LabelOffset[] = [
+    { x: 3.95, y: 0.25, anchor: "start" },
+    { x: -3.95, y: 0.25, anchor: "end" },
+    { x: 0, y: 2.95, anchor: "middle" },
+    { x: 0, y: -2.7, anchor: "middle" },
+    { x: 3.95, y: 1.15, anchor: "start" },
+    { x: -3.95, y: 1.15, anchor: "end" },
+    { x: 3.95, y: -1.1, anchor: "start" },
+    { x: -3.95, y: -1.1, anchor: "end" },
+  ];
+  for (const candidate of extra) {
+    if (!candidates.some((existing) => sameLabelOffset(existing, candidate))) {
+      candidates.push(candidate);
+    }
+  }
+  return candidates;
+}
+
+function sameLabelOffset(a: LabelOffset, b: LabelOffset): boolean {
+  return a.anchor === b.anchor && sameCoord(a.x, b.x) && sameCoord(a.y, b.y);
 }
 
 function labelCandidates(c: CircuitComponent): LabelOffset[] {
@@ -179,12 +205,20 @@ function labelCandidates(c: CircuitComponent): LabelOffset[] {
         { x: -1.65, y: 0.25, anchor: "end" },
         { x: 0, y: 1.7, anchor: "middle" },
         { x: 0, y: -1.45, anchor: "middle" },
+        { x: 2.65, y: 0.25, anchor: "start" },
+        { x: -2.65, y: 0.25, anchor: "end" },
+        { x: 0, y: 2.45, anchor: "middle" },
+        { x: 0, y: -2.2, anchor: "middle" },
       ]
     : [
         { x: 0, y: 1.45, anchor: "middle" },
         { x: 0, y: -1.15, anchor: "middle" },
         { x: 1.75, y: 0.25, anchor: "start" },
         { x: -1.75, y: 0.25, anchor: "end" },
+        { x: 0, y: 2.2, anchor: "middle" },
+        { x: 0, y: -1.9, anchor: "middle" },
+        { x: 2.85, y: 0.25, anchor: "start" },
+        { x: -2.85, y: 0.25, anchor: "end" },
       ];
 }
 
@@ -197,13 +231,21 @@ function twoTerminalPinsAreVertical(c: CircuitComponent): boolean {
 }
 
 function labelOverlapScore(component: CircuitComponent, page: SchematicPage, bounds: Bounds): number {
-  let score =
-    component.kind === "V" || component.kind === "I"
-      ? overlapArea(bounds, componentVisualBoundsFor(component, 0.12)) * 180
-      : 0;
+  let score = overlapArea(bounds, componentVisualBoundsFor(component)) * selfOverlapWeight(component);
+  if (component.kind === "V" || component.kind === "I") {
+    score += overlapArea(bounds, componentVisualBoundsFor(component, 0.12)) * 120;
+  }
   for (const other of page.components) {
     if (other.id === component.id) continue;
-    score += overlapArea(bounds, componentObstacleBounds(other)) * 30;
+    if (other.kind === "LABEL") {
+      for (const labelBounds of netLabelObstacleBounds(other)) {
+        score += overlapArea(bounds, labelBounds) * 42;
+      }
+      continue;
+    }
+    const area = overlapArea(bounds, componentObstacleBounds(other));
+    score += area * 30;
+    if (!componentUsesCompactLabelModel(component) && area > 0.08) score += 95;
   }
   for (const wire of page.wires) {
     if (!wireIntersectsRect(wire.points, bounds)) continue;
@@ -215,6 +257,21 @@ function labelOverlapScore(component: CircuitComponent, page: SchematicPage, bou
     if (label) score += overlapArea(bounds, probeLabelBounds(probe, label)) * 160;
   }
   return score;
+}
+
+function selfOverlapWeight(component: CircuitComponent): number {
+  if (component.kind === "V" || component.kind === "I") return 60;
+  if (
+    component.kind === "NPN" ||
+    component.kind === "PNP" ||
+    component.kind === "NMOS" ||
+    component.kind === "PMOS" ||
+    component.kind === "NMOS4" ||
+    component.kind === "PMOS4"
+  ) {
+    return 48;
+  }
+  return 18;
 }
 
 function netLabelCandidates(c: CircuitComponent, text: string): NetLabelLayout[] {
@@ -297,6 +354,11 @@ function componentObstacleBounds(component: CircuitComponent): Bounds {
     if (text) return defaultNetLabelBounds(component, text);
   }
   return componentVisualBoundsFor(component, 0.18);
+}
+
+function netLabelObstacleBounds(component: CircuitComponent): Bounds[] {
+  const text = component.value.trim();
+  return text ? netLabelCandidates(component, text).map((candidate) => candidate.bounds) : [];
 }
 
 function defaultNetLabelBounds(component: CircuitComponent, text: string): Bounds {

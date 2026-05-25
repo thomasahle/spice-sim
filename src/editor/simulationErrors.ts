@@ -5,7 +5,7 @@ export interface SimulationErrorSummary {
 }
 
 export function summarizeSimulationError(raw: string): SimulationErrorSummary {
-  const message = raw.replace(/^Error:\s*/i, "").trim();
+  const message = cleanSimulationErrorText(raw.replace(/^Error:\s*/i, ""));
 
   if (/(singular matrix|no dc path|no path to ground|floating node)/i.test(message)) {
     return {
@@ -80,4 +80,14 @@ export function summarizeSimulationError(raw: string): SimulationErrorSummary {
 export function formatSimulationErrorLog(summary: SimulationErrorSummary): string {
   const checks = summary.checks.map((check) => `  - ${check}`).join("\n");
   return `${summary.status}\n\nWhat to check:\n${checks}\n\nEngine details:\n${summary.details}`;
+}
+
+function cleanSimulationErrorText(raw: string): string {
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*(?:\[object Object\]\s*)+/g, "").trimEnd())
+    .filter((line) => line.trim() !== "[object Object]")
+    .join("\n")
+    .replace(/^\s+/, "")
+    .trim();
 }

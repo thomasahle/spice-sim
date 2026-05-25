@@ -34,6 +34,8 @@ test("measurement value units are inferred conservatively from directives", () =
   assert.equal(measurementValueUnit(meas("imax"), directives.get("imax"), "s"), "A");
   assert.equal(measurementValueUnit(meas("t_at_2v"), directives.get("t_at_2v"), "s"), "s");
   assert.equal(measurementValueUnit(meas("energy"), directives.get("energy"), "s"), "");
+  assert.equal(measurementValueUnit(meas("v(onoise_total)"), undefined, "Hz"), "V");
+  assert.equal(measurementValueUnit(meas("i(v1)"), undefined, "Hz"), "A");
 });
 
 test("measurement result values include inferred units", () => {
@@ -42,4 +44,5 @@ test("measurement result values include inferred units", () => {
     formatMeasurementResultValue(meas("t_at_2v", 5.15832e-4), directives.get("t_at_2v"), "s"),
     "515.832 us",
   );
+  assert.equal(formatMeasurementResultValue(meas("v(onoise_total)", 2.864463777900569e-7), undefined, "Hz"), "286.446 nV");
 });

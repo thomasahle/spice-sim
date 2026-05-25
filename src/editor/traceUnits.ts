@@ -7,6 +7,9 @@ export function traceValueUnit(name: string): string {
   ) {
     return "A";
   }
+  if (lower === "onoise_spectrum" || lower === "inoise_spectrum") {
+    return "V/sqrt(Hz)";
+  }
   if (
     /^v\(/.test(lower) ||
     /^n\d+$/.test(lower) ||

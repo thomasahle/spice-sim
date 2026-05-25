@@ -1,4 +1,4 @@
-import type { CircuitComponent, ComponentKind, Rotation } from "./model.ts";
+import { getPinLayout, type CircuitComponent, type ComponentKind, type Rotation } from "./model.ts";
 
 export interface Rect {
   x1: number;
@@ -126,6 +126,23 @@ export function componentBounds(kind: ComponentKind): { w: number; h: number } {
 }
 
 export function componentBoundsFor(c: CircuitComponent, pad = 0): Bounds {
+  if (c.kind === "SUBX") {
+    const local = subcircuitLocalBounds(c);
+    const corners = [
+      transformLocalPoint(c, { x: local.x1, y: local.y1 }),
+      transformLocalPoint(c, { x: local.x2, y: local.y1 }),
+      transformLocalPoint(c, { x: local.x2, y: local.y2 }),
+      transformLocalPoint(c, { x: local.x1, y: local.y2 }),
+    ];
+    const xs = corners.map((point) => c.x + point.x);
+    const ys = corners.map((point) => c.y + point.y);
+    return {
+      x1: Math.min(...xs) - pad,
+      y1: Math.min(...ys) - pad,
+      x2: Math.max(...xs) + pad,
+      y2: Math.max(...ys) + pad,
+    };
+  }
   const base = componentBounds(c.kind);
   const rotated = c.rotation === 90 || c.rotation === 270;
   const w = rotated ? base.h : base.w;
@@ -150,12 +167,29 @@ export function componentVisualBoundsFor(c: CircuitComponent, pad = 0): Bounds {
       y2: c.y + height + pad,
     };
   }
+  if (c.kind === "SUBX") {
+    const local = subcircuitLocalBounds(c);
+    const corners = [
+      transformLocalPoint(c, { x: local.x1, y: local.y1 }),
+      transformLocalPoint(c, { x: local.x2, y: local.y1 }),
+      transformLocalPoint(c, { x: local.x2, y: local.y2 }),
+      transformLocalPoint(c, { x: local.x1, y: local.y2 }),
+    ];
+    const xs = corners.map((point) => c.x + point.x);
+    const ys = corners.map((point) => c.y + point.y);
+    return {
+      x1: Math.min(...xs) - pad,
+      y1: Math.min(...ys) - pad,
+      x2: Math.max(...xs) + pad,
+      y2: Math.max(...ys) + pad,
+    };
+  }
   const local = componentVisualBounds(c.kind);
   const corners = [
-    rotateLocalPoint({ x: local.x1, y: local.y1 }, c.rotation),
-    rotateLocalPoint({ x: local.x2, y: local.y1 }, c.rotation),
-    rotateLocalPoint({ x: local.x2, y: local.y2 }, c.rotation),
-    rotateLocalPoint({ x: local.x1, y: local.y2 }, c.rotation),
+    transformLocalPoint(c, { x: local.x1, y: local.y1 }),
+    transformLocalPoint(c, { x: local.x2, y: local.y1 }),
+    transformLocalPoint(c, { x: local.x2, y: local.y2 }),
+    transformLocalPoint(c, { x: local.x1, y: local.y2 }),
   ];
   const xs = corners.map((p) => c.x + p.x);
   const ys = corners.map((p) => c.y + p.y);
@@ -164,6 +198,22 @@ export function componentVisualBoundsFor(c: CircuitComponent, pad = 0): Bounds {
     y1: Math.min(...ys) - pad,
     x2: Math.max(...xs) + pad,
     y2: Math.max(...ys) + pad,
+  };
+}
+
+function subcircuitLocalBounds(c: CircuitComponent): Bounds {
+  const pins = getPinLayout(c);
+  const xs = pins.map((pin) => pin.x);
+  const ys = pins.map((pin) => pin.y);
+  const minX = xs.length > 0 ? Math.min(...xs) : -3;
+  const maxX = xs.length > 0 ? Math.max(...xs) : 3;
+  const minY = ys.length > 0 ? Math.min(...ys) : -1;
+  const maxY = ys.length > 0 ? Math.max(...ys) : 1;
+  return {
+    x1: minX - 0.2,
+    y1: minY - 0.8,
+    x2: maxX + 0.2,
+    y2: maxY + 0.8,
   };
 }
 
@@ -298,6 +348,11 @@ function rotateLocalPoint(point: { x: number; y: number }, rotation: Rotation): 
     case 270:
       return { x: point.y, y: -point.x };
   }
+}
+
+function transformLocalPoint(c: CircuitComponent, point: { x: number; y: number }): { x: number; y: number } {
+  const mirrored = c.mirrored ? { x: -point.x, y: point.y } : point;
+  return rotateLocalPoint(mirrored, c.rotation);
 }
 
 function segmentIntersectsRect(

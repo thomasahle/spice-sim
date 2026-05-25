@@ -116,6 +116,119 @@ test("explicit subcircuit ports keep internal labels private", () => {
   assert.match(netlist, /^R2 n_int out 1k$/m);
 });
 
+test("explicit subcircuit port order overrides label geometry", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      { id: "main", name: "main", wires: [], probes: [], components: [] },
+      {
+        id: "sub",
+        name: "ordered",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "y", kind: "LABEL", x: 7, y: -2, rotation: 0, value: "Y", params: { port: "1", portOrder: "3" } },
+          { id: "a", kind: "LABEL", x: -7, y: 2, rotation: 0, value: "A", params: { port: "1", portOrder: "1" } },
+          { id: "b", kind: "LABEL", x: -7, y: -2, rotation: 0, value: "B", params: { port: "1", portOrder: "2" } },
+        ],
+      },
+    ],
+  };
+
+  assert.match(buildNetlist(doc).netlist, /^\.subckt ordered A B Y$/m);
+});
+
+test("subcircuit dependency cycles are reported before simulation", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "xroot", kind: "SUBX", x: 0, y: 0, rotation: 0, value: "a", params: { npins: "1" } },
+        ],
+      },
+      {
+        id: "a",
+        name: "a",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "aport", kind: "LABEL", x: -4.2, y: 0, rotation: 0, value: "in", params: { port: "1" } },
+          { id: "xa", kind: "SUBX", x: 0, y: 0, rotation: 0, value: "b", params: { npins: "1" } },
+        ],
+      },
+      {
+        id: "b",
+        name: "b",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "bport", kind: "LABEL", x: -4.2, y: 0, rotation: 0, value: "in", params: { port: "1" } },
+          { id: "xb", kind: "SUBX", x: 0, y: 0, rotation: 0, value: "a", params: { npins: "1" } },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+
+  assert.deepEqual(result.errors, [
+    "Subcircuit cycle detected: a -> b -> a. SPICE subcircuits must be acyclic; remove or break this recursive instance chain before running.",
+  ]);
+});
+
+test("acyclic nested subcircuits are allowed", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "xroot", kind: "SUBX", x: 0, y: 0, rotation: 0, value: "outer", params: { npins: "1" } },
+        ],
+      },
+      {
+        id: "outer",
+        name: "outer",
+        wires: [{ id: "w-port", points: [[-4.2, 0], [-3, 0]] }],
+        probes: [],
+        components: [
+          { id: "port", kind: "LABEL", x: -4.2, y: 0, rotation: 0, value: "in", params: { port: "1" } },
+          { id: "xinner", kind: "SUBX", x: 0, y: 0, rotation: 0, value: "inner", params: { npins: "1" } },
+        ],
+      },
+      {
+        id: "inner",
+        name: "inner",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "pin", kind: "LABEL", x: -2, y: 0, rotation: 0, value: "in", params: { port: "1" } },
+          { id: "r", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+
+  assert.deepEqual(result.errors, []);
+  assert.match(result.netlist, /^X1 in inner$/m);
+});
+
 test("canvas notes export as comments without electrical components", () => {
   const doc: CircuitDoc = {
     activePageId: "main",
@@ -225,6 +338,135 @@ test("four-terminal MOSFETs netlist explicit body pin", () => {
 
   assert.match(result.netlist, /^M1 vdd gate src vss NMOS_LEVEL1_FAST L=2u W=8u$/m);
   assert.doesNotMatch(result.netlist, /^M1 vdd gate src src /m);
+});
+
+test("model-backed devices warn when a custom model is missing", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "m1", kind: "NMOS", x: 0, y: 0, rotation: 0, value: "MISSING_N" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+
+  assert.ok(
+    result.warnings.some((warning) =>
+      warning.includes("Model MISSING_N is not defined for M1"),
+    ),
+  );
+  assert.ok(
+    result.warnings.some((warning) =>
+      warning.includes("Add a .model MISSING_N NMOS line"),
+    ),
+  );
+  assert.deepEqual(result.modelDiagnostics, [
+    {
+      pageId: "main",
+      componentId: "m1",
+      refdes: "M1",
+      modelName: "MISSING_N",
+      requiredType: "NMOS",
+      definedTypes: [],
+      warning:
+        "Model MISSING_N is not defined for M1. Add a .model MISSING_N NMOS line or choose a shared NMOS model.",
+    },
+  ]);
+});
+
+test("auto-emitted default device models do not warn as missing", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "m1", kind: "NMOS", x: 0, y: 0, rotation: 0, value: "" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+
+  assert.match(result.netlist, /^\.model NCH NMOS/m);
+  assert.equal(
+    result.warnings.some((warning) => warning.includes("Model NCH")),
+    false,
+  );
+  assert.deepEqual(result.modelDiagnostics, []);
+});
+
+test("model-backed devices warn when the model type is incompatible", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: ".model SAME PMOS (LEVEL=1 VTO=-0.7)",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "m1", kind: "NMOS", x: 0, y: 0, rotation: 0, value: "SAME" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+
+  assert.ok(
+    result.warnings.some((warning) =>
+      warning.includes("Model SAME is defined as PMOS but M1 needs NMOS"),
+    ),
+  );
+  assert.equal(result.modelDiagnostics[0]?.componentId, "m1");
+  assert.deepEqual(result.modelDiagnostics[0]?.definedTypes, ["PMOS"]);
+});
+
+test("custom compatible model directives satisfy model-backed devices", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: ".model LED_CUSTOM D (IS=1e-20)",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "d1", kind: "D", x: 0, y: 0, rotation: 0, value: "LED_CUSTOM" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+
+  assert.equal(
+    result.warnings.some((warning) => warning.includes("Model LED_CUSTOM")),
+    false,
+  );
+  assert.deepEqual(result.modelDiagnostics, []);
+  assert.match(result.netlist, /^D1 n\d+ n\d+ LED_CUSTOM$/m);
 });
 
 test("shorted-to-ground circuits get an explicit collapsed-node warning", () => {
@@ -369,6 +611,20 @@ test("LaTeX-style labels sanitize to readable SPICE names", () => {
   assert.match(wPlus, /\bW_p\b/);
   const delta = buildNetlist(docFor("\\Delta V")).netlist;
   assert.match(delta, /\bDelta_V\b/);
+  const dotted = buildNetlist(docFor("\\dot{u}")).netlist;
+  assert.match(dotted, /\bu_dot\b/);
+  const grouped = buildNetlist(docFor("\\left( V_{DD} \\right)")).netlist;
+  assert.match(grouped, /\bV_DD\b/);
+  const styled = buildNetlist(docFor("I_{\\mathrm{up}}")).netlist;
+  assert.match(styled, /\bI_up\b/);
+  const ratio = buildNetlist(docFor("\\frac{V}{R}")).netlist;
+  assert.match(ratio, /\bV_over_R\b/);
+  const setLabel = buildNetlist(docFor("x \\in \\mathbb{R}")).netlist;
+  assert.match(setLabel, /\bx_in_R\b/);
+  const inequality = buildNetlist(docFor("u \\leq V_{DD}")).netlist;
+  assert.match(inequality, /\bu_leq_V_DD\b/);
+  const angle = buildNetlist(docFor("\\left\\langle x \\right\\rangle")).netlist;
+  assert.match(angle, /\blangle_x_rangle\b/);
 });
 
 test("passive value expressions are normalized before netlist emission", () => {

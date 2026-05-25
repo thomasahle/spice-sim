@@ -13,21 +13,30 @@ import {
   emptyDoc,
   getPinLayout,
   makeId,
+  MAX_SUBCIRCUIT_PINS,
   pinWorldPos,
+  rotatePoint,
 } from "./model.ts";
 import {
-  componentBounds,
-  componentVisualBoundsFor,
+  componentBoundsFor,
   normalizeCoord,
-  normalizePoint,
-  samePoint,
-  wireIntersectsRect,
 } from "./geometry.ts";
+import { routeWireSegmentAvoiding } from "./placement.ts";
 
 interface ImportedPart {
+  name: string;
   kind: ComponentKind;
   value: string;
   nodes: string[];
+  params?: Record<string, string>;
+  layout?: ImportLayoutAnnotation;
+}
+
+interface ImportLayoutAnnotation {
+  x?: number;
+  y?: number;
+  rotation?: Rotation;
+  mirrored?: boolean;
   params?: Record<string, string>;
 }
 
@@ -41,6 +50,7 @@ interface ParsedLines {
   parts: ImportedPart[];
   directives: string[];
   analysis: AnalysisSpec | null;
+  modelTypes: Map<string, string>;
 }
 
 export interface NetlistImportResult {
@@ -48,14 +58,58 @@ export interface NetlistImportResult {
   warnings: string[];
 }
 
-export async function importNetlist(text: string): Promise<NetlistImportResult> {
-  const warnings: string[] = [];
-  const { mainLines, subckts, structureDirectives } = splitSubcircuits(text, warnings);
-  const main = parseNetlistLines(mainLines, warnings, true);
-  const analysis: AnalysisSpec = main.analysis ?? { kind: "op" };
-  const directives = [...structureDirectives, ...main.directives];
+export type ImportNetKind =
+  | "ground"
+  | "global"
+  | "external-port"
+  | "local"
+  | "junction"
+  | "high-fanout"
+  | "single-pin";
 
-  const { components, wires } = await layoutImportedParts(main.parts);
+export interface ImportPinIr {
+  partName: string;
+  pinIdx: number;
+  node: string;
+}
+
+export interface ImportPartIr {
+  name: string;
+  kind: ComponentKind;
+  value: string;
+  nodes: string[];
+  params?: Record<string, string>;
+  layout?: ImportLayoutAnnotation;
+}
+
+export interface ImportNetIr {
+  name: string;
+  kind: ImportNetKind;
+  pins: ImportPinIr[];
+  isExternalPort: boolean;
+}
+
+export interface ImportPageIr {
+  name: string;
+  pins: string[];
+  parts: ImportPartIr[];
+  nets: ImportNetIr[];
+  directives: string[];
+  analysis: AnalysisSpec | null;
+  modelTypes: Record<string, string>;
+}
+
+export interface NetlistImportIr {
+  root: ImportPageIr;
+  subcircuits: ImportPageIr[];
+  directives: string[];
+  analysis: AnalysisSpec;
+}
+
+export async function importNetlist(text: string): Promise<NetlistImportResult> {
+  const { ir, warnings } = parseNetlistImportIr(text);
+
+  const { components, wires } = await layoutImportedPage(ir.root);
   if (!components.some((c) => c.kind === "GND")) {
     warnings.push("Imported netlist has no node 0 reference in supported elements.");
   }
@@ -71,18 +125,8 @@ export async function importNetlist(text: string): Promise<NetlistImportResult> 
   };
 
   const subPages = [];
-  for (const subckt of subckts) {
-    const subWarnings: string[] = [];
-    const parsed = parseNetlistLines(subckt.lines, subWarnings, false);
-    warnings.push(...subWarnings.map((warning) => `${subckt.name}: ${warning}`));
-    if (parsed.analysis) {
-      warnings.push(`${subckt.name}: analysis directives inside subcircuits are preserved but not applied.`);
-    }
-    if (parsed.directives.length > 0) {
-      directives.push(`* directives from .subckt ${subckt.name}`);
-      directives.push(...parsed.directives);
-    }
-    const layout = await layoutImportedParts(parsed.parts, { externalPins: subckt.pins });
+  for (const subckt of ir.subcircuits) {
+    const layout = await layoutImportedPage(subckt);
     subPages.push({
       ...emptyDoc.pages[0],
       id: makeId("page"),
@@ -98,9 +142,42 @@ export async function importNetlist(text: string): Promise<NetlistImportResult> 
     doc: {
       pages: [root, ...subPages],
       activePageId: root.id,
-      directives: directives.join("\n"),
-      analysis,
+      directives: ir.directives.join("\n"),
+      analysis: ir.analysis,
       simSettings: emptyDoc.simSettings,
+    },
+    warnings,
+  };
+}
+
+export function parseNetlistImportIr(text: string): { ir: NetlistImportIr; warnings: string[] } {
+  const warnings: string[] = [];
+  const { mainLines, subckts, structureDirectives } = splitSubcircuits(text, warnings);
+  const main = parseNetlistLines(mainLines, warnings, true);
+  const analysis: AnalysisSpec = main.analysis ?? { kind: "op" };
+  const directives = [...structureDirectives, ...main.directives];
+
+  const subcircuits: ImportPageIr[] = [];
+  for (const subckt of subckts) {
+    const subWarnings: string[] = [];
+    const parsed = parseNetlistLines(subckt.lines, subWarnings, false);
+    warnings.push(...subWarnings.map((warning) => `${subckt.name}: ${warning}`));
+    if (parsed.analysis) {
+      warnings.push(`${subckt.name}: analysis directives inside subcircuits are preserved but not applied.`);
+    }
+    if (parsed.directives.length > 0) {
+      directives.push(`* directives from .subckt ${subckt.name}`);
+      directives.push(...parsed.directives);
+    }
+    subcircuits.push(buildImportPageIr(sanitizeSubcktName(subckt.name), subckt.pins, parsed));
+  }
+
+  return {
+    ir: {
+      root: buildImportPageIr("main", [], main),
+      subcircuits,
+      directives,
+      analysis,
     },
     warnings,
   };
@@ -116,6 +193,13 @@ function splitSubcircuits(
   let current: ParsedSubckt | null = null;
 
   for (const raw of joinContinuations(text)) {
+    const layoutLine = preserveLayoutAnnotation(raw);
+    if (layoutLine) {
+      if (current) current.lines.push(layoutLine);
+      else mainLines.push(layoutLine);
+      continue;
+    }
+
     const line = stripComment(raw).trim();
     if (!line) continue;
     const tokens = tokenize(line);
@@ -164,9 +248,17 @@ function parseNetlistLines(
 ): ParsedLines {
   const parts: ImportedPart[] = [];
   const directives: string[] = [];
+  const layoutAnnotations = new Map<string, ImportLayoutAnnotation>();
   let analysis: AnalysisSpec | null = null;
+  const modelTypes = collectModelTypes(lines);
 
   for (const line of lines) {
+    const layout = parseLayoutAnnotation(line);
+    if (layout) {
+      layoutAnnotations.set(layout.name.toLowerCase(), layout.annotation);
+      continue;
+    }
+
     if (line.startsWith(".")) {
       const parsed = parseAnalysis(line);
       if (allowAnalysis && parsed) analysis = parsed;
@@ -174,12 +266,98 @@ function parseNetlistLines(
       continue;
     }
 
-    const parsed = parseElement(line, warnings);
+    const parsed = parseElement(line, warnings, modelTypes);
     if (parsed) parts.push(parsed);
-    else directives.push(`* unsupported import: ${line}`);
+    else {
+      warnings.push(`Unsupported element preserved as directive but not drawn: ${line}`);
+      directives.push(`* unsupported import: ${line}`);
+    }
   }
 
-  return { parts, directives, analysis };
+  const annotatedParts = parts.map((part) => {
+    const layout = layoutAnnotations.get(part.name.toLowerCase());
+    return layout ? { ...part, layout } : part;
+  });
+
+  return { parts: annotatedParts, directives, analysis, modelTypes };
+}
+
+function buildImportPageIr(
+  name: string,
+  pins: string[],
+  parsed: ParsedLines,
+): ImportPageIr {
+  const normalizedPins = pins.map(normalizeNodeName).filter(Boolean);
+  const parts = parsed.parts.map((part): ImportPartIr => ({
+    name: part.name,
+    kind: part.kind,
+    value: part.value,
+    nodes: part.nodes.map(normalizeNodeName),
+    ...(part.params ? { params: part.params } : {}),
+    ...(part.layout ? { layout: part.layout } : {}),
+  }));
+  return {
+    name,
+    pins: normalizedPins,
+    parts,
+    nets: buildImportNets(parts, normalizedPins),
+    directives: [...parsed.directives],
+    analysis: parsed.analysis,
+    modelTypes: Object.fromEntries(parsed.modelTypes),
+  };
+}
+
+function buildImportNets(parts: ImportPartIr[], externalPins: string[]): ImportNetIr[] {
+  const pinMap = new Map<string, ImportPinIr[]>();
+  for (const part of parts) {
+    part.nodes.forEach((node, pinIdx) => {
+      const normalized = normalizeNodeName(node);
+      const pins = pinMap.get(normalized) ?? [];
+      pins.push({ partName: part.name, pinIdx, node: normalized });
+      pinMap.set(normalized, pins);
+    });
+  }
+  for (const external of externalPins) {
+    const normalized = normalizeNodeName(external);
+    if (!pinMap.has(normalized)) pinMap.set(normalized, []);
+  }
+
+  const externalSet = new Set(externalPins.map((pin) => normalizeNodeName(pin).toLowerCase()));
+  return [...pinMap.entries()].map(([node, pins]) => {
+    const isExternalPort = externalSet.has(node.toLowerCase());
+    return {
+      name: node,
+      kind: classifyImportNet(node, pins.length, isExternalPort),
+      pins,
+      isExternalPort,
+    };
+  });
+}
+
+function classifyImportNet(
+  node: string,
+  pinCount: number,
+  isExternalPort: boolean,
+): ImportNetKind {
+  if (node === "0") return "ground";
+  if (isExternalPort) return "external-port";
+  if (isGlobalNet(node)) return "global";
+  if (pinCount > 5) return "high-fanout";
+  if (pinCount > 2) return "junction";
+  if (pinCount === 1) return "single-pin";
+  return "local";
+}
+
+function collectModelTypes(lines: string[]): Map<string, string> {
+  const modelTypes = new Map<string, string>();
+  for (const line of lines) {
+    if (!/^\s*\.model\s+/i.test(line)) continue;
+    const tokens = tokenize(line);
+    const name = tokens[1]?.toLowerCase();
+    const type = tokens[2]?.replace(/\(.*/, "");
+    if (name && type) modelTypes.set(name, type);
+  }
+  return modelTypes;
 }
 
 function joinContinuations(text: string): string[] {
@@ -198,6 +376,47 @@ function stripComment(line: string): string {
   const trimmed = line.trimStart();
   if (trimmed.startsWith("*") || trimmed.startsWith(";")) return "";
   return line.replace(/\s;.*$/, "");
+}
+
+function preserveLayoutAnnotation(line: string): string | null {
+  const trimmed = line.trim();
+  return parseLayoutAnnotation(trimmed) ? trimmed : null;
+}
+
+function parseLayoutAnnotation(line: string): { name: string; annotation: ImportLayoutAnnotation } | null {
+  const match = line.match(/^\*\s*spice-sim-layout:\s+(\S+)(?:\s+(.*))?$/i);
+  if (!match) return null;
+  const name = match[1];
+  const rest = match[2] ?? "";
+  const annotation: ImportLayoutAnnotation = {};
+  const params: Record<string, string> = {};
+
+  for (const token of tokenize(rest)) {
+    const eq = token.indexOf("=");
+    if (eq <= 0) continue;
+    const key = token.slice(0, eq).toLowerCase();
+    const value = token.slice(eq + 1);
+    if (key === "x" || key === "y") {
+      const parsed = Number.parseFloat(value);
+      if (Number.isFinite(parsed)) annotation[key] = parsed;
+    } else if (key === "rot" || key === "rotation") {
+      const rotation = parseRotation(value);
+      if (rotation !== null) annotation.rotation = rotation;
+    } else if (key === "mirror" || key === "mirrored") {
+      annotation.mirrored = /^(1|true|yes|on)$/i.test(value);
+    } else if (key === "w" || key === "h") {
+      params[key] = value;
+    }
+  }
+
+  if (Object.keys(params).length > 0) annotation.params = params;
+  return { name, annotation };
+}
+
+function parseRotation(value: string): Rotation | null {
+  const parsed = Number.parseInt(value, 10);
+  if (parsed === 0 || parsed === 90 || parsed === 180 || parsed === 270) return parsed;
+  return null;
 }
 
 function parseAnalysis(line: string): AnalysisSpec | null {
@@ -234,14 +453,18 @@ function parseAnalysis(line: string): AnalysisSpec | null {
   return null;
 }
 
-function parseElement(line: string, warnings: string[]): ImportedPart | null {
+function parseElement(
+  line: string,
+  warnings: string[],
+  modelTypes: Map<string, string>,
+): ImportedPart | null {
   const tokens = tokenize(line);
   const name = tokens[0] ?? "";
   const prefix = name[0]?.toUpperCase();
   if (!prefix) return null;
 
   const passive = (kind: ComponentKind): ImportedPart | null =>
-    tokens.length >= 4 ? { kind, nodes: tokens.slice(1, 3), value: tokens.slice(3).join(" ") } : null;
+    tokens.length >= 4 ? { name, kind, nodes: tokens.slice(1, 3), value: tokens.slice(3).join(" ") } : null;
 
   switch (prefix) {
     case "R":
@@ -257,12 +480,14 @@ function parseElement(line: string, warnings: string[]): ImportedPart | null {
     case "B":
       return passive("B");
     case "D":
-      return tokens.length >= 4 ? { kind: "D", nodes: tokens.slice(1, 3), value: tokens[3] } : null;
+      return tokens.length >= 4 ? { name, kind: "D", nodes: tokens.slice(1, 3), value: tokens[3] } : null;
     case "Q": {
       if (tokens.length < 5) return null;
       const model = tokens[4];
+      const modelType = modelTypes.get(model.toLowerCase()) ?? model;
       return {
-        kind: /pnp|pjt?p|bjtp/i.test(model) ? "PNP" : "NPN",
+        name,
+        kind: /pnp|pjt?p|bjtp/i.test(modelType) ? "PNP" : "NPN",
         nodes: tokens.slice(1, 4),
         value: model,
         params: tokens[5] ? { area: tokens[5] } : undefined,
@@ -272,9 +497,11 @@ function parseElement(line: string, warnings: string[]): ImportedPart | null {
       if (tokens.length < 6) return null;
       const model = tokens[5];
       const params = parseParams(tokens.slice(6));
-      const isPmos = /pmos|pch|pfet/i.test(model);
+      const modelType = modelTypes.get(model.toLowerCase()) ?? model;
+      const isPmos = /pmos|pch|pfet/i.test(modelType);
       const explicitBulk = tokens[4] !== tokens[3];
       return {
+        name,
         kind: explicitBulk ? (isPmos ? "PMOS4" : "NMOS4") : isPmos ? "PMOS" : "NMOS",
         nodes: explicitBulk ? tokens.slice(1, 5) : tokens.slice(1, 4),
         value: model,
@@ -285,17 +512,26 @@ function parseElement(line: string, warnings: string[]): ImportedPart | null {
       if (tokens.length < 3) return null;
       const model = tokens[tokens.length - 1];
       const rawNodes = tokens.slice(1, -1);
-      const nodes = rawNodes.slice(0, 16);
-      if (rawNodes.length > 16) {
+      if (/^opamp$/i.test(model) && rawNodes.length >= 3) {
+        return {
+          name,
+          kind: "OPAMP",
+          nodes: rawNodes.slice(0, 3),
+          value: "OPAMP",
+        };
+      }
+      const nodes = rawNodes.slice(0, MAX_SUBCIRCUIT_PINS);
+      if (rawNodes.length > MAX_SUBCIRCUIT_PINS) {
         warnings.push(
-          `${name}: subcircuit instance has ${rawNodes.length} pins; only the first 16 are currently shown.`,
+          `${name}: subcircuit instance has ${rawNodes.length} pins; only the first ${MAX_SUBCIRCUIT_PINS} are currently shown.`,
         );
       }
       return {
+        name,
         kind: "SUBX",
         nodes,
         value: sanitizeSubcktName(model),
-        params: { npins: String(Math.min(16, Math.max(1, nodes.length))) },
+        params: { npins: String(Math.min(MAX_SUBCIRCUIT_PINS, Math.max(1, nodes.length))) },
       };
     }
     default:
@@ -351,16 +587,16 @@ function getElk(): Promise<ELK> {
   return elkPromise;
 }
 
-async function layoutImportedParts(
-  parts: ImportedPart[],
-  options: { externalPins?: string[] } = {},
+async function layoutImportedPage(
+  page: ImportPageIr,
 ): Promise<{ components: CircuitComponent[]; wires: { id: string; points: [number, number][] }[] }> {
   const components: CircuitComponent[] = [];
   const wires: { id: string; points: [number, number][] }[] = [];
   const netPins = new Map<string, ImportedPin[]>();
   const seededLabels = new Set<string>();
+  const layoutByComponentId = new Map<string, ImportLayoutAnnotation>();
 
-  options.externalPins?.forEach((pin, idx) => {
+  page.pins.forEach((pin, idx) => {
     const node = normalizeNodeName(pin);
     if (!node || seededLabels.has(node.toLowerCase())) return;
     seededLabels.add(node.toLowerCase());
@@ -371,24 +607,26 @@ async function layoutImportedParts(
       y: idx * 1.5,
       rotation: 0,
       value: node,
-      params: { port: "1" },
+      params: { port: "1", portOrder: String(idx + 1) },
     };
     components.push(component);
     addNetPin(netPins, node, component, 0);
   });
 
-  parts.forEach((part, idx) => {
-    const rotation = defaultRotation(part.kind);
+  page.parts.forEach((part, idx) => {
+    const rotation = part.layout?.rotation ?? defaultRotation(part.kind);
     const component: CircuitComponent = {
       id: makeId(part.kind.toLowerCase()),
       kind: part.kind,
-      x: idx * 8,
-      y: 0,
+      x: part.layout?.x ?? idx * 8,
+      y: part.layout?.y ?? 0,
       rotation,
+      ...(part.layout?.mirrored ? { mirrored: true } : {}),
       value: normalizeImportedValue(part),
-      params: part.params,
+      params: mergeImportedParams(part.params, part.layout?.params),
     };
     components.push(component);
+    if (part.layout) layoutByComponentId.set(component.id, part.layout);
 
     const pins = getPinLayout(component);
     for (let pinIdx = 0; pinIdx < Math.min(pins.length, part.nodes.length); pinIdx++) {
@@ -397,12 +635,14 @@ async function layoutImportedParts(
     }
   });
 
-  const routingPlan = classifyNets(netPins);
+  const routingPlan = classifyNets(netPins, page.nets);
   await applyElkLayout(
     components.filter((component) => component.kind !== "LABEL"),
     routingPlan.localNets,
     routingPlan.junctions,
   );
+  applyCircuitSpecificLayouts(components, netPins);
+  applyImportedLayoutAnnotations(components, layoutByComponentId);
 
   for (const [node, pins] of netPins) {
     if (node === "0") {
@@ -424,7 +664,7 @@ async function layoutImportedParts(
         connectablePins[1].component,
       ]);
     } else if (connectablePins.length > 2 && connectablePins.length <= 5) {
-      const junction = routingPlan.junctions.get(node) ?? netJunctionPoint(connectablePins.map(pinPoint));
+      const junction = preferredJunctionPoint(connectablePins, routingPlan.junctions.get(node));
       for (const pin of connectablePins) addWireRoute(wires, pinPoint(pin), junction, components, [pin.component]);
     } else {
       for (const pin of connectablePins) addNetLabelStub(components, wires, node, pin);
@@ -432,6 +672,329 @@ async function layoutImportedParts(
   }
 
   return { components, wires };
+}
+
+function mergeImportedParams(
+  params: Record<string, string> | undefined,
+  layoutParams: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  const merged = { ...(params ?? {}), ...(layoutParams ?? {}) };
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function applyImportedLayoutAnnotations(
+  components: CircuitComponent[],
+  layoutByComponentId: Map<string, ImportLayoutAnnotation>,
+): void {
+  if (layoutByComponentId.size === 0) return;
+  for (const component of components) {
+    const layout = layoutByComponentId.get(component.id);
+    if (!layout) continue;
+    if (layout.x !== undefined) component.x = layout.x;
+    if (layout.y !== undefined) component.y = layout.y;
+    if (layout.rotation !== undefined) component.rotation = layout.rotation;
+    component.mirrored = layout.mirrored ? true : undefined;
+    component.params = mergeImportedParams(component.params, layout.params);
+  }
+}
+
+function applyCircuitSpecificLayouts(
+  components: CircuitComponent[],
+  netPins: Map<string, ImportedPin[]>,
+): void {
+  applyGroundedSourceLayout(components, netPins);
+  applyCmosPairLayout(components, netPins);
+  applySeriesMosStackLayout(components, netPins);
+  applySeriesPmosStackLayout(components, netPins);
+  applyShuntPartLayout(components, netPins);
+}
+
+function applyGroundedSourceLayout(
+  components: CircuitComponent[],
+  netPins: Map<string, ImportedPin[]>,
+): void {
+  for (const component of components) {
+    if (!isGroundReferencedSourceKind(component.kind)) continue;
+    const n0 = nodeForPin(netPins, component, 0);
+    const n1 = nodeForPin(netPins, component, 1);
+    if (!n0 || !n1) continue;
+    const n0Ground = n0 === "0";
+    const n1Ground = n1 === "0";
+    if (n0Ground === n1Ground) continue;
+
+    const signalIdx = n0Ground ? 1 : 0;
+    const signalNode = signalIdx === 0 ? n0 : n1;
+    const signalAnchor = signalAnchorForSource(component, signalNode, netPins);
+    if (!signalAnchor) continue;
+
+    component.rotation = signalIdx === 0 ? 0 : 180;
+    const sourceOffset = isGlobalNet(signalNode) ? 6 : 4;
+    component.x = normalizeCoord(signalAnchor.x - sourceOffset);
+    component.y = normalizeCoord(signalAnchor.y + (signalIdx === 0 ? 2 : -2));
+  }
+}
+
+function isGroundReferencedSourceKind(kind: ComponentKind): boolean {
+  return kind === "V" || kind === "I" || kind === "B";
+}
+
+function signalAnchorForSource(
+  component: CircuitComponent,
+  node: string,
+  netPins: Map<string, ImportedPin[]>,
+): { x: number; y: number } | null {
+  const pins = (netPins.get(node) ?? []).filter((pin) =>
+    pin.component.id !== component.id &&
+    pin.component.kind !== "LABEL" &&
+    pin.component.kind !== "GND"
+  );
+  if (pins.length === 0) return null;
+  const points = pins.map(pinPoint);
+  return {
+    x: normalizeCoord(points.reduce((sum, point) => sum + point.x, 0) / points.length),
+    y: normalizeCoord(points.reduce((sum, point) => sum + point.y, 0) / points.length),
+  };
+}
+
+function applyShuntPartLayout(
+  components: CircuitComponent[],
+  netPins: Map<string, ImportedPin[]>,
+): void {
+  for (const component of components) {
+    if (!isPassiveKind(component.kind)) continue;
+    const n0 = nodeForPin(netPins, component, 0);
+    const n1 = nodeForPin(netPins, component, 1);
+    if (!n0 || !n1) continue;
+
+    const n0Rail = isRailNet(n0);
+    const n1Rail = isRailNet(n1);
+    if (n0Rail === n1Rail) continue;
+
+    const signalIdx = n0Rail ? 1 : 0;
+    const railIdx = n0Rail ? 0 : 1;
+    const signalNode = signalIdx === 0 ? n0 : n1;
+    const railNode = railIdx === 0 ? n0 : n1;
+    const signalAnchor = signalAnchorForShunt(component, signalNode, netPins);
+    if (!signalAnchor) continue;
+
+    const railAbove = isPositiveRailNet(railNode);
+    orientShuntPart(component, signalIdx, !railAbove);
+    component.x = shuntX(component, signalAnchor, signalNode, netPins);
+    component.y = normalizeCoord(signalAnchor.y + (railAbove ? -2 : 2));
+  }
+}
+
+function isPassiveKind(kind: ComponentKind): boolean {
+  return kind === "R" || kind === "C" || kind === "L";
+}
+
+function isRailNet(node: string): boolean {
+  return node === "0" || isGlobalNet(node);
+}
+
+function isPositiveRailNet(node: string): boolean {
+  return /^(vdd|vcc|avdd|dvdd|\+?\d+v)$/i.test(node);
+}
+
+function signalAnchorForShunt(
+  component: CircuitComponent,
+  node: string,
+  netPins: Map<string, ImportedPin[]>,
+): { x: number; y: number } | null {
+  const pins = (netPins.get(node) ?? []).filter((pin) =>
+    pin.component.id !== component.id &&
+    pin.component.kind !== "LABEL" &&
+    pin.component.kind !== "GND"
+  );
+  if (pins.length === 0) return null;
+  const points = pins.map(pinPoint);
+  return {
+    x: normalizeCoord(points.reduce((sum, point) => sum + point.x, 0) / points.length),
+    y: normalizeCoord(points.reduce((sum, point) => sum + point.y, 0) / points.length),
+  };
+}
+
+function shuntX(
+  component: CircuitComponent,
+  signalAnchor: { x: number; y: number },
+  node: string,
+  netPins: Map<string, ImportedPin[]>,
+): number {
+  const otherPins = (netPins.get(node) ?? []).filter((pin) => pin.component.id !== component.id);
+  const touchesActiveDevice = otherPins.some((pin) => isActiveDeviceKind(pin.component.kind));
+  if (!touchesActiveDevice) return normalizeCoord(signalAnchor.x);
+  if (otherPins.some((pin) => isOutputPin(pin))) return normalizeCoord(signalAnchor.x + 4);
+  const currentSide = component.x >= signalAnchor.x ? 1 : -1;
+  return normalizeCoord(signalAnchor.x + currentSide * 4);
+}
+
+function isOutputPin(pin: ImportedPin): boolean {
+  return pin.component.kind === "OPAMP" && pin.pinIdx === 2;
+}
+
+function isActiveDeviceKind(kind: ComponentKind): boolean {
+  return (
+    kind === "NMOS" ||
+    kind === "PMOS" ||
+    kind === "NMOS4" ||
+    kind === "PMOS4" ||
+    kind === "NPN" ||
+    kind === "PNP" ||
+    kind === "OPAMP"
+  );
+}
+
+function orientShuntPart(component: CircuitComponent, signalIdx: number, signalOnTop: boolean): void {
+  if (component.kind === "R") {
+    component.rotation = (signalIdx === 0) === signalOnTop ? 90 : 270;
+    return;
+  }
+  component.rotation = (signalIdx === 0) === signalOnTop ? 0 : 180;
+}
+
+function applyCmosPairLayout(
+  components: CircuitComponent[],
+  netPins: Map<string, ImportedPin[]>,
+): void {
+  const pmoses = components.filter((component) => isPmosKind(component.kind));
+  const nmoses = components.filter((component) => isNmosKind(component.kind));
+
+  for (const pmos of pmoses) {
+    for (const nmos of nmoses) {
+      const pGate = nodeForPin(netPins, pmos, 1);
+      const nGate = nodeForPin(netPins, nmos, 1);
+      const pDrain = nodeForPin(netPins, pmos, 0);
+      const nDrain = nodeForPin(netPins, nmos, 0);
+      const pSource = nodeForPin(netPins, pmos, 2);
+      const nSource = nodeForPin(netPins, nmos, 2);
+      if (!pGate || !nGate || !pDrain || !nDrain || !pSource || !nSource) continue;
+      if (pGate !== nGate || pDrain !== nDrain) continue;
+      if (!isGlobalNet(pSource) || nSource !== "0") continue;
+
+      pmos.x = 0;
+      pmos.y = 0;
+      pmos.rotation = 180;
+      nmos.x = 0;
+      nmos.y = 4;
+      nmos.rotation = 0;
+
+      placeSuppliesForCmosPair(components, netPins, pGate, pSource);
+      placeOutputLoadsForCmosPair(components, netPins, pDrain);
+      return;
+    }
+  }
+}
+
+function applySeriesMosStackLayout(
+  components: CircuitComponent[],
+  netPins: Map<string, ImportedPin[]>,
+): void {
+  const nmoses = components.filter((component) => isNmosKind(component.kind));
+  for (const topCandidate of nmoses) {
+    for (const bottomCandidate of nmoses) {
+      if (topCandidate.id === bottomCandidate.id) continue;
+      const shared = nodeForPin(netPins, topCandidate, 2);
+      if (!shared || shared === "0" || isGlobalNet(shared)) continue;
+      if (nodeForPin(netPins, bottomCandidate, 0) !== shared) continue;
+      const centerX = snapImportedCoord((topCandidate.x + bottomCandidate.x) / 2);
+      const centerY = snapImportedCoord((topCandidate.y + bottomCandidate.y) / 2);
+      topCandidate.x = centerX;
+      topCandidate.y = normalizeCoord(centerY - 2);
+      topCandidate.rotation = 0;
+      bottomCandidate.x = centerX;
+      bottomCandidate.y = normalizeCoord(centerY + 2);
+      bottomCandidate.rotation = 0;
+    }
+  }
+}
+
+function applySeriesPmosStackLayout(
+  components: CircuitComponent[],
+  netPins: Map<string, ImportedPin[]>,
+): void {
+  const pmoses = components.filter((component) => isPmosKind(component.kind));
+  for (const lowerCandidate of pmoses) {
+    for (const upperCandidate of pmoses) {
+      if (lowerCandidate.id === upperCandidate.id) continue;
+      const shared = nodeForPin(netPins, lowerCandidate, 2);
+      if (!shared || shared === "0" || isGlobalNet(shared)) continue;
+      if (nodeForPin(netPins, upperCandidate, 0) !== shared) continue;
+      const centerX = snapImportedCoord((lowerCandidate.x + upperCandidate.x) / 2);
+      const centerY = snapImportedCoord((lowerCandidate.y + upperCandidate.y) / 2);
+      upperCandidate.x = centerX;
+      upperCandidate.y = normalizeCoord(centerY - 2);
+      upperCandidate.rotation = 180;
+      lowerCandidate.x = centerX;
+      lowerCandidate.y = normalizeCoord(centerY + 2);
+      lowerCandidate.rotation = 180;
+    }
+  }
+}
+
+function placeSuppliesForCmosPair(
+  components: CircuitComponent[],
+  netPins: Map<string, ImportedPin[]>,
+  gateNode: string,
+  vddNode: string,
+): void {
+  const inputSource = components.find((component) => (
+    (component.kind === "V" || component.kind === "I") &&
+    nodeForPin(netPins, component, 0) === gateNode &&
+    nodeForPin(netPins, component, 1) === "0"
+  ));
+  if (inputSource) {
+    inputSource.x = -6;
+    inputSource.y = 4;
+    inputSource.rotation = 0;
+  }
+
+  const supplySource = components.find((component) => (
+    component.kind === "V" &&
+    nodeForPin(netPins, component, 0) === vddNode &&
+    nodeForPin(netPins, component, 1) === "0"
+  ));
+  if (supplySource) {
+    supplySource.x = -6;
+    supplySource.y = -3;
+    supplySource.rotation = 0;
+  }
+}
+
+function placeOutputLoadsForCmosPair(
+  components: CircuitComponent[],
+  netPins: Map<string, ImportedPin[]>,
+  outputNode: string,
+): void {
+  let loadIndex = 0;
+  for (const component of components) {
+    if (component.kind !== "R" && component.kind !== "C" && component.kind !== "L") continue;
+    const n0 = nodeForPin(netPins, component, 0);
+    const n1 = nodeForPin(netPins, component, 1);
+    if (!((n0 === outputNode && n1 === "0") || (n1 === outputNode && n0 === "0"))) continue;
+    component.x = 4 + loadIndex * 3;
+    component.y = 4;
+    component.rotation = n0 === outputNode ? 0 : 180;
+    loadIndex++;
+  }
+}
+
+function nodeForPin(
+  netPins: Map<string, ImportedPin[]>,
+  component: CircuitComponent,
+  pinIdx: number,
+): string | null {
+  for (const [node, pins] of netPins) {
+    if (pins.some((pin) => pin.component.id === component.id && pin.pinIdx === pinIdx)) return node;
+  }
+  return null;
+}
+
+function isNmosKind(kind: ComponentKind): boolean {
+  return kind === "NMOS" || kind === "NMOS4";
+}
+
+function isPmosKind(kind: ComponentKind): boolean {
+  return kind === "PMOS" || kind === "PMOS4";
 }
 
 interface ImportedPin {
@@ -462,22 +1025,30 @@ function addNetPin(
   netPins.set(node, pins);
 }
 
-function classifyNets(netPins: Map<string, ImportedPin[]>): RoutingPlan {
+function classifyNets(
+  netPins: Map<string, ImportedPin[]>,
+  netIr: ImportNetIr[] = [],
+): RoutingPlan {
   const localNets: LocalNet[] = [];
   const labelNets = new Set<string>();
   const junctions = new Map<string, { x: number; y: number }>();
+  const netKindByName = new Map(netIr.map((net) => [net.name.toLowerCase(), net.kind]));
 
   for (const [node, pins] of netPins) {
-    if (node === "0") continue;
+    const kind = netKindByName.get(node.toLowerCase()) ?? classifyImportNet(
+      node,
+      pins.filter((pin) => pin.component.kind !== "LABEL").length,
+      pins.some((pin) => pin.component.kind === "LABEL" && pin.component.params?.port === "1"),
+    );
+    if (kind === "ground") continue;
     const connectablePins = pins.filter((pin) => pin.component.kind !== "LABEL");
-    const hasExternalPort = pins.some((pin) => pin.component.kind === "LABEL" && pin.component.params?.port === "1");
-    if (hasExternalPort || isGlobalNet(node) || connectablePins.length > 5) {
+    if (kind === "external-port" || kind === "global" || kind === "high-fanout") {
       labelNets.add(node);
       continue;
     }
-    if (connectablePins.length === 2) {
+    if (kind === "local" && connectablePins.length === 2) {
       localNets.push({ node, pins: connectablePins });
-    } else if (connectablePins.length > 2 && connectablePins.length <= 5) {
+    } else if (kind === "junction" && connectablePins.length > 2) {
       localNets.push({ node, pins: connectablePins, junctionId: `junction:${node}` });
     } else if (connectablePins.length > 0) {
       labelNets.add(node);
@@ -552,11 +1123,11 @@ async function applyElkLayout(
 }
 
 function componentToElkNode(component: CircuitComponent): ElkNode {
-  const bounds = componentBounds(component.kind);
+  const bounds = componentBoundsFor(component);
   return {
     id: component.id,
-    width: bounds.w * ELK_SCALE,
-    height: bounds.h * ELK_SCALE,
+    width: (bounds.x2 - bounds.x1) * ELK_SCALE,
+    height: (bounds.y2 - bounds.y1) * ELK_SCALE,
     layoutOptions: {
       "elk.portConstraints": "FIXED_SIDE",
     },
@@ -644,73 +1215,12 @@ function addWireRoute(
   obstacles: CircuitComponent[] = [],
   allowedIntersections: CircuitComponent[] = [],
 ): void {
-  const points = bestOrthogonalRoute(from, to, obstacles, allowedIntersections);
+  const points = routeWireSegmentAvoiding(from, to, true, {
+    components: obstacles,
+    wires,
+    ignoreComponentIds: new Set(allowedIntersections.map((component) => component.id)),
+  });
   if (points.length >= 2) wires.push({ id: makeId("w"), points });
-}
-
-function bestOrthogonalRoute(
-  from: { x: number; y: number },
-  to: { x: number; y: number },
-  obstacles: CircuitComponent[],
-  allowedIntersections: CircuitComponent[],
-): [number, number][] {
-  const candidates = orthogonalRouteCandidates(from, to);
-  let best = candidates[0] ?? [];
-  let bestScore = Number.POSITIVE_INFINITY;
-  for (const candidate of candidates) {
-    const score = scoreRoute(candidate, obstacles, allowedIntersections);
-    if (score < bestScore) {
-      best = candidate;
-      bestScore = score;
-    }
-  }
-  return best;
-}
-
-function orthogonalRouteCandidates(
-  from: { x: number; y: number },
-  to: { x: number; y: number },
-): [number, number][][] {
-  const start = normalizePoint(from);
-  const end = normalizePoint(to);
-  if (samePoint(start, end)) return [];
-  if (start.x === end.x || start.y === end.y) return [[[start.x, start.y], [end.x, end.y]]];
-  const midX = snapImportedCoord((start.x + end.x) / 2);
-  const midY = snapImportedCoord((start.y + end.y) / 2);
-  return [
-    compactWirePoints([[start.x, start.y], [end.x, start.y], [end.x, end.y]]),
-    compactWirePoints([[start.x, start.y], [start.x, end.y], [end.x, end.y]]),
-    compactWirePoints([[start.x, start.y], [midX, start.y], [midX, end.y], [end.x, end.y]]),
-    compactWirePoints([[start.x, start.y], [start.x, midY], [end.x, midY], [end.x, end.y]]),
-  ];
-}
-
-function scoreRoute(
-  points: [number, number][],
-  obstacles: CircuitComponent[],
-  allowedIntersections: CircuitComponent[],
-): number {
-  const allowedIds = new Set(allowedIntersections.map((component) => component.id));
-  let score = 0;
-  for (let idx = 0; idx < points.length - 1; idx++) {
-    score += Math.abs(points[idx + 1][0] - points[idx][0]) + Math.abs(points[idx + 1][1] - points[idx][1]);
-  }
-  score += Math.max(0, points.length - 2) * 2;
-  for (const obstacle of obstacles) {
-    if (allowedIds.has(obstacle.id) || obstacle.kind === "LABEL" || obstacle.kind === "GND") continue;
-    if (wireIntersectsRect(points, componentVisualBoundsFor(obstacle, 0.25))) score += 500;
-  }
-  return score;
-}
-
-function compactWirePoints(points: [number, number][]): [number, number][] {
-  const out: [number, number][] = [];
-  for (const point of points) {
-    if (out.length === 0 || out[out.length - 1][0] !== point[0] || out[out.length - 1][1] !== point[1]) {
-      out.push(point);
-    }
-  }
-  return out;
 }
 
 function netJunctionPoint(points: { x: number; y: number }[]): { x: number; y: number } {
@@ -722,6 +1232,34 @@ function netJunctionPoint(points: { x: number; y: number }[]): { x: number; y: n
     x: normalizeCoord(average.x / points.length),
     y: normalizeCoord(average.y / points.length),
   };
+}
+
+function preferredJunctionPoint(
+  pins: ImportedPin[],
+  fallback?: { x: number; y: number },
+): { x: number; y: number } {
+  const points = pins.map(pinPoint);
+  if (points.length === 0) return fallback ?? { x: 0, y: 0 };
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const xSpread = Math.max(...xs) - Math.min(...xs);
+  const ySpread = Math.max(...ys) - Math.min(...ys);
+  if (xSpread <= 0.5) return { x: normalizeCoord(median(xs)), y: normalizeCoord(median(ys)) };
+  if (ySpread <= 0.5) return { x: normalizeCoord(median(xs)), y: normalizeCoord(median(ys)) };
+  const local = netJunctionPoint(points);
+  if (!fallback) return local;
+  const localDistance = totalDistance(points, local);
+  const fallbackDistance = totalDistance(points, fallback);
+  return localDistance <= fallbackDistance * 1.35 ? local : fallback;
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+}
+
+function totalDistance(points: { x: number; y: number }[], target: { x: number; y: number }): number {
+  return points.reduce((sum, point) => sum + Math.abs(point.x - target.x) + Math.abs(point.y - target.y), 0);
 }
 
 function pinPoint(pin: ImportedPin): { x: number; y: number } {
@@ -760,8 +1298,9 @@ function sanitizeSubcktName(raw: string): string {
 function labelAnchor(component: CircuitComponent, pinIdx: number): [number, number] {
   const layout = getPinLayout(component)[pinIdx] ?? { x: 0, y: 0 };
   const pin = pinWorldPos(component, pinIdx);
-  const dx = Math.sign(layout.x);
-  const dy = Math.sign(layout.y);
+  const rotated = rotatePoint(layout, component.rotation);
+  const dx = Math.sign(rotated.x);
+  const dy = Math.sign(rotated.y);
   if (dx !== 0) return [pin.x + dx * 1.2, pin.y];
   if (dy !== 0) return [pin.x, pin.y + dy * 1.2];
   return [pin.x + 1.2, pin.y];

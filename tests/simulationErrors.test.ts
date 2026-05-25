@@ -30,3 +30,15 @@ test("simulation error log keeps actionable checks before raw details", () => {
   assert.match(log, /Engine details:/);
   assert.match(log, /timestep too small/);
 });
+
+test("simulation errors strip object-string prefixes while preserving engine details", () => {
+  const summary = summarizeSimulationError(
+    "[object Object] warning, can't find model 'missing_n' from line\ncould not find a valid modelname",
+  );
+  const log = formatSimulationErrorLog(summary);
+
+  assert.equal(summary.status, "Simulation failed: missing model or subcircuit");
+  assert.doesNotMatch(log, /\[object Object\]/);
+  assert.match(log, /can't find model 'missing_n'/);
+  assert.match(log, /could not find a valid modelname/);
+});

@@ -155,7 +155,7 @@ function stationaryWireBodyAtPoint(
   return wires.some((wire) => !selected.has(wire.id) && pointOnPolylineBody(point, wire.points));
 }
 
-function movePointBetweenWirePaths(
+export function movePointBetweenWirePaths(
   point: { x: number; y: number },
   before: [number, number][],
   after: [number, number][],

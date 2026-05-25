@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { Probe, SchematicPage } from "../src/editor/model.ts";
+import { componentBoundsFor } from "../src/editor/geometry.ts";
 import { netLabelLayouts } from "../src/editor/labelPlacement.ts";
 import { layoutProbeScopes } from "../src/editor/scopeLayout.ts";
 
@@ -49,6 +50,32 @@ test("probe scopes prefer open space over covering a nearby component", () => {
 
   assert.ok(placement);
   assert.notDeepEqual(placement, { dx: options.defaultDx, dy: options.defaultDy });
+});
+
+test("probe scopes avoid the full bounds of large subcircuit blocks", () => {
+  const page: SchematicPage = {
+    ...pageWithProbes([probe("out", 0, 0)]),
+    components: [
+      {
+        id: "xlarge",
+        kind: "SUBX",
+        x: 3.2,
+        y: 0,
+        rotation: 0,
+        value: "large_block",
+        params: { npins: "20" },
+      },
+    ],
+  };
+  const subx = page.components[0];
+  const defaultPlacement = { dx: options.defaultDx, dy: options.defaultDy };
+
+  assert.equal(scopeOverlapsRect(page.probes[0], defaultPlacement, componentBoundsFor(subx, 0.36)), true);
+
+  const placement = layoutProbeScopes(page, options).get("out");
+
+  assert.ok(placement);
+  assert.equal(scopeOverlapsRect(page.probes[0], placement, componentBoundsFor(subx, 0.36)), false);
 });
 
 test("probe scopes avoid net labels and probe label chips in dense areas", () => {

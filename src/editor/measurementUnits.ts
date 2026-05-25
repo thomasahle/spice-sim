@@ -29,11 +29,11 @@ export function measurementDirectivesFromText(directives: string): Map<string, M
 }
 
 export function measurementValueUnit(
-  _measurement: Measurement,
+  measurement: Measurement,
   directive: MeasurementDirectiveInfo | undefined,
   xAxisUnit: string,
 ): string {
-  if (!directive) return "";
+  if (!directive) return expressionUnit(measurement.name);
   if (directive.func === "WHEN") return xAxisUnit;
   return expressionUnit(directive.expr);
 }

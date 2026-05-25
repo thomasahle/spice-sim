@@ -6,6 +6,11 @@ import {
 } from "./geometry.ts";
 import type { SchematicPage, Wire } from "./model.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
+import {
+  nearestConnectionTarget,
+  type ConnectionSnapOptions,
+  type ConnectionTarget,
+} from "./canvasHitTest.ts";
 
 export interface NetLabelNearMiss {
   labelId: string;
@@ -25,6 +30,50 @@ export interface NetLabelNearMiss {
         segmentIdx: number;
         position: { x: number; y: number };
       };
+}
+
+export interface NetLabelDragSnapResult {
+  delta: { x: number; y: number };
+  target: ConnectionTarget | null;
+  source: "anchor" | "pointer" | null;
+}
+
+export function snapNetLabelDrag(
+  page: SchematicPage,
+  labelId: string,
+  initialAnchor: { x: number; y: number },
+  pointerStart: { x: number; y: number },
+  delta: { x: number; y: number },
+  radius: number,
+  options: ConnectionSnapOptions & {
+    snapPoint?: (point: { x: number; y: number }) => { x: number; y: number };
+  } = {},
+): NetLabelDragSnapResult {
+  const snapPage: SchematicPage = {
+    ...page,
+    components: page.components.filter((component) => component.id !== labelId),
+  };
+  const anchor = { x: initialAnchor.x + delta.x, y: initialAnchor.y + delta.y };
+  const pointer = { x: pointerStart.x + delta.x, y: pointerStart.y + delta.y };
+  const anchorSnap = nearestConnectionTarget(snapPage, anchor.x, anchor.y, radius, options);
+  if (anchorSnap) {
+    return {
+      delta: { x: anchorSnap.x - initialAnchor.x, y: anchorSnap.y - initialAnchor.y },
+      target: anchorSnap,
+      source: "anchor",
+    };
+  }
+
+  const pointerSnap = nearestConnectionTarget(snapPage, pointer.x, pointer.y, radius, options);
+  if (pointerSnap) {
+    return {
+      delta: { x: pointerSnap.x - initialAnchor.x, y: pointerSnap.y - initialAnchor.y },
+      target: pointerSnap,
+      source: "pointer",
+    };
+  }
+
+  return { delta, target: null, source: null };
 }
 
 export function connectedNetLabelIds(page: SchematicPage): Set<string> {

@@ -8,6 +8,7 @@ interface Props {
   selected?: boolean;
   strokeWidth?: number;
   palette?: boolean;
+  mirrored?: boolean;
   /** SUBX-only: actual pin positions resolved from getPinLayout(component). */
   subxPins?: { x: number; y: number }[];
   /** SUBX-only: subcircuit name to render in the body label. */
@@ -16,7 +17,7 @@ interface Props {
 
 const SW = 0.12; // line width in cell units
 
-export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = false, subxPins, subxLabel }: Props) {
+export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = false, mirrored = false, subxPins, subxLabel }: Props) {
   const stroke = selected ? "var(--accent)" : "var(--ink)";
   const lead = palette ? 1.45 : 2;
   const sourceRadius = palette ? 1.08 : 0.9;
@@ -29,10 +30,14 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
     strokeLinecap: "round" as const,
     strokeLinejoin: "round" as const,
   };
+  const commonWithTransform = {
+    ...common,
+    transform: mirrored ? "scale(-1 1)" : undefined,
+  };
   switch (kind) {
     case "R":
       return (
-        <g {...common}>
+        <g {...commonWithTransform}>
           <line x1={-passiveLead} y1={0} x2={-1} y2={0} />
           <polyline
             points={[
@@ -53,7 +58,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
       );
     case "V":
       return (
-        <g {...common}>
+        <g {...commonWithTransform}>
           <line x1={0} y1={-lead} x2={0} y2={-sourceRadius} />
           <line x1={0} y1={sourceRadius} x2={0} y2={lead} />
           <circle cx={0} cy={0} r={sourceRadius} />
@@ -64,10 +69,12 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
       );
     case "B":
       return (
-        <g {...common}>
-          <line x1={0} y1={-lead} x2={0} y2={-sourceRadius} />
-          <line x1={0} y1={sourceRadius} x2={0} y2={lead} />
-          <circle cx={0} cy={0} r={sourceRadius} />
+        <g>
+          <g {...commonWithTransform}>
+            <line x1={0} y1={-lead} x2={0} y2={-sourceRadius} />
+            <line x1={0} y1={sourceRadius} x2={0} y2={lead} />
+            <circle cx={0} cy={0} r={sourceRadius} />
+          </g>
           <text x={0} y={0.24} textAnchor="middle" fontSize={0.72} fill={stroke} stroke="none">
             f
           </text>
@@ -75,7 +82,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
       );
     case "I":
       return (
-        <g {...common}>
+        <g {...commonWithTransform}>
           <line x1={0} y1={-lead} x2={0} y2={-sourceRadius} />
           <line x1={0} y1={sourceRadius} x2={0} y2={lead} />
           <circle cx={0} cy={0} r={sourceRadius} />
@@ -86,7 +93,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
       );
     case "C":
       return (
-        <g {...common}>
+        <g {...commonWithTransform}>
           <line x1={0} y1={-passiveLead} x2={0} y2={-0.35} />
           <line x1={-0.9} y1={-0.35} x2={0.9} y2={-0.35} />
           <line x1={-0.9} y1={0.35} x2={0.9} y2={0.35} />
@@ -95,7 +102,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
       );
     case "L":
       return (
-        <g {...common}>
+        <g {...commonWithTransform}>
           <line x1={0} y1={-passiveLead} x2={0} y2={-1.4} />
           {/* Three half-circle humps */}
           <path
@@ -111,7 +118,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
       );
     case "D":
       return (
-        <g {...common}>
+        <g {...commonWithTransform}>
           <line x1={0} y1={-passiveLead} x2={0} y2={-0.7} />
           {/* Anode triangle (pointing toward cathode bar) */}
           <polygon
@@ -125,7 +132,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
       );
     case "GND":
       return (
-        <g {...common}>
+        <g {...commonWithTransform}>
           <line x1={0} y1={0} x2={0} y2={0.5} />
           <line x1={-0.8} y1={0.5} x2={0.8} y2={0.5} />
           <line x1={-0.5} y1={0.8} x2={0.5} y2={0.8} />
@@ -136,7 +143,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
     case "PNP": {
       const npn = kind === "NPN";
       return (
-        <g {...common}>
+        <g {...commonWithTransform}>
           <circle cx={0} cy={0} r={1} />
           {/* Base lead */}
           <line x1={-transistorLead} y1={0} x2={-0.7} y2={0} />
@@ -167,29 +174,31 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
     }
     case "OPAMP":
       return (
-        <g {...common}>
-          {/* Triangle body pointing right */}
-          <polygon points="-3,-2.4 -3,2.4 3,0" fill={"var(--bg-canvas)"} />
-          {/* Input leads */}
-          <line x1={-3} y1={-1} x2={-2.2} y2={-1} />
-          <line x1={-3} y1={1} x2={-2.2} y2={1} />
-          {/* + and - labels inside */}
-          <text x={-1.9} y={-0.6} fontSize={0.7} fill={stroke} stroke="none">+</text>
-          <text x={-1.9} y={1.3} fontSize={0.7} fill={stroke} stroke="none">−</text>
-          {/* Output lead */}
-          <line x1={3} y1={0} x2={3.4} y2={0} />
+        <g>
+          <g {...commonWithTransform}>
+            {/* Triangle body pointing right */}
+            <polygon points="-3,-2.4 -3,2.4 3,0" fill={"var(--bg-canvas)"} />
+            {/* Input leads */}
+            <line x1={-3} y1={-1} x2={-2.2} y2={-1} />
+            <line x1={-3} y1={1} x2={-2.2} y2={1} />
+            {/* Output lead */}
+            <line x1={3} y1={0} x2={3.4} y2={0} />
+          </g>
+          {/* + and - labels inside. Keep text readable when the symbol is mirrored. */}
+          <text x={mirrored ? 1.9 : -1.9} y={-0.6} fontSize={0.7} fill={stroke} stroke="none">+</text>
+          <text x={mirrored ? 1.9 : -1.9} y={1.3} fontSize={0.7} fill={stroke} stroke="none">−</text>
         </g>
       );
     case "LABEL":
       return (
-        <g {...common}>
+        <g {...commonWithTransform}>
           {/* Small pennant / triangle pointing right with a horizontal stem */}
           <polyline points="0,0 0.8,0 1.2,-0.4 2.4,-0.4 2.4,0.4 1.2,0.4 0.8,0" />
         </g>
       );
     case "NOTE":
       return (
-        <g {...common}>
+        <g {...commonWithTransform}>
           <rect x={-1.15} y={-0.9} width={2.3} height={1.8} rx={0.18} />
           <polyline points="0.58,-0.9 1.15,-0.35 0.58,-0.35 0.58,-0.9" />
           <line x1={-0.68} y1={-0.28} x2={0.32} y2={-0.28} />
@@ -217,7 +226,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
       const n = kind === "NMOS" || kind === "NMOS4";
       const fourTerminal = kind === "NMOS4" || kind === "PMOS4";
       return (
-        <g {...common}>
+        <g {...commonWithTransform}>
           {/* Gate lead */}
           <line x1={-transistorLead} y1={0} x2={-0.8} y2={0} />
           {/* Gate bar (slightly offset from channel) */}
@@ -271,13 +280,19 @@ export function SubxGlyph({
   strokeWidth?: number;
 }) {
   const stroke = selected ? "var(--accent)" : "var(--ink)";
+  const pinExtent = Math.max(3, ...pins.map((p) => Math.abs(p.x)));
+  const bodyHalfW = Math.max(1.7, pinExtent - 0.6);
+  const minY = Math.min(...pins.map((p) => p.y));
+  const maxY = Math.max(...pins.map((p) => p.y));
+  const bodyY = minY - 0.6;
+  const bodyH = maxY - minY + 1.2;
   return (
     <g>
       <rect
-        x={-2.4}
-        y={Math.min(...pins.map((p) => p.y)) - 0.6}
-        width={4.8}
-        height={Math.max(...pins.map((p) => p.y)) - Math.min(...pins.map((p) => p.y)) + 1.2}
+        x={-bodyHalfW}
+        y={bodyY}
+        width={bodyHalfW * 2}
+        height={bodyH}
         rx={0.4}
         ry={0.4}
         fill="var(--bg-canvas)"
@@ -291,7 +306,7 @@ export function SubxGlyph({
           key={i}
           x1={p.x}
           y1={p.y}
-          x2={p.x < 0 ? -2.4 : 2.4}
+          x2={p.x < 0 ? -bodyHalfW : bodyHalfW}
           y2={p.y}
           stroke={stroke}
           strokeWidth={strokeWidth}

@@ -9,8 +9,8 @@
 // Models for D / NPN / PNP / NMOS / PMOS are auto-emitted with sane defaults
 // when the user hasn't supplied a custom model name in the component value.
 
-import type { CircuitDoc, ComponentKind, SchematicPage, Wire } from "./model.ts";
-import { getPinLayout, pinLabelForKind, pinWorldPos, refdesPrefix } from "./model.ts";
+import type { CircuitComponent, CircuitDoc, ComponentKind, SchematicPage, Wire } from "./model.ts";
+import { getPinLayout, parsePortOrder, pinLabelForKind, pinWorldPos, refdesPrefix } from "./model.ts";
 import {
   normalizeDeviceValue,
   normalizeLengthValue,
@@ -19,6 +19,11 @@ import {
 } from "./valueExpressions.ts";
 import { isAcStimulus } from "./sourceValues.ts";
 import { netLabelNearMisses, type NetLabelNearMiss } from "./netLabelConnections.ts";
+import {
+  modelTypesForKind,
+  parseModelDefinitions,
+  type ModelDeviceType,
+} from "./modelPresets.ts";
 
 const GND_KEY = "__GND__";
 
@@ -64,8 +69,10 @@ export interface NetlistResult {
   netlist: string;
   nodes: NodeMap;
   refdes: Map<string, string>;
+  errors: string[];
   warnings: string[];
   floatingPins: FloatingPinDiagnostic[];
+  modelDiagnostics: ModelDiagnostic[];
 }
 
 export interface FloatingPinDiagnostic {
@@ -74,6 +81,16 @@ export interface FloatingPinDiagnostic {
   pinLabel?: string;
   refdes: string;
   node: string;
+}
+
+export interface ModelDiagnostic {
+  pageId: string;
+  componentId: string;
+  refdes: string;
+  modelName: string;
+  requiredType: ModelDeviceType;
+  definedTypes: ModelDeviceType[];
+  warning: string;
 }
 
 function pinKey(componentId: string, pinIdx: number): string {
@@ -102,11 +119,67 @@ const DEFAULT_MODEL_NAMES: Partial<Record<ComponentKind, string>> = {
   OPAMP: "OPAMP",
 };
 
+function buildModelTypeIndex(directives: string): Map<string, Set<ModelDeviceType>> {
+  const index = new Map<string, Set<ModelDeviceType>>();
+  for (const kind of ["D", "NPN", "PNP", "NMOS", "PMOS"] as const) {
+    addModelType(index, DEFAULT_MODEL_NAMES[kind]!, kind);
+  }
+  for (const model of parseModelDefinitions(directives)) {
+    addModelType(index, model.name, model.type);
+  }
+  return index;
+}
+
+function addModelType(index: Map<string, Set<ModelDeviceType>>, name: string, type: ModelDeviceType): void {
+  const key = name.trim().toLowerCase();
+  if (!key) return;
+  const types = index.get(key) ?? new Set<ModelDeviceType>();
+  types.add(type);
+  index.set(key, types);
+}
+
+function missingModelDiagnostic(
+  modelTypesByName: Map<string, Set<ModelDeviceType>>,
+  kind: ComponentKind,
+  modelName: string,
+  refdes: string,
+  pageId: string,
+  componentId: string,
+): ModelDiagnostic | null {
+  const requiredType = modelTypesForKind(kind)[0];
+  const cleanName = modelName.trim();
+  if (!requiredType || !cleanName) return null;
+  const types = modelTypesByName.get(cleanName.toLowerCase());
+  if (types?.has(requiredType)) return null;
+  if (types && types.size > 0) {
+    const definedTypes = [...types].sort();
+    return {
+      pageId,
+      componentId,
+      refdes,
+      modelName: cleanName,
+      requiredType,
+      definedTypes,
+      warning: `Model ${cleanName} is defined as ${definedTypes.join("/")} but ${refdes} needs ${requiredType}. Choose a compatible shared model or add a .model ${cleanName} ${requiredType} line.`,
+    };
+  }
+  return {
+    pageId,
+    componentId,
+    refdes,
+    modelName: cleanName,
+    requiredType,
+    definedTypes: [],
+    warning: `Model ${cleanName} is not defined for ${refdes}. Add a .model ${cleanName} ${requiredType} line or choose a shared ${requiredType} model.`,
+  };
+}
+
 interface PageBuild {
   bodyLines: string[];
   modelLines: string[];
   warnings: string[];
   floatingPins: FloatingPinDiagnostic[];
+  modelDiagnostics: ModelDiagnostic[];
   refdes: Map<string, string>;
   nodes: NodeMap;
   /** External pin names (subckt boundary nodes) — only meaningful when isSubckt=true. */
@@ -117,31 +190,39 @@ interface ExternalPinCandidate {
   name: string;
   x: number;
   y: number;
+  order: number | null;
 }
 
 interface PageOpts {
   isSubckt: boolean;
   /** Global model set (subcircuits add to it; emitted once at the top of root). */
   usedModels: Set<ComponentKind>;
+  /** Case-insensitive model names that will be present in the generated deck. */
+  modelTypesByName: Map<string, Set<ModelDeviceType>>;
   /** Global refdes counters, namespaced for the root only. Subckts use local counters. */
   globalCounters?: Record<string, number>;
 }
 
 export function buildNetlist(doc: CircuitDoc): NetlistResult {
   const usedModels = new Set<ComponentKind>();
+  const modelTypesByName = buildModelTypeIndex(doc.directives);
   const globalCounters: Record<string, number> = {};
+  const errors: string[] = subcircuitCycleErrors(doc);
   const warnings: string[] = [];
   const floatingPins: FloatingPinDiagnostic[] = [];
+  const modelDiagnostics: ModelDiagnostic[] = [];
 
   // Root page (pages[0]) — main netlist
   const root = doc.pages[0];
   const rootBuild = buildPageNetlist(root, {
     isSubckt: false,
     usedModels,
+    modelTypesByName,
     globalCounters,
   });
   warnings.push(...rootBuild.warnings);
   floatingPins.push(...rootBuild.floatingPins);
+  modelDiagnostics.push(...rootBuild.modelDiagnostics);
   const nonGroundComponents = root.components.filter((c) => c.kind !== "GND" && c.kind !== "LABEL" && c.kind !== "NOTE");
   const nonGroundNodeCount = countNonGroundNodes(rootBuild.nodes);
   if (nonGroundComponents.length > 0 && hasGroundComponent(root) && nonGroundNodeCount === 0) {
@@ -166,8 +247,12 @@ export function buildNetlist(doc: CircuitDoc): NetlistResult {
   // Other pages — emitted as `.subckt NAME pins... .ends`
   const subLines: string[] = [];
   for (const page of doc.pages.slice(1)) {
-    const sub = buildPageNetlist(page, { isSubckt: true, usedModels });
+    const sub = buildPageNetlist(page, { isSubckt: true, usedModels, modelTypesByName });
     warnings.push(...sub.warnings.map((w) => `${page.name}: ${w}`));
+    modelDiagnostics.push(...sub.modelDiagnostics.map((diagnostic) => ({
+      ...diagnostic,
+      warning: `${page.name}: ${diagnostic.warning}`,
+    })));
     const subName = sanitizeNodeName(page.name);
     if (sub.externalPins.length === 0) {
       warnings.push(
@@ -216,15 +301,94 @@ export function buildNetlist(doc: CircuitDoc): NetlistResult {
     netlist: header + body,
     nodes: rootBuild.nodes,
     refdes: rootBuild.refdes,
+    errors,
     warnings,
     floatingPins,
+    modelDiagnostics,
   };
+}
+
+function subcircuitCycleErrors(doc: CircuitDoc): string[] {
+  const subPages = doc.pages.slice(1);
+  if (subPages.length === 0) return [];
+
+  const byName = new Map<string, SchematicPage>();
+  const bySpiceName = new Map<string, SchematicPage>();
+  for (const page of subPages) {
+    byName.set(page.name, page);
+    bySpiceName.set(sanitizeNodeName(page.name), page);
+  }
+
+  const edges = new Map<string, string[]>();
+  for (const page of subPages) {
+    const targets: string[] = [];
+    for (const component of page.components) {
+      if (component.kind !== "SUBX") continue;
+      const raw = component.value.trim();
+      if (!raw) continue;
+      const target = byName.get(raw) ?? bySpiceName.get(sanitizeNodeName(raw));
+      if (!target) continue;
+      targets.push(target.id);
+    }
+    edges.set(page.id, targets);
+  }
+
+  const pageName = (id: string) => subPages.find((page) => page.id === id)?.name ?? id;
+  const state = new Map<string, "visiting" | "done">();
+  const stack: string[] = [];
+  const cycleKeys = new Set<string>();
+  const cycles: string[][] = [];
+
+  function recordCycle(targetId: string) {
+    const startIdx = stack.indexOf(targetId);
+    if (startIdx < 0) return;
+    const cycle = [...stack.slice(startIdx), targetId];
+    const normalized = normalizeCycleKey(cycle);
+    if (cycleKeys.has(normalized)) return;
+    cycleKeys.add(normalized);
+    cycles.push(cycle);
+  }
+
+  function visit(id: string) {
+    const current = state.get(id);
+    if (current === "done") return;
+    if (current === "visiting") {
+      recordCycle(id);
+      return;
+    }
+    state.set(id, "visiting");
+    stack.push(id);
+    for (const target of edges.get(id) ?? []) visit(target);
+    stack.pop();
+    state.set(id, "done");
+  }
+
+  for (const page of subPages) visit(page.id);
+
+  return cycles.map((cycle) => {
+    const path = cycle.map(pageName).join(" -> ");
+    return `Subcircuit cycle detected: ${path}. SPICE subcircuits must be acyclic; remove or break this recursive instance chain before running.`;
+  });
+}
+
+function normalizeCycleKey(cycle: string[]): string {
+  const closed = cycle.length > 1 && cycle[0] === cycle[cycle.length - 1]
+    ? cycle.slice(0, -1)
+    : [...cycle];
+  if (closed.length === 0) return "";
+  const rotations = closed.map((_, idx) => [
+    ...closed.slice(idx),
+    ...closed.slice(0, idx),
+  ].join("\u0000"));
+  rotations.sort();
+  return rotations[0];
 }
 
 function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
   const dsu = new DSU();
   const warnings: string[] = [];
   const floatingPins: FloatingPinDiagnostic[] = [];
+  const modelDiagnostics: ModelDiagnostic[] = [];
   const isSubckt = opts.isSubckt;
 
   const compPinKeys: { compId: string; pinIdx: number; posKey: string }[] = [];
@@ -311,6 +475,7 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
         name: sanitizeNodeName(lbl),
         x: wp.x,
         y: wp.y,
+        order: parsePortOrder(c.params?.portOrder),
       });
     }
   }
@@ -402,6 +567,7 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
       n.push(pinToNode.get(pinKey(c.id, i)) ?? "0");
     }
     const v = c.value || "";
+    lines.push(formatLayoutAnnotation(name, c));
 
     switch (c.kind) {
       case "R":
@@ -427,6 +593,11 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
       case "D": {
         const model = v || DEFAULT_MODEL_NAMES["D"]!;
         if (model === DEFAULT_MODEL_NAMES["D"]) opts.usedModels.add("D");
+        const diagnostic = missingModelDiagnostic(opts.modelTypesByName, c.kind, model, name, page.id, c.id);
+        if (diagnostic) {
+          warnings.push(diagnostic.warning);
+          modelDiagnostics.push(diagnostic);
+        }
         lines.push(`${name} ${n[0]} ${n[1]} ${model}`);
         break;
       }
@@ -435,6 +606,11 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
         const def = DEFAULT_MODEL_NAMES[c.kind]!;
         const model = v || def;
         if (model === def) opts.usedModels.add(c.kind);
+        const diagnostic = missingModelDiagnostic(opts.modelTypesByName, c.kind, model, name, page.id, c.id);
+        if (diagnostic) {
+          warnings.push(diagnostic.warning);
+          modelDiagnostics.push(diagnostic);
+        }
         const area = c.params?.area ? ` ${normalizeDeviceValue(c.params.area, "")}` : "";
         lines.push(`${name} ${n[0]} ${n[1]} ${n[2]} ${model}${area}`);
         break;
@@ -445,6 +621,11 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
         const def = DEFAULT_MODEL_NAMES[deviceKind]!;
         const model = v || def;
         if (model === def) opts.usedModels.add(deviceKind);
+        const diagnostic = missingModelDiagnostic(opts.modelTypesByName, deviceKind, model, name, page.id, c.id);
+        if (diagnostic) {
+          warnings.push(diagnostic.warning);
+          modelDiagnostics.push(diagnostic);
+        }
         const L = normalizeLengthValue(c.params?.L ?? "", "1u");
         const W = normalizeLengthValue(c.params?.W ?? "", "10u");
         // Body tied to source by default for the simple symbol.
@@ -457,6 +638,11 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
         const def = DEFAULT_MODEL_NAMES[deviceKind]!;
         const model = v || def;
         if (model === def) opts.usedModels.add(deviceKind);
+        const diagnostic = missingModelDiagnostic(opts.modelTypesByName, deviceKind, model, name, page.id, c.id);
+        if (diagnostic) {
+          warnings.push(diagnostic.warning);
+          modelDiagnostics.push(diagnostic);
+        }
         const L = normalizeLengthValue(c.params?.L ?? "", "1u");
         const W = normalizeLengthValue(c.params?.W ?? "", "10u");
         lines.push(`${name} ${n[0]} ${n[1]} ${n[2]} ${n[3]} ${model} L=${L} W=${W}`);
@@ -529,8 +715,36 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
     nodes: { pinToNode, rootToName, posToNode },
     warnings,
     floatingPins,
+    modelDiagnostics,
     externalPins: orderedExternalPins([...externalPins.values()]),
   };
+}
+
+function formatLayoutAnnotation(refdes: string, component: CircuitComponent): string {
+  const fields = [
+    `x=${formatLayoutNumber(component.x)}`,
+    `y=${formatLayoutNumber(component.y)}`,
+    `rot=${component.rotation}`,
+  ];
+  if (component.mirrored) fields.push("mirror=1");
+  if (component.kind === "SUBX") {
+    const w = layoutToken(component.params?.w);
+    const h = layoutToken(component.params?.h);
+    if (w) fields.push(`w=${w}`);
+    if (h) fields.push(`h=${h}`);
+  }
+  return `* spice-sim-layout: ${refdes} ${fields.join(" ")}`;
+}
+
+function formatLayoutNumber(value: number): string {
+  const rounded = Math.round(value * 1000) / 1000;
+  return Object.is(rounded, -0) ? "0" : String(rounded);
+}
+
+function layoutToken(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || /\s/.test(trimmed)) return null;
+  return trimmed.replace(/[\r\n]/g, "");
 }
 
 function formatNetLabelNearMissWarning(
@@ -565,6 +779,11 @@ function orderedExternalPins(pins: ExternalPinCandidate[]): string[] {
   const centerX = pins.reduce((sum, pin) => sum + pin.x, 0) / pins.length;
   return [...pins]
     .sort((a, b) => {
+      if (a.order !== null || b.order !== null) {
+        if (a.order === null) return 1;
+        if (b.order === null) return -1;
+        if (a.order !== b.order) return a.order - b.order;
+      }
       const sideA = a.x <= centerX ? 0 : 1;
       const sideB = b.x <= centerX ? 0 : 1;
       if (sideA !== sideB) return sideA - sideB;
@@ -602,7 +821,7 @@ function sanitizeNodeName(s: string): string {
   // → `W_`). LaTeX-aware cleanups first (so future KaTeX-rendered labels
   // like `\Delta V` or `W_{+}` keep readable SPICE names), then map +/-
   // to distinct sequences, then strip everything else.
-  let out = s
+  let out = normalizeMathLabelForNodeName(s)
     .replace(/\\([A-Za-z]+)/g, "$1") // LaTeX commands: \Delta → Delta
     .replace(/[{}]/g, "") // drop braces from subscripts: W_{+} → W_+
     .replace(/\^/g, "") // drop ^ superscript markers
@@ -614,6 +833,28 @@ function sanitizeNodeName(s: string): string {
   // SPICE doesn't like names starting with a digit; prefix one if so.
   if (/^[0-9]/.test(out)) out = "n_" + out;
   return out || "node";
+}
+
+function normalizeMathLabelForNodeName(input: string): string {
+  let out = input;
+  let previous = "";
+  while (out !== previous) {
+    previous = out;
+    out = out
+      .replace(/\\(?:mathrm|text|operatorname|mathbf|mathit|mathsf)\s*\{([^{}]*)\}/g, "$1")
+      .replace(/\\mathbb\s*\{([^{}]*)\}/g, "$1")
+      .replace(/\\dot\s*\{([^{}]*)\}/g, "$1_dot")
+      .replace(/\\ddot\s*\{([^{}]*)\}/g, "$1_ddot")
+      .replace(/\\hat\s*\{([^{}]*)\}/g, "$1_hat")
+      .replace(/\\(?:bar|overline)\s*\{([^{}]*)\}/g, "$1_bar")
+      .replace(/\\tilde\s*\{([^{}]*)\}/g, "$1_tilde")
+      .replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, "$1_over_$2")
+      .replace(/\\sqrt\s*\{([^{}]*)\}/g, "sqrt_$1");
+  }
+  return out
+    .replace(/\\(?:left|right)\s*\\?[()[\]{}|.]?/g, "_")
+    .replace(/\\dot/g, "_dot")
+    .replace(/\\ddot/g, "_ddot");
 }
 
 function parsePowerLabelVoltage(label: string): string | null {

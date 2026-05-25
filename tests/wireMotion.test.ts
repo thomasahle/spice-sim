@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  movePointBetweenWirePaths,
   moveProbesWithPinMoves,
   moveUnmovedProbesWithChangedWirePaths,
   moveWirePointsToTargets,
@@ -180,6 +181,26 @@ test("probes on rerouted wire bodies follow the changed wire path", () => {
       [{ id: "w1", points: [[-7, 0.5], [-3, -1.5]] }],
     ),
     [{ id: "pin", x: -5, y: -0.5, color: "#ff9f0a", label: "Vin" }],
+  );
+});
+
+test("probes on detoured selected wire bodies stay on the routed wire path", () => {
+  assert.deepEqual(
+    movePointBetweenWirePaths(
+      { x: 2, y: 0 },
+      [
+        [0, 0],
+        [4, 0],
+      ],
+      [
+        [0, 0],
+        [0, 1],
+        [4, 1],
+        [8, 1],
+        [8, 0],
+      ],
+    ),
+    { x: 4, y: 1 },
   );
 });
 

@@ -1,4 +1,5 @@
 import type { CircuitComponent, Probe, SchematicPage, Wire } from "./model";
+import { componentBoundsFor as geometryComponentBoundsFor } from "./geometry.ts";
 import { canvasValueLabel } from "./labelFormatting.ts";
 import { netLabelLayouts, valueLabelBounds, valueLabelOffsets } from "./labelPlacement.ts";
 
@@ -124,7 +125,7 @@ function scopeBounds(
 function scopeComponentOverlapScore(bounds: Bounds, components: CircuitComponent[]): number {
   let score = 0;
   for (const component of components) {
-    score += overlapArea(bounds, componentBoundsFor(component, 0.36));
+    score += overlapArea(bounds, geometryComponentBoundsFor(component, 0.36));
   }
   return score;
 }
@@ -194,39 +195,6 @@ function probeLabelBounds(probe: Probe, label: string): Bounds {
     y1: probe.y - 0.92,
     x2: probe.x + 0.45 + width,
     y2: probe.y - 0.22,
-  };
-}
-
-function componentBounds(kind: CircuitComponent["kind"]): { w: number; h: number } {
-  switch (kind) {
-    case "OPAMP":
-    case "SUBX":
-      return { w: 7.4, h: 5.6 };
-    case "NPN":
-    case "PNP":
-    case "NMOS":
-    case "PMOS":
-    case "NMOS4":
-    case "PMOS4":
-      return { w: 4.8, h: 5.2 };
-    case "GND":
-    case "LABEL":
-      return { w: 3.2, h: 2.4 };
-    default:
-      return { w: 5.0, h: 2.4 };
-  }
-}
-
-function componentBoundsFor(c: CircuitComponent, pad = 0): Bounds {
-  const base = componentBounds(c.kind);
-  const rotated = c.rotation === 90 || c.rotation === 270;
-  const w = rotated ? base.h : base.w;
-  const h = rotated ? base.w : base.h;
-  return {
-    x1: c.x - w / 2 - pad,
-    y1: c.y - h / 2 - pad,
-    x2: c.x + w / 2 + pad,
-    y2: c.y + h / 2 + pad,
   };
 }
 

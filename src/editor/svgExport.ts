@@ -14,18 +14,20 @@ const STRIP_SELECTORS = [
   ".component-selection",
   ".component-hover",
   ".component-floating",
+  ".component-pin-hit",
   ".component-selection-handle",
   ".group-selection-frame",
   ".group-selection-handle",
   ".group-selection-badge",
   ".pin-hint",
+  ".pin-target-ring",
   ".floating-pin-marker",
   ".probe-scope",
   ".wire-hit-target",
   ".wire-vertex",
   ".note-resize-handle",
-  ".draft-measure",
   ".placement-draft",
+  ".placement-draft-footprint",
 ].join(",");
 
 export function schematicSvgFromCanvas(
@@ -61,6 +63,7 @@ export function schematicSvgFromCanvas(
 
 export function sanitizeExportLayer(layer: Element): void {
   layer.querySelectorAll(STRIP_SELECTORS).forEach((el) => el.remove());
+  normalizeExportNoteCards(layer);
   layer.querySelectorAll(".wire-live").forEach((el) => {
     el.classList.remove("wire-live");
     (el as SVGElement).style.removeProperty("opacity");
@@ -79,6 +82,31 @@ export function sanitizeExportLayer(layer: Element): void {
     el.setAttribute("stroke", "var(--ink)");
     el.setAttribute("stroke-width", "0.12");
   });
+}
+
+function normalizeExportNoteCards(layer: Element): void {
+  layer.querySelectorAll(".note-card").forEach((el) => {
+    const base = baseHexFromSvgPaint(svgPaint(el, "stroke")) ?? baseHexFromSvgPaint(svgPaint(el, "fill"));
+    if (!base) return;
+
+    const svg = el as SVGElement;
+    svg.style.removeProperty("fill");
+    svg.style.removeProperty("stroke");
+    svg.style.removeProperty("stroke-width");
+    el.setAttribute("fill", `${base}1a`);
+    el.setAttribute("stroke", `${base}b8`);
+    el.setAttribute("stroke-width", "0.05");
+  });
+}
+
+function svgPaint(el: Element, property: "fill" | "stroke"): string {
+  const style = (el as SVGElement).style;
+  return style.getPropertyValue(property) || el.getAttribute(property) || "";
+}
+
+function baseHexFromSvgPaint(value: string): string | null {
+  const match = /^#([0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(value.trim());
+  return match ? `#${match[1].toLowerCase()}` : null;
 }
 
 function round(value: number): string {
