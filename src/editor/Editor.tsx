@@ -4142,7 +4142,15 @@ export function Editor() {
       setWaveformVisible(true);
       const scale = sim.vectors.find((v) => v.is_scale);
       if (scale && scale.data.length > 1) {
-        setPlayTime(scale.data[scale.data.length - 1]);
+        const newEnd = scale.data[scale.data.length - 1];
+        const prevScale = simResultRef.current?.vectors.find((v) => v.is_scale);
+        const prevEnd = prevScale && prevScale.data.length > 0
+          ? prevScale.data[prevScale.data.length - 1]
+          : null;
+        setPlayTime((prev) => {
+          if (prevEnd == null || prev >= prevEnd - 1e-12) return newEnd;
+          return Math.min(prev, newEnd);
+        });
       }
       const page = currentPage(docRef.current);
       const probeNodes = page.probes
