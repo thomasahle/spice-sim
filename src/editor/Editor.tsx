@@ -585,7 +585,13 @@ export function Editor() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [wireDraft, setWireDraft] = useState<[number, number][] | null>(null);
   const [wireGesture, setWireGesture] = useState<null | {
+    /** Anchor for the wire route — snapped to a pin / wire point. */
     start: [number, number];
+    /** Raw world-space pointer position at pointer-down, used solely for
+     *  drag-vs-click detection. We deliberately don't use `start`: the snap
+     *  point can be up to ~0.36 units away, which would otherwise trip the
+     *  drag threshold on a perfectly stationary click. */
+    pointerStart: [number, number];
     moved: boolean;
     mode: WireGestureMode;
     fallbackSelectionId?: string;
@@ -593,6 +599,7 @@ export function Editor() {
   const wireDraftRef = useRef<[number, number][] | null>(null);
   const wireGestureRef = useRef<null | {
     start: [number, number];
+    pointerStart: [number, number];
     moved: boolean;
     mode: WireGestureMode;
     fallbackSelectionId?: string;
@@ -2517,7 +2524,12 @@ export function Editor() {
       const activeDraft = wireDraftRef.current;
       if (!activeDraft) {
         updateWireDraft([target]);
-        updateWireGesture({ start: target, moved: false, mode: "wire-tool" });
+        updateWireGesture({
+          start: target,
+          pointerStart: [raw.x, raw.y],
+          moved: false,
+          mode: "wire-tool",
+        });
       } else {
         const prev = activeDraft[activeDraft.length - 1];
         const route = [
@@ -2580,6 +2592,7 @@ export function Editor() {
         updateWireDraft([target]);
         updateWireGesture({
           start: target,
+          pointerStart: [raw.x, raw.y],
           moved: false,
           mode: "quick-wire",
           fallbackSelectionId: hit?.id,
@@ -2688,10 +2701,19 @@ export function Editor() {
       setSnapTarget(nearestConnection(raw.x, raw.y, 1.0, WIRING_SNAP));
       const activeGesture = wireGestureRef.current;
       if (activeGesture && !activeGesture.moved) {
+        // Measure pointer travel from the raw click point, not from the
+        // snapped pin. A user clicking inside the snap radius (~0.36 units
+        // off pin centre) hasn't dragged at all; measuring from `start`
+        // would falsely report movement and commit a wire. Quick-wire
+        // (Select tool) uses a generous threshold ≈ a component's pin-to-pin
+        // length so an off-axis nudge can't trigger a wire — only a clear
+        // pull-away from the component does. The dedicated Wire tool keeps
+        // a small threshold since wires are the whole point there.
+        const threshold = activeGesture.mode === "quick-wire" ? 4 : 0.35;
         const moved = movedBeyondThreshold(
-          { x: activeGesture.start[0], y: activeGesture.start[1] },
+          { x: activeGesture.pointerStart[0], y: activeGesture.pointerStart[1] },
           raw,
-          0.35,
+          threshold,
         );
         if (moved) updateWireGesture({ ...activeGesture, moved: true });
       }
@@ -3008,12 +3030,13 @@ export function Editor() {
     if (activeWireGesture && activeWireDraft) {
       const g = screenToGrid(e.clientX, e.clientY);
       const raw = screenToWorld(e.clientX, e.clientY);
+      const pointerUpThreshold = activeWireGesture.mode === "quick-wire" ? 4 : 0.35;
       const moved =
         activeWireGesture.moved ||
         movedBeyondThreshold(
-          { x: activeWireGesture.start[0], y: activeWireGesture.start[1] },
+          { x: activeWireGesture.pointerStart[0], y: activeWireGesture.pointerStart[1] },
           raw,
-          0.35,
+          pointerUpThreshold,
         );
       if (moved) {
         const snap = nearestConnection(raw.x, raw.y, 1.0, WIRING_SNAP);
