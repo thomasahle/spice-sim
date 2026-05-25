@@ -1097,7 +1097,9 @@ export function Editor() {
     if (wasRunning) setRunning(false);
     if (hadResult || wasRunning) {
       setLog("");
-      setStatus("Modified — rerun simulation");
+      // Auto-run already has a re-run on the way, so the "rerun simulation"
+      // nudge just flashes through and gets immediately overwritten.
+      if (!autoRun) setStatus("Modified — rerun simulation");
     }
   }
 
@@ -7472,7 +7474,7 @@ export function Editor() {
       nNodes={pinAnnotations.nodes.rootToName.size}
       nComponents={electricalComponentCount(page)}
       plot={simResult?.plot ?? null}
-      plotStale={simulationStale}
+      plotStale={simulationStale && !autoRun}
       selection={selectionStatus}
     />
     </>
