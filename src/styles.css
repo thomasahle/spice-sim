@@ -214,7 +214,7 @@ button[disabled] {
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-window));
   color: var(--accent);
 }
-.app-header-stars svg { color: color-mix(in srgb, #f6c54f 90%, var(--ink) 10%); }
+.app-header-stars svg { color: var(--ink); }
 .app-header-stars-label { font-weight: 600; }
 .app-header-stars-count {
   padding-left: 8px;
