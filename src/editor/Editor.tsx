@@ -1568,21 +1568,15 @@ export function Editor() {
   // Keyboard shortcuts.
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (
+      const inEditableField =
         e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
-      ) {
-        return;
-      }
-      if (e.code === "Space") {
-        e.preventDefault();
-        spacePanRef.current = true;
-        return;
-      }
+        e.target instanceof HTMLTextAreaElement;
       const k = e.key.toLowerCase();
       const meta = e.metaKey || e.ctrlKey;
 
-      // Undo/redo
+      // Undo/redo run from anywhere — they are doc-level. Controlled inputs
+      // make the browser's native input-level undo unreliable anyway, so
+      // intercepting ⌘Z here gives the user a single, consistent stack.
       if (meta && k === "z") {
         e.preventDefault();
         if (e.shiftKey) redo();
@@ -1592,6 +1586,14 @@ export function Editor() {
       if (meta && k === "y") {
         e.preventDefault();
         redo();
+        return;
+      }
+
+      // Every other shortcut yields to text editing inside form fields.
+      if (inEditableField) return;
+      if (e.code === "Space") {
+        e.preventDefault();
+        spacePanRef.current = true;
         return;
       }
       // Run
