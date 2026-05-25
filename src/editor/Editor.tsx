@@ -41,6 +41,9 @@ import {
 } from "./model";
 import { ComponentGlyph, PaletteGlyph } from "./symbols";
 import { canvasValueLabel } from "./labelFormatting";
+import { ValueWithUnit } from "./ValueWithUnit";
+import { componentValueUnitFamily } from "./valueUnitFamilies";
+import { isComplexValue } from "./valueUnits";
 import {
   estimatePassiveLiveFlowCurrent,
   liveFlowCurrentTraceCandidates,
@@ -5375,14 +5378,26 @@ export function Editor() {
                                 ),
                               )}
                             </select>
-                          ) : (
-                            <input
-                              className="value-input"
-                              value={lastSelected.value}
-                              onChange={(e) => updateValue(lastSelected.id, e.target.value)}
-                              placeholder={lastSelected.kind === "B" ? "V=sin(2*pi*1k*time)" : undefined}
-                            />
-                          )}
+                          ) : (() => {
+                            const family = componentValueUnitFamily(lastSelected.kind);
+                            if (!family || isComplexValue(lastSelected.value)) {
+                              return (
+                                <input
+                                  className="value-input"
+                                  value={lastSelected.value}
+                                  onChange={(e) => updateValue(lastSelected.id, e.target.value)}
+                                  placeholder={lastSelected.kind === "B" ? "V=sin(2*pi*1k*time)" : undefined}
+                                />
+                              );
+                            }
+                            return (
+                              <ValueWithUnit
+                                value={lastSelected.value}
+                                onChange={(next) => updateValue(lastSelected.id, next)}
+                                family={family}
+                              />
+                            );
+                          })()}
                         </Row>
                       </>
                     )}

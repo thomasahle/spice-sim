@@ -18,6 +18,8 @@ import {
   type ReactElement,
 } from "react";
 import { sourcePresetValue, type SourcePreset } from "./sourceValues";
+import { ValueWithUnit } from "./ValueWithUnit";
+import { UNIT_FAMILIES, type UnitFamily } from "./valueUnits";
 
 export type SourceType = "DC" | "AC" | "SIN" | "PULSE" | "EXP" | "SFFM" | "PWL";
 
@@ -194,6 +196,7 @@ export function SourceEditor({ value, sourceKind = "V", onChange }: Props) {
   const parsed = useMemo(() => parseSource(value), [value]);
   const isCurrentSource = sourceKind === "I";
   const dcLabel = isCurrentSource ? "Current" : "Voltage";
+  const level: UnitFamily = isCurrentSource ? UNIT_FAMILIES.current : UNIT_FAMILIES.voltage;
   const pulseInitialLabel = isCurrentSource ? "I₁ initial" : "V₁ initial";
   const pulseFinalLabel = isCurrentSource ? "I₂ pulsed" : "V₂ pulsed";
   const expInitialLabel = isCurrentSource ? "I₁ initial" : "V₁ initial";
@@ -299,69 +302,120 @@ export function SourceEditor({ value, sourceKind = "V", onChange }: Props) {
 
       {parsed.type === "DC" && parsed.dc && (
         <SrcRow label={dcLabel}>
-          <input
-            className="value-input"
+          <ValueWithUnit
             value={parsed.dc.v}
-            onChange={(e) => update("dc", (c) => ({ ...c, v: e.target.value }))}
+            onChange={(next) => update("dc", (c) => ({ ...c, v: next }))}
+            family={level}
+            ariaLabel={dcLabel}
           />
         </SrcRow>
       )}
       {parsed.type === "AC" && parsed.ac && (
         <>
           <SrcRow label="Magnitude">
-            <input
-              className="value-input"
+            <ValueWithUnit
               value={parsed.ac.mag}
-              onChange={(e) => update("ac", (c) => ({ ...c, mag: e.target.value }))}
+              onChange={(next) => update("ac", (c) => ({ ...c, mag: next }))}
+              family={level}
+              ariaLabel="AC magnitude"
             />
           </SrcRow>
-          <SrcRow label="Phase" hint="degrees (blank for 0)">
-            <input
-              className="value-input"
+          <SrcRow label="Phase" hint="blank for 0">
+            <ValueWithUnit
               value={parsed.ac.phase}
-              onChange={(e) => update("ac", (c) => ({ ...c, phase: e.target.value }))}
+              onChange={(next) => update("ac", (c) => ({ ...c, phase: next }))}
+              family={UNIT_FAMILIES.angle}
+              ariaLabel="AC phase"
             />
           </SrcRow>
         </>
       )}
       {parsed.type === "SIN" && parsed.sin && (
         <>
-          <SrcRow label="DC offset"><input className="value-input" value={parsed.sin.vo} onChange={(e) => update("sin", (c) => ({ ...c, vo: e.target.value }))} /></SrcRow>
-          <SrcRow label="Amplitude"><input className="value-input" value={parsed.sin.va} onChange={(e) => update("sin", (c) => ({ ...c, va: e.target.value }))} /></SrcRow>
-          <SrcRow label="Frequency"><input className="value-input" value={parsed.sin.freq} onChange={(e) => update("sin", (c) => ({ ...c, freq: e.target.value }))} /></SrcRow>
-          <SrcRow label="Delay" hint="optional"><input className="value-input" value={parsed.sin.td} onChange={(e) => update("sin", (c) => ({ ...c, td: e.target.value }))} /></SrcRow>
-          <SrcRow label="Damping θ" hint="optional"><input className="value-input" value={parsed.sin.theta} onChange={(e) => update("sin", (c) => ({ ...c, theta: e.target.value }))} /></SrcRow>
-          <SrcRow label="Phase" hint="degrees (optional)"><input className="value-input" value={parsed.sin.phase} onChange={(e) => update("sin", (c) => ({ ...c, phase: e.target.value }))} /></SrcRow>
+          <SrcRow label="DC offset">
+            <ValueWithUnit value={parsed.sin.vo} onChange={(n) => update("sin", (c) => ({ ...c, vo: n }))} family={level} />
+          </SrcRow>
+          <SrcRow label="Amplitude">
+            <ValueWithUnit value={parsed.sin.va} onChange={(n) => update("sin", (c) => ({ ...c, va: n }))} family={level} />
+          </SrcRow>
+          <SrcRow label="Frequency">
+            <ValueWithUnit value={parsed.sin.freq} onChange={(n) => update("sin", (c) => ({ ...c, freq: n }))} family={UNIT_FAMILIES.frequency} />
+          </SrcRow>
+          <SrcRow label="Delay" hint="optional">
+            <ValueWithUnit value={parsed.sin.td} onChange={(n) => update("sin", (c) => ({ ...c, td: n }))} family={UNIT_FAMILIES.time} />
+          </SrcRow>
+          <SrcRow label="Damping θ" hint="optional">
+            <ValueWithUnit value={parsed.sin.theta} onChange={(n) => update("sin", (c) => ({ ...c, theta: n }))} family={UNIT_FAMILIES.dimensionless} />
+          </SrcRow>
+          <SrcRow label="Phase" hint="optional">
+            <ValueWithUnit value={parsed.sin.phase} onChange={(n) => update("sin", (c) => ({ ...c, phase: n }))} family={UNIT_FAMILIES.angle} />
+          </SrcRow>
         </>
       )}
       {parsed.type === "PULSE" && parsed.pulse && (
         <>
-          <SrcRow label={pulseInitialLabel}><input className="value-input" value={parsed.pulse.v1} onChange={(e) => update("pulse", (c) => ({ ...c, v1: e.target.value }))} /></SrcRow>
-          <SrcRow label={pulseFinalLabel}><input className="value-input" value={parsed.pulse.v2} onChange={(e) => update("pulse", (c) => ({ ...c, v2: e.target.value }))} /></SrcRow>
-          <SrcRow label="Delay"><input className="value-input" value={parsed.pulse.td} onChange={(e) => update("pulse", (c) => ({ ...c, td: e.target.value }))} /></SrcRow>
-          <SrcRow label="Rise time"><input className="value-input" value={parsed.pulse.tr} onChange={(e) => update("pulse", (c) => ({ ...c, tr: e.target.value }))} /></SrcRow>
-          <SrcRow label="Fall time"><input className="value-input" value={parsed.pulse.tf} onChange={(e) => update("pulse", (c) => ({ ...c, tf: e.target.value }))} /></SrcRow>
-          <SrcRow label="Pulse width"><input className="value-input" value={parsed.pulse.pw} onChange={(e) => update("pulse", (c) => ({ ...c, pw: e.target.value }))} /></SrcRow>
-          <SrcRow label="Period"><input className="value-input" value={parsed.pulse.per} onChange={(e) => update("pulse", (c) => ({ ...c, per: e.target.value }))} /></SrcRow>
+          <SrcRow label={pulseInitialLabel}>
+            <ValueWithUnit value={parsed.pulse.v1} onChange={(n) => update("pulse", (c) => ({ ...c, v1: n }))} family={level} />
+          </SrcRow>
+          <SrcRow label={pulseFinalLabel}>
+            <ValueWithUnit value={parsed.pulse.v2} onChange={(n) => update("pulse", (c) => ({ ...c, v2: n }))} family={level} />
+          </SrcRow>
+          <SrcRow label="Delay">
+            <ValueWithUnit value={parsed.pulse.td} onChange={(n) => update("pulse", (c) => ({ ...c, td: n }))} family={UNIT_FAMILIES.time} />
+          </SrcRow>
+          <SrcRow label="Rise time">
+            <ValueWithUnit value={parsed.pulse.tr} onChange={(n) => update("pulse", (c) => ({ ...c, tr: n }))} family={UNIT_FAMILIES.time} />
+          </SrcRow>
+          <SrcRow label="Fall time">
+            <ValueWithUnit value={parsed.pulse.tf} onChange={(n) => update("pulse", (c) => ({ ...c, tf: n }))} family={UNIT_FAMILIES.time} />
+          </SrcRow>
+          <SrcRow label="Pulse width">
+            <ValueWithUnit value={parsed.pulse.pw} onChange={(n) => update("pulse", (c) => ({ ...c, pw: n }))} family={UNIT_FAMILIES.time} />
+          </SrcRow>
+          <SrcRow label="Period">
+            <ValueWithUnit value={parsed.pulse.per} onChange={(n) => update("pulse", (c) => ({ ...c, per: n }))} family={UNIT_FAMILIES.time} />
+          </SrcRow>
         </>
       )}
       {parsed.type === "EXP" && parsed.exp && (
         <>
-          <SrcRow label={expInitialLabel}><input className="value-input" value={parsed.exp.v1} onChange={(e) => update("exp", (c) => ({ ...c, v1: e.target.value }))} /></SrcRow>
-          <SrcRow label={expPeakLabel}><input className="value-input" value={parsed.exp.v2} onChange={(e) => update("exp", (c) => ({ ...c, v2: e.target.value }))} /></SrcRow>
-          <SrcRow label="Rise delay"><input className="value-input" value={parsed.exp.td1} onChange={(e) => update("exp", (c) => ({ ...c, td1: e.target.value }))} /></SrcRow>
-          <SrcRow label="Rise τ"><input className="value-input" value={parsed.exp.tau1} onChange={(e) => update("exp", (c) => ({ ...c, tau1: e.target.value }))} /></SrcRow>
-          <SrcRow label="Fall delay"><input className="value-input" value={parsed.exp.td2} onChange={(e) => update("exp", (c) => ({ ...c, td2: e.target.value }))} /></SrcRow>
-          <SrcRow label="Fall τ"><input className="value-input" value={parsed.exp.tau2} onChange={(e) => update("exp", (c) => ({ ...c, tau2: e.target.value }))} /></SrcRow>
+          <SrcRow label={expInitialLabel}>
+            <ValueWithUnit value={parsed.exp.v1} onChange={(n) => update("exp", (c) => ({ ...c, v1: n }))} family={level} />
+          </SrcRow>
+          <SrcRow label={expPeakLabel}>
+            <ValueWithUnit value={parsed.exp.v2} onChange={(n) => update("exp", (c) => ({ ...c, v2: n }))} family={level} />
+          </SrcRow>
+          <SrcRow label="Rise delay">
+            <ValueWithUnit value={parsed.exp.td1} onChange={(n) => update("exp", (c) => ({ ...c, td1: n }))} family={UNIT_FAMILIES.time} />
+          </SrcRow>
+          <SrcRow label="Rise τ">
+            <ValueWithUnit value={parsed.exp.tau1} onChange={(n) => update("exp", (c) => ({ ...c, tau1: n }))} family={UNIT_FAMILIES.time} />
+          </SrcRow>
+          <SrcRow label="Fall delay">
+            <ValueWithUnit value={parsed.exp.td2} onChange={(n) => update("exp", (c) => ({ ...c, td2: n }))} family={UNIT_FAMILIES.time} />
+          </SrcRow>
+          <SrcRow label="Fall τ">
+            <ValueWithUnit value={parsed.exp.tau2} onChange={(n) => update("exp", (c) => ({ ...c, tau2: n }))} family={UNIT_FAMILIES.time} />
+          </SrcRow>
         </>
       )}
       {parsed.type === "SFFM" && parsed.sffm && (
         <>
-          <SrcRow label="Offset Vo"><input className="value-input" value={parsed.sffm.vo} onChange={(e) => update("sffm", (c) => ({ ...c, vo: e.target.value }))} /></SrcRow>
-          <SrcRow label="Amplitude"><input className="value-input" value={parsed.sffm.va} onChange={(e) => update("sffm", (c) => ({ ...c, va: e.target.value }))} /></SrcRow>
-          <SrcRow label="Carrier fc"><input className="value-input" value={parsed.sffm.fc} onChange={(e) => update("sffm", (c) => ({ ...c, fc: e.target.value }))} /></SrcRow>
-          <SrcRow label="Mod index"><input className="value-input" value={parsed.sffm.mdi} onChange={(e) => update("sffm", (c) => ({ ...c, mdi: e.target.value }))} /></SrcRow>
-          <SrcRow label="Signal fs"><input className="value-input" value={parsed.sffm.fs} onChange={(e) => update("sffm", (c) => ({ ...c, fs: e.target.value }))} /></SrcRow>
+          <SrcRow label="Offset Vo">
+            <ValueWithUnit value={parsed.sffm.vo} onChange={(n) => update("sffm", (c) => ({ ...c, vo: n }))} family={level} />
+          </SrcRow>
+          <SrcRow label="Amplitude">
+            <ValueWithUnit value={parsed.sffm.va} onChange={(n) => update("sffm", (c) => ({ ...c, va: n }))} family={level} />
+          </SrcRow>
+          <SrcRow label="Carrier fc">
+            <ValueWithUnit value={parsed.sffm.fc} onChange={(n) => update("sffm", (c) => ({ ...c, fc: n }))} family={UNIT_FAMILIES.frequency} />
+          </SrcRow>
+          <SrcRow label="Mod index">
+            <ValueWithUnit value={parsed.sffm.mdi} onChange={(n) => update("sffm", (c) => ({ ...c, mdi: n }))} family={UNIT_FAMILIES.dimensionless} />
+          </SrcRow>
+          <SrcRow label="Signal fs">
+            <ValueWithUnit value={parsed.sffm.fs} onChange={(n) => update("sffm", (c) => ({ ...c, fs: n }))} family={UNIT_FAMILIES.frequency} />
+          </SrcRow>
         </>
       )}
       {parsed.type === "PWL" && parsed.pwl && (
@@ -369,25 +423,25 @@ export function SourceEditor({ value, sourceKind = "V", onChange }: Props) {
           <div className="form-label">Points (time, {isCurrentSource ? "current" : "voltage"})</div>
           {parsed.pwl.points.map((pt, i) => (
             <div key={i} className="src-pwl-row">
-              <input
-                className="value-input"
-                aria-label={`PWL point ${i + 1} time`}
+              <ValueWithUnit
                 value={pt.t}
-                onChange={(e) =>
+                onChange={(next) =>
                   update("pwl", (c) => ({
-                    points: c.points.map((p, j) => (j === i ? { ...p, t: e.target.value } : p)),
+                    points: c.points.map((p, j) => (j === i ? { ...p, t: next } : p)),
                   }))
                 }
+                family={UNIT_FAMILIES.time}
+                ariaLabel={`PWL point ${i + 1} time`}
               />
-              <input
-                className="value-input"
-                aria-label={`PWL point ${i + 1} ${isCurrentSource ? "current" : "voltage"}`}
+              <ValueWithUnit
                 value={pt.v}
-                onChange={(e) =>
+                onChange={(next) =>
                   update("pwl", (c) => ({
-                    points: c.points.map((p, j) => (j === i ? { ...p, v: e.target.value } : p)),
+                    points: c.points.map((p, j) => (j === i ? { ...p, v: next } : p)),
                   }))
                 }
+                family={level}
+                ariaLabel={`PWL point ${i + 1} ${isCurrentSource ? "current" : "voltage"}`}
               />
               <button
                 className="src-pwl-del"

@@ -9,6 +9,8 @@ import {
 } from "react";
 import type { AnalysisSpec, SimSettings } from "./model";
 import { validateAnalysisSpec } from "./analysisValidation";
+import { ValueWithUnit } from "./ValueWithUnit";
+import { UNIT_FAMILIES } from "./valueUnits";
 
 interface Props {
   analysis: AnalysisSpec;
@@ -32,6 +34,16 @@ const DC_RANGE_PRESETS = [
   { label: "-1..1", title: "Diode I/V range", start: "-1", stop: "1", step: "0.05" },
   { label: "0..3", title: "MOS/BJT transfer range", start: "0", stop: "3", step: "0.05" },
 ];
+
+// SPICE source refdes prefix determines the units for a DC sweep on it: a
+// current source ("I…") sweeps amps, anything else (V… by convention)
+// sweeps volts. Falls back to voltage when the field is empty / unknown so
+// the dropdown picks a sensible default.
+function dcSweepFamily(src: string) {
+  return src.trim().toUpperCase().startsWith("I")
+    ? UNIT_FAMILIES.current
+    : UNIT_FAMILIES.voltage;
+}
 
 export function SimSettingsPanel({
   analysis,
@@ -109,27 +121,30 @@ export function SimSettingsPanel({
       {analysis.kind === "tran" && (
         <>
           <Row label="Stop time">
-            <input
-              className="value-input"
+            <ValueWithUnit
               value={analysis.tstop}
-              onChange={(e) => updateA("tstop", e.target.value)}
-              placeholder="10m"
+              onChange={(next) => updateA("tstop", next)}
+              family={UNIT_FAMILIES.time}
+              placeholder="10"
+              ariaLabel="Transient stop time"
             />
           </Row>
           <Row label="Time step">
-            <input
-              className="value-input"
+            <ValueWithUnit
               value={analysis.tstep}
-              onChange={(e) => updateA("tstep", e.target.value)}
-              placeholder="10u"
+              onChange={(next) => updateA("tstep", next)}
+              family={UNIT_FAMILIES.time}
+              placeholder="10"
+              ariaLabel="Transient time step"
             />
           </Row>
           <Row label="Start time" hint="optional">
-            <input
-              className="value-input"
+            <ValueWithUnit
               value={analysis.tstart ?? ""}
-              onChange={(e) => updateA("tstart", e.target.value || undefined)}
+              onChange={(next) => updateA("tstart", next || undefined)}
+              family={UNIT_FAMILIES.time}
               placeholder="0"
+              ariaLabel="Transient start time"
             />
           </Row>
         </>
@@ -160,24 +175,27 @@ export function SimSettingsPanel({
             )}
           </Row>
           <Row label="Start">
-            <input
-              className="value-input"
+            <ValueWithUnit
               value={analysis.start}
-              onChange={(e) => updateA("start", e.target.value)}
+              onChange={(next) => updateA("start", next)}
+              family={dcSweepFamily(analysis.src)}
+              ariaLabel="DC sweep start"
             />
           </Row>
           <Row label="Stop">
-            <input
-              className="value-input"
+            <ValueWithUnit
               value={analysis.stop}
-              onChange={(e) => updateA("stop", e.target.value)}
+              onChange={(next) => updateA("stop", next)}
+              family={dcSweepFamily(analysis.src)}
+              ariaLabel="DC sweep stop"
             />
           </Row>
           <Row label="Step">
-            <input
-              className="value-input"
+            <ValueWithUnit
               value={analysis.step}
-              onChange={(e) => updateA("step", e.target.value)}
+              onChange={(next) => updateA("step", next)}
+              family={dcSweepFamily(analysis.src)}
+              ariaLabel="DC sweep step"
             />
           </Row>
           <Row label="Range">
@@ -230,17 +248,19 @@ export function SimSettingsPanel({
             />
           </Row>
           <Row label="F start">
-            <input
-              className="value-input"
+            <ValueWithUnit
               value={analysis.fstart}
-              onChange={(e) => updateA("fstart", e.target.value)}
+              onChange={(next) => updateA("fstart", next)}
+              family={UNIT_FAMILIES.frequency}
+              ariaLabel="Start frequency"
             />
           </Row>
           <Row label="F stop">
-            <input
-              className="value-input"
+            <ValueWithUnit
               value={analysis.fstop}
-              onChange={(e) => updateA("fstop", e.target.value)}
+              onChange={(next) => updateA("fstop", next)}
+              family={UNIT_FAMILIES.frequency}
+              ariaLabel="Stop frequency"
             />
           </Row>
         </>
@@ -300,17 +320,19 @@ export function SimSettingsPanel({
             />
           </Row>
           <Row label="F start">
-            <input
-              className="value-input"
+            <ValueWithUnit
               value={analysis.fstart}
-              onChange={(e) => updateA("fstart", e.target.value)}
+              onChange={(next) => updateA("fstart", next)}
+              family={UNIT_FAMILIES.frequency}
+              ariaLabel="Start frequency"
             />
           </Row>
           <Row label="F stop">
-            <input
-              className="value-input"
+            <ValueWithUnit
               value={analysis.fstop}
-              onChange={(e) => updateA("fstop", e.target.value)}
+              onChange={(next) => updateA("fstop", next)}
+              family={UNIT_FAMILIES.frequency}
+              ariaLabel="Stop frequency"
             />
           </Row>
         </>
@@ -333,12 +355,13 @@ export function SimSettingsPanel({
           <option value="be">Backward Euler</option>
         </select>
       </Row>
-      <Row label="Temperature" hint="°C (default 27)">
-        <input
-          className="value-input"
+      <Row label="Temperature" hint="default 27">
+        <ValueWithUnit
           value={settings?.temperature ?? ""}
-          onChange={(e) => updateS("temperature", e.target.value)}
+          onChange={(next) => updateS("temperature", next)}
+          family={UNIT_FAMILIES.temperature}
           placeholder="27"
+          ariaLabel="Simulation temperature"
         />
       </Row>
       <Row label="Options" hint="ngspice .options tokens, space-separated">
