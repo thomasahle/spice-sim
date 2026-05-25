@@ -142,8 +142,16 @@ export function AnalysisDialog({
       >
         <div className="modal-header">
           <div className="modal-title">Configure simulation</div>
-          <button className="icon-btn" onClick={onClose} title="Close">
-            ×
+          <button
+            className="icon-btn"
+            onClick={onClose}
+            title="Close"
+            aria-label="Close dialog"
+          >
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+              <line x1={3.5} y1={3.5} x2={10.5} y2={10.5} />
+              <line x1={10.5} y1={3.5} x2={3.5} y2={10.5} />
+            </svg>
           </button>
         </div>
 

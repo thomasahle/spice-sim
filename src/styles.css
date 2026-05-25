@@ -3834,17 +3834,36 @@ button[disabled] {
   font-weight: 600;
 }
 .icon-btn {
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
   border: none;
-  font-size: 22px;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
+  border-radius: 50%;
+  background: transparent;
   color: var(--ink-muted);
   line-height: 1;
+  cursor: pointer;
+  box-shadow: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.icon-btn > svg {
+  display: block;
+  width: 14px;
+  height: 14px;
 }
 .icon-btn:hover {
-  background: var(--hairline);
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+}
+.icon-btn:active {
+  background: color-mix(in srgb, var(--ink) 16%, transparent);
+}
+.icon-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1.5px;
 }
 
 .tabs {

@@ -436,8 +436,16 @@ export function WaveformViewer({
         >
           Export SVG
         </button>
-        <button className="icon-btn" onClick={onClose} title="Close waveform">
-          ×
+        <button
+          className="icon-btn"
+          onClick={onClose}
+          title="Close waveform"
+          aria-label="Close waveform"
+        >
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+            <line x1={3.5} y1={3.5} x2={10.5} y2={10.5} />
+            <line x1={10.5} y1={3.5} x2={3.5} y2={10.5} />
+          </svg>
         </button>
       </div>
 
