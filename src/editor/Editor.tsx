@@ -4421,8 +4421,9 @@ export function Editor() {
   }, [doc, autoRunUi.runnable, tool, canvasInteractionActive]);
 
   // Voltage overlay readings interpolated at playTime when a transient result exists.
+  // We intentionally keep showing the previous result during a stale window so the
+  // canvas labels don't blink off and back on for every auto-run cycle.
   const liveReadings = useMemo(() => {
-    if (simulationStale) return null;
     if (!simResult) return readings;
     const scale = simResult.vectors.find((v) => v.is_scale);
     if (!scale || scale.data.length <= 1) return readings;
