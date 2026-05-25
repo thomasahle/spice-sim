@@ -4654,4 +4654,9 @@ button[disabled] {
     flex-wrap: nowrap;
   }
   .wf-header::-webkit-scrollbar { display: none; }
+  .playbar { gap: 8px; padding: 6px 8px; }
+  .playbar-label,
+  .live-flow-toggle-label { display: none; }
+  .playbar .time-readout { min-width: 64px; font-size: 10.5px; }
+  .playbar .speed { display: none; }
 }

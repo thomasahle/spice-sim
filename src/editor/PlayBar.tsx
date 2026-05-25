@@ -128,7 +128,7 @@ export function PlayBar({
           onChange={(e) => setLiveFlow(e.target.checked)}
           aria-label="Show live current flow"
         />
-        Live flow
+        <span className="live-flow-toggle-label">Live flow</span>
       </label>
     </div>
   );
