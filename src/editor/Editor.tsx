@@ -664,7 +664,6 @@ export function Editor() {
   const [simResult, setSimResult] = useState<SimResult | null>(null);
   const [simulationStale, setSimulationStale] = useState(false);
   const [waveformVisible, setWaveformVisible] = useState(true);
-  const [waveformRunKey, setWaveformRunKey] = useState(0);
   const [selectedTraces, setSelectedTraces] = useState<Set<string>>(new Set());
   const [filePath, setFilePath] = useState<string | null>(null);
   // True when the in-memory doc has diverged from the disk file last
@@ -4141,7 +4140,6 @@ export function Editor() {
       });
       setSimulationStale(false);
       setWaveformVisible(true);
-      setWaveformRunKey((key) => key + 1);
       const scale = sim.vectors.find((v) => v.is_scale);
       if (scale && scale.data.length > 1) {
         setPlayTime(scale.data[scale.data.length - 1]);
@@ -4150,7 +4148,13 @@ export function Editor() {
       const probeNodes = page.probes
         .map((probe) => result.nodes.posToNode.get(`${coordKey(probe.x)},${coordKey(probe.y)}`))
         .filter((node): node is string => !!node);
-      setSelectedTraces(defaultVisibleTraceNames(sim.vectors, probeNodes, sim.plot));
+      setSelectedTraces((prev) => {
+        const availableNames = new Set(sim.vectors.map((v) => v.name));
+        const surviving = new Set<string>();
+        for (const n of prev) if (availableNames.has(n)) surviving.add(n);
+        if (surviving.size > 0) return surviving;
+        return defaultVisibleTraceNames(sim.vectors, probeNodes, sim.plot);
+      });
       setReadings(latestNodeVoltages(sim.vectors, result.nodes.rootToName.values(), sim.plot));
       const wstr = result.warnings.length
         ? "\n\nNetlist warnings:\n" + result.warnings.map((w) => "  • " + w).join("\n")
@@ -7105,7 +7109,6 @@ export function Editor() {
 
         {simResult && hasWaveform(simResult) && waveformVisible && (
           <WaveformViewer
-            key={waveformRunKey}
             plot={simResult.plot}
             vectors={simResult.vectors}
             selectedTraces={selectedTraces}
