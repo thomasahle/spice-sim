@@ -46,7 +46,7 @@ test("WASM analysis directives mirror the native engine commands", () => {
     ".ac dec 20 10 100000",
   );
   assert.equal(
-    analysisDirective({ kind: "dcsweep", src: "V1", start: 0, stop: 5, step: 0.5 }),
+    analysisDirective({ kind: "dc", src: "V1", start: 0, stop: 5, step: 0.5 }),
     ".dc v1 0 5 0.5",
   );
   assert.equal(
@@ -398,20 +398,24 @@ test("ASCII RAW parser preserves native savecurrents device vectors for Live Flo
     "Command: ngspice-46, Build",
     "Plotname: Transient Analysis",
     "Flags: real",
-    "No. Variables: 7",
+    "No. Variables: 9",
     "No. Points: 2",
     "Variables:",
     "\t0\ttime\ttime",
     "\t1\tv(out)\tvoltage",
     "\t2\tv1#branch\tcurrent",
-    "\t3\t@m1[id]\tcurrent",
-    "\t4\t@m1[gm]\tconductance",
-    "\t5\t@m.xrelu.mpos[id]\tcurrent",
-    "\t6\t@q1[ic]\tcurrent",
+    "\t3\ti(@r1[i])\tcurrent",
+    "\t4\ti(@c1[i])\tcurrent",
+    "\t5\t@m1[id]\tcurrent",
+    "\t6\t@m1[gm]\tconductance",
+    "\t7\t@m.xrelu.mpos[id]\tcurrent",
+    "\t8\t@q1[ic]\tcurrent",
     "Values:",
     "0\t\t0.000000000000000e+00",
     "\t0.000000000000000e+00",
     "\t-1.000000000000000e-03",
+    "\t1.000000000000000e-03",
+    "\t1.000000000000000e-03",
     "\t9.500000000000000e-04",
     "\t2.100000000000000e-03",
     "\t1.200000000000000e-06",
@@ -419,6 +423,8 @@ test("ASCII RAW parser preserves native savecurrents device vectors for Live Flo
     "1\t\t1.000000000000000e-06",
     "\t9.500000000000000e-01",
     "\t-8.000000000000000e-04",
+    "\t8.000000000000000e-04",
+    "\t8.000000000000000e-04",
     "\t7.750000000000000e-04",
     "\t1.900000000000000e-03",
     "\t9.000000000000000e-07",
@@ -433,6 +439,8 @@ test("ASCII RAW parser preserves native savecurrents device vectors for Live Flo
       ["time", true, undefined],
       ["v(out)", false, undefined],
       ["v1#branch", false, undefined],
+      ["i(@r1[i])", false, undefined],
+      ["i(@c1[i])", false, undefined],
       ["@m1[id]", false, undefined],
       ["@m1[gm]", false, undefined],
       ["@m.xrelu.mpos[id]", false, undefined],
@@ -440,18 +448,24 @@ test("ASCII RAW parser preserves native savecurrents device vectors for Live Flo
     ],
   );
   assert.deepEqual(result.vectors[2].data, [-1e-3, -8e-4]);
-  assert.deepEqual(result.vectors[3].data, [9.5e-4, 7.75e-4]);
-  assert.deepEqual(result.vectors[5].data, [1.2e-6, 9e-7]);
+  assert.deepEqual(result.vectors[3].data, [1e-3, 8e-4]);
+  assert.deepEqual(result.vectors[4].data, [1e-3, 8e-4]);
+  assert.deepEqual(result.vectors[5].data, [9.5e-4, 7.75e-4]);
+  assert.deepEqual(result.vectors[7].data, [1.2e-6, 9e-7]);
   assert.equal(traceDisplayName(result.vectors[2].name), "I(V1)");
-  assert.equal(traceDisplayName(result.vectors[3].name), "I(M1 drain)");
-  assert.equal(traceDisplayName(result.vectors[4].name), "gm(M1)");
-  assert.equal(traceDisplayName(result.vectors[5].name), "I(M.XRELU.MPOS drain)");
-  assert.equal(traceDisplayName(result.vectors[6].name), "I(Q1 collector)");
+  assert.equal(traceDisplayName(result.vectors[3].name), "I(R1)");
+  assert.equal(traceDisplayName(result.vectors[4].name), "I(C1)");
+  assert.equal(traceDisplayName(result.vectors[5].name), "I(M1 drain)");
+  assert.equal(traceDisplayName(result.vectors[6].name), "gm(M1)");
+  assert.equal(traceDisplayName(result.vectors[7].name), "I(M.XRELU.MPOS drain)");
+  assert.equal(traceDisplayName(result.vectors[8].name), "I(Q1 collector)");
   assert.equal(traceValueUnit(result.vectors[2].name), "A");
   assert.equal(traceValueUnit(result.vectors[3].name), "A");
-  assert.equal(traceValueUnit(result.vectors[4].name), "S");
+  assert.equal(traceValueUnit(result.vectors[4].name), "A");
   assert.equal(traceValueUnit(result.vectors[5].name), "A");
-  assert.equal(traceValueUnit(result.vectors[6].name), "A");
+  assert.equal(traceValueUnit(result.vectors[6].name), "S");
+  assert.equal(traceValueUnit(result.vectors[7].name), "A");
+  assert.equal(traceValueUnit(result.vectors[8].name), "A");
 });
 
 test("ASCII RAW parser rejects extra trailing values instead of hiding malformed output", () => {

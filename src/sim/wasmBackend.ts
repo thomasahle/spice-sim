@@ -37,7 +37,7 @@ export function analysisDirective(analysis: Analysis): string {
       return analysis.tstart == null
         ? `.tran ${analysis.tstep} ${analysis.tstop}`
         : `.tran ${analysis.tstep} ${analysis.tstop} ${analysis.tstart}`;
-    case "dcsweep":
+    case "dc":
       return `.dc ${analysis.src.toLowerCase()} ${analysis.start} ${analysis.stop} ${analysis.step}`;
     case "ac":
       return `.ac ${analysis.sweep} ${analysis.npts} ${analysis.fstart} ${analysis.fstop}`;

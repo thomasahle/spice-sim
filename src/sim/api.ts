@@ -40,7 +40,7 @@ export interface EngineInfo {
 export type Analysis =
   | { kind: "op" }
   | { kind: "tran"; tstep: number; tstop: number; tstart?: number }
-  | { kind: "dcsweep"; src: string; start: number; stop: number; step: number }
+  | { kind: "dc"; src: string; start: number; stop: number; step: number }
   | { kind: "ac"; sweep: "dec" | "oct" | "lin"; npts: number; fstart: number; fstop: number }
   | {
       kind: "noise";

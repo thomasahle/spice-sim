@@ -111,7 +111,7 @@ export function analysisToApi(a: AnalysisSpec): ApiAnalysis {
       };
     case "dc":
       return {
-        kind: "dcsweep",
+        kind: "dc",
         src: a.src,
         start: parseRequired("Start", a.start),
         stop: parseRequired("Stop", a.stop),

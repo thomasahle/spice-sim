@@ -23,7 +23,7 @@ test("analysis validation rejects invalid transient timing", () => {
 test("analysis conversion preserves exponent inputs instead of falling back", () => {
   const api = analysisToApi({ kind: "dc", src: "V1", start: "0", stop: "1e-3", step: "2e-4" });
   assert.deepEqual(api, {
-    kind: "dcsweep",
+    kind: "dc",
     src: "V1",
     start: 0,
     stop: 1e-3,
