@@ -7136,7 +7136,7 @@ export function Editor() {
             directives={doc.directives}
             measurements={simResult.measurements}
             runWarnings={runWarnings}
-            stale={simulationStale}
+            stale={simulationStale && !autoRun}
             onToggleTrace={(name) => {
               const next = new Set(selectedTraces);
               if (next.has(name)) next.delete(name);
