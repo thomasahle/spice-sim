@@ -63,14 +63,27 @@ export interface NetlistImportResult {
 }
 
 export interface NetlistImportOptions {
-  /** Abort an in-flight ELK auto-layout. Once aborted the layout
-   *  falls back to the label-only grid placement. */
+  /** Abort an in-flight ELK auto-layout (or the wire-routing phase that
+   *  runs after it on the main thread). When aborted, the layout falls
+   *  back to the label-only grid placement. */
   signal?: AbortSignal;
   /** "auto" → run ELK auto-layout (default).
    *  "labels" → skip ELK entirely; place components on a grid and rely
    *             on net labels for connectivity. Much faster on large
    *             netlists; visually messier. */
   mode?: "auto" | "labels";
+  /** Called as the import advances through phases. The modal uses this
+   *  to keep the spinner copy informative when the work hops between the
+   *  worker and the main thread. */
+  onPhase?: (phase: ImportPhase, detail?: ImportPhaseDetail) => void;
+}
+
+export type ImportPhase = "layout" | "routing";
+export interface ImportPhaseDetail {
+  /** For "routing": index of the net currently being routed (0-based). */
+  current?: number;
+  /** Total nets to route. */
+  total?: number;
 }
 
 export type ImportNetKind =
@@ -128,17 +141,26 @@ export async function importNetlist(
   const { ir, warnings } = parseNetlistImportIr(text);
 
   let labelOnly = false;
-  const layoutOpts = { signal: opts.signal, mode: opts.mode ?? "auto" } as const;
+  const layoutOpts = {
+    signal: opts.signal,
+    mode: opts.mode ?? "auto",
+    onPhase: opts.onPhase,
+  } as const;
 
   // Root page: run the requested layout; on abort, transparently fall back
-  // to label-only so the user still gets a doc out of the import.
+  // to label-only so the user still gets a doc out of the import. The
+  // retry intentionally drops the signal — once aborted the same signal
+  // would refuse the second attempt too, leaving the user with nothing.
   let rootLayout;
   try {
     rootLayout = await layoutImportedPage(ir.root, layoutOpts);
   } catch (e) {
     if (isAbortError(e)) {
       labelOnly = true;
-      rootLayout = await layoutImportedPage(ir.root, { ...layoutOpts, mode: "labels" });
+      rootLayout = await layoutImportedPage(ir.root, {
+        mode: "labels",
+        onPhase: opts.onPhase,
+      });
     } else {
       throw e;
     }
@@ -167,7 +189,11 @@ export async function importNetlist(
     } catch (e) {
       if (isAbortError(e)) {
         labelOnly = true;
-        layout = await layoutImportedPage(subckt, { ...layoutOpts, mode: "labels" });
+        // Drop signal: same reason as the root-page retry above.
+        layout = await layoutImportedPage(subckt, {
+          mode: "labels",
+          onPhase: opts.onPhase,
+        });
       } else {
         throw e;
       }
@@ -770,7 +796,11 @@ function terminateElkWorker(): void {
 
 async function layoutImportedPage(
   page: ImportPageIr,
-  opts: { signal?: AbortSignal; mode?: "auto" | "labels" } = {},
+  opts: {
+    signal?: AbortSignal;
+    mode?: "auto" | "labels";
+    onPhase?: (phase: ImportPhase, detail?: ImportPhaseDetail) => void;
+  } = {},
 ): Promise<{ components: CircuitComponent[]; wires: { id: string; points: [number, number][] }[] }> {
   const components: CircuitComponent[] = [];
   const wires: { id: string; points: [number, number][] }[] = [];
@@ -840,7 +870,37 @@ async function layoutImportedPage(
   applyCircuitSpecificLayouts(components, netPins);
   applyImportedLayoutAnnotations(components, layoutByComponentId);
 
+  // Wire routing is the *other* expensive phase — `addWireRoute` runs an
+  // O(N · obstacles) candidate search per net on the main thread. For a
+  // ~100-component circuit this was the multi-second freeze the user
+  // reported after the worker came back. Report progress per net, and
+  // yield to the browser every YIELD_EVERY nets so the spinner / abort
+  // button stay responsive.
+  // Label-only mode skips wire routing entirely — connectivity is fully
+  // expressed via the LABEL stubs `promoteLocalNetsToLabels` already
+  // dropped at every pin. Ground still needs its GND symbol per pin.
+  if (opts.mode === "labels") {
+    for (const [node, pins] of netPins) {
+      if (node !== "0") continue;
+      for (const pin of pins.filter((p) => p.component.kind !== "LABEL")) {
+        addGroundReference(components, wires, pin);
+      }
+    }
+    return { components, wires };
+  }
+  opts.onPhase?.("routing", { current: 0, total: netPins.size });
+  // Yield after every net: a single complex net can take 100+ ms inside
+  // `orthogonalRouteCandidates`, so coarser batching produced visible
+  // multi-hundred-ms freezes between updates. setTimeout(0) is enough to
+  // let React paint the spinner increment and process the abort click.
+  let netIdx = 0;
   for (const [node, pins] of netPins) {
+    if (netIdx > 0) {
+      opts.onPhase?.("routing", { current: netIdx, total: netPins.size });
+      if (opts.signal?.aborted) throw makeAbortError();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    netIdx += 1;
     if (node === "0") {
       for (const pin of pins.filter((p) => p.component.kind !== "LABEL")) {
         addGroundReference(components, wires, pin);

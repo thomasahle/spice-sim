@@ -1275,11 +1275,30 @@ export function Editor() {
    *  a `mode` to force the faster label-only fallback up front. */
   async function importNetlistFromText(
     text: string,
-    opts: { signal?: AbortSignal; mode?: "auto" | "labels" } = {},
+    opts: {
+      signal?: AbortSignal;
+      mode?: "auto" | "labels";
+      onPhase?: (
+        phase: "parsing" | "layout" | "routing" | "rendering",
+        detail?: { current?: number; total?: number },
+      ) => void;
+    } = {},
   ): Promise<string[]> {
     if (!confirmDiscardIfDirty()) return [];
+    opts.onPhase?.("parsing");
     const { importNetlist } = await loadNetlistImportModule();
-    const imported = await importNetlist(text, opts);
+    opts.onPhase?.("layout");
+    const imported = await importNetlist(text, {
+      signal: opts.signal,
+      mode: opts.mode,
+      onPhase: (phase, detail) => opts.onPhase?.(phase, detail),
+    });
+    // Rendering 100+ fresh component subtrees in one React commit blocks
+    // the main thread; give the spinner one paint to update its message
+    // before the commit lands so the user sees "Rendering…" instead of a
+    // mystery freeze.
+    opts.onPhase?.("rendering");
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
     commit(() => normalizeDoc(imported.doc));
     setFilePath(null);
     setDiskDirty(true);
@@ -7783,7 +7802,14 @@ function ImportNetlistModal({
   onClose: () => void;
   onImport: (
     text: string,
-    opts: { signal?: AbortSignal; mode?: "auto" | "labels" },
+    opts: {
+      signal?: AbortSignal;
+      mode?: "auto" | "labels";
+      onPhase?: (
+        phase: "parsing" | "layout" | "routing" | "rendering",
+        detail?: { current?: number; total?: number },
+      ) => void;
+    },
   ) => Promise<string[]>;
 }) {
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -7793,6 +7819,8 @@ function ImportNetlistModal({
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<"parsing" | "layout" | "routing" | "rendering" | null>(null);
+  const [phaseDetail, setPhaseDetail] = useState<{ current?: number; total?: number } | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -7843,16 +7871,24 @@ function ImportNetlistModal({
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy(true);
+    setPhase("parsing");
+    setPhaseDetail(null);
     try {
-      await onImport(trimmed, { signal: controller.signal, mode });
+      await onImport(trimmed, {
+        signal: controller.signal,
+        mode,
+        onPhase: (p, d) => {
+          setPhase(p);
+          setPhaseDetail(d ?? null);
+        },
+      });
     } catch (e) {
-      // AbortError when we cancel ELK is recovered inside `importNetlist`
-      // (it retries with mode="labels"), so any error reaching here is
-      // a real parse / build failure.
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
     } finally {
       abortRef.current = null;
+      setPhase(null);
+      setPhaseDetail(null);
     }
   }
 
@@ -7940,15 +7976,12 @@ function ImportNetlistModal({
           <div className="form-warn" role="status" aria-live="polite" style={{ marginTop: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span className="tb-run-spinner" aria-hidden="true" />
-              <strong>Importing… {elapsed.toFixed(1)}s</strong>
+              <strong>{phaseHeadline(phase, phaseDetail)} {elapsed.toFixed(1)}s</strong>
             </div>
             <div style={{ marginTop: 4, color: "var(--ink-muted)", fontSize: 11 }}>
-              Auto-layout running over {partCount || "the"} component
-              {partCount === 1 ? "" : "s"}. ELK is single-pass and grows
-              super-linearly with size; expect a few seconds per 100
-              components.
+              {phaseDetailText(phase, partCount, phaseDetail)}
             </div>
-            {showFallback && (
+            {showFallback && phase !== "rendering" && (
               <div style={{ marginTop: 8 }}>
                 <button type="button" onClick={fallbackToLabels}>
                   Cancel auto-layout · use disconnected (label-only) layout
@@ -7986,6 +8019,53 @@ function ImportNetlistModal({
 /** Quick heuristic for how many SPICE components are in a netlist —
  *  count non-blank, non-comment, non-directive lines. Used to give the
  *  user a "this is going to take a while" hint before they hit Import. */
+type ImportPhase = "parsing" | "layout" | "routing" | "rendering" | null;
+interface ImportPhaseDetail {
+  current?: number;
+  total?: number;
+}
+
+function phaseHeadline(p: ImportPhase, d: ImportPhaseDetail | null): string {
+  switch (p) {
+    case "parsing":
+      return "Parsing netlist…";
+    case "layout":
+      return "Laying out components…";
+    case "routing":
+      if (d && typeof d.current === "number" && typeof d.total === "number") {
+        return `Routing wires… ${d.current} of ${d.total}`;
+      }
+      return "Routing wires…";
+    case "rendering":
+      return "Rendering schematic…";
+    default:
+      return "Importing…";
+  }
+}
+
+function phaseDetailText(
+  p: ImportPhase,
+  partCount: number,
+  _d: ImportPhaseDetail | null,
+): string {
+  switch (p) {
+    case "layout":
+      return `Auto-layout running over ${partCount || "the"} component${
+        partCount === 1 ? "" : "s"
+      } in a Web Worker. ELK is single-pass and grows super-linearly with size; expect a few seconds per 100 components.`;
+    case "routing":
+      return "Routing the orthogonal wire paths between components. This runs on the main thread; the import can still be cancelled.";
+    case "rendering":
+      return `Layout done. Mounting ${partCount || "the"} component${
+        partCount === 1 ? "" : "s"
+      } into the canvas — this is a one-shot React commit that briefly blocks the main thread.`;
+    case "parsing":
+      return "Reading components, nets, models, and directives.";
+    default:
+      return "Reading components, nets, models, and directives.";
+  }
+}
+
 function countLikelyParts(text: string): number {
   let n = 0;
   for (const raw of text.split("\n")) {
