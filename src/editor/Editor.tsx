@@ -2706,7 +2706,14 @@ export function Editor() {
     }
     if (panning) {
       e.preventDefault();
-      setPan({ x: e.clientX - panning.x, y: e.clientY - panning.y });
+      // Skip the React round-trip during an active pan: ~100 imported
+      // components rerendering on every pointermove was the lag the user
+      // reported. We just rewrite the root <g>'s transform attribute and
+      // commit to state once on pointer-up.
+      applyPanTransformImperative({
+        x: e.clientX - panning.x,
+        y: e.clientY - panning.y,
+      });
       return;
     }
     const g = screenToGrid(e.clientX, e.clientY);
@@ -2983,6 +2990,12 @@ export function Editor() {
     if (e.pointerType === "touch") {
       activeTouchesRef.current.delete(e.pointerId);
       if (activeTouchesRef.current.size < 2) pinchRef.current = null;
+    }
+    if (panning) {
+      // Pan was driven imperatively for low latency; flush the final
+      // position into React state so anything reading `pan` from closure
+      // (screen↔world math, sim, etc.) catches up.
+      setPan(panRef.current);
     }
     setPanning(null);
     if (drag) {
@@ -3311,6 +3324,21 @@ export function Editor() {
   // browser's own page-zoom on pinch is properly suppressed inside the canvas.
   const panRef = useRef(pan);
   panRef.current = pan;
+  // Ref to the root <g> so an active pan can write the transform directly
+  // via DOM instead of triggering a React re-render of ~100 components per
+  // pointermove. We commit the final pan to React state on pointer-up so
+  // every other code path that reads `pan` from closure stays consistent.
+  const panGroupRef = useRef<SVGGElement | null>(null);
+  function applyPanTransformImperative(next: { x: number; y: number }) {
+    panRef.current = next;
+    const g = panGroupRef.current;
+    if (g) {
+      g.setAttribute(
+        "transform",
+        `translate(${next.x} ${next.y}) scale(${CELL * zoomRef.current})`,
+      );
+    }
+  }
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
   useEffect(() => {
@@ -6480,7 +6508,7 @@ export function Editor() {
             </>
           )}
 
-          <g transform={`translate(${pan.x} ${pan.y}) scale(${CELL * zoom})`}>
+          <g ref={panGroupRef} transform={`translate(${pan.x} ${pan.y}) scale(${CELL * zoom})`}>
             {gridVisible && (
               <>
                 <line x1={-10000} y1={0} x2={10000} y2={0} className="canvas-axis" />
