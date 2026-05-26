@@ -1,5 +1,6 @@
 import type {
   ELK,
+  ElkEdgeSection,
   ElkExtendedEdge,
   ElkNode,
   ElkPort,
@@ -19,9 +20,11 @@ import {
 } from "./model.ts";
 import {
   componentBoundsFor,
+  componentVisualBoundsFor,
   normalizeCoord,
+  wireIntersectsRect,
 } from "./geometry.ts";
-import { routeWireSegmentAvoiding } from "./placement.ts";
+import { compactWirePoints, routeWireSegmentAvoiding } from "./placement.ts";
 
 interface ImportedPart {
   name: string;
@@ -848,6 +851,13 @@ async function layoutImportedPage(
   });
 
   const routingPlan = classifyNets(netPins, page.nets);
+  // Look up the routed pins by net name in the same order
+  // `netToElkEdges` saw them, so `edge:{node}:{i}` always maps to the
+  // same pin we now read from `connectablePins[i]`. Iterating
+  // `netPins.get(node)` can include filtered-out LABEL pins, which
+  // would shift the index.
+  const localNetByNode = new Map(routingPlan.localNets.map((net) => [net.node, net] as const));
+  let elkLayoutResult: ElkLayoutResult = { routes: new Map(), shiftX: 0, shiftY: 0 };
   if (opts.mode === "labels") {
     // Skip ELK entirely. Lay components out on a grid; downstream code
     // converts every local net into a set of LABEL stubs (one per pin)
@@ -860,15 +870,28 @@ async function layoutImportedPage(
     // Drop the local-net routing plan so no wires get drawn.
     routingPlan.localNets = [];
   } else {
-    await applyElkLayout(
+    elkLayoutResult = await applyElkLayout(
       components.filter((component) => component.kind !== "LABEL"),
       routingPlan.localNets,
       routingPlan.junctions,
       opts.signal,
     );
   }
+  // Snapshot the post-ELK component positions; the next two passes can
+  // re-position components based on heuristics (CMOS pairs, shunts, …)
+  // or user-saved layout annotations. Any component that moves needs its
+  // ELK route discarded — the route was computed for where ELK put it,
+  // not where the heuristics or annotations put it.
+  const preMovePos = new Map<string, { x: number; y: number }>();
+  for (const c of components) preMovePos.set(c.id, { x: c.x, y: c.y });
   applyCircuitSpecificLayouts(components, netPins);
   applyImportedLayoutAnnotations(components, layoutByComponentId);
+  const movedComponentIds = new Set<string>();
+  for (const c of components) {
+    const prev = preMovePos.get(c.id);
+    if (!prev) continue;
+    if (prev.x !== c.x || prev.y !== c.y) movedComponentIds.add(c.id);
+  }
 
   // Wire routing is the *other* expensive phase — `addWireRoute` runs an
   // O(N · obstacles) candidate search per net on the main thread. For a
@@ -914,14 +937,63 @@ async function layoutImportedPage(
       continue;
     }
 
+    // Use the LocalNet's pin order (same one `netToElkEdges` saw) when
+    // looking up ELK routes — `connectablePins` may have a different
+    // order vs the routed-net plan.
+    const localNet = localNetByNode.get(node);
     if (connectablePins.length === 2) {
-      addWireRoute(wires, pinPoint(connectablePins[0]), pinPoint(connectablePins[1]), components, [
-        connectablePins[0].component,
-        connectablePins[1].component,
-      ]);
+      const routedPins = localNet?.pins ?? connectablePins;
+      const [p0, p1] = routedPins;
+      const fromPt = pinPoint(p0);
+      const toPt = pinPoint(p1);
+      const eitherMoved =
+        movedComponentIds.has(p0.component.id) ||
+        movedComponentIds.has(p1.component.id);
+      const elkPoints = eitherMoved
+        ? null
+        : consumeElkRoute(
+            elkLayoutResult.routes,
+            elkEdgeId(node),
+            fromPt,
+            toPt,
+            pinSideOf(p0),
+            pinSideOf(p1),
+            elkLayoutResult.shiftX,
+            elkLayoutResult.shiftY,
+            components,
+            new Set([p0.component.id, p1.component.id]),
+          );
+      if (elkPoints) {
+        wires.push({ id: makeId("w"), points: elkPoints });
+      } else {
+        addWireRoute(wires, fromPt, toPt, components, [p0.component, p1.component]);
+      }
     } else if (connectablePins.length > 2 && connectablePins.length <= 5) {
-      const junction = preferredJunctionPoint(connectablePins, routingPlan.junctions.get(node));
-      for (const pin of connectablePins) addWireRoute(wires, pinPoint(pin), junction, components, [pin.component]);
+      const routedPins = localNet?.pins ?? connectablePins;
+      const junction = preferredJunctionPoint(routedPins, routingPlan.junctions.get(node));
+      for (let i = 0; i < routedPins.length; i++) {
+        const pin = routedPins[i];
+        const fromPt = pinPoint(pin);
+        const elkPoints = movedComponentIds.has(pin.component.id)
+          ? null
+          : consumeElkRoute(
+              elkLayoutResult.routes,
+              elkEdgeId(node, i),
+              fromPt,
+              junction,
+              pinSideOf(pin),
+              "WEST",
+              elkLayoutResult.shiftX,
+              elkLayoutResult.shiftY,
+              components,
+              new Set([pin.component.id]),
+            );
+        if (elkPoints) {
+          wires.push({ id: makeId("w"), points: elkPoints });
+        } else {
+          addWireRoute(wires, fromPt, junction, components, [pin.component]);
+        }
+      }
     } else {
       for (const pin of connectablePins) addNetLabelStub(components, wires, node, pin);
     }
@@ -1314,13 +1386,23 @@ function classifyNets(
   return { localNets, labelNets, junctions };
 }
 
+/** Output of `applyElkLayout`: the per-edge routed polylines (still in
+ *  ELK pixel space — caller translates) plus the shifts the function
+ *  applied to non-negative-ify the layout. Edge sections are keyed by
+ *  the same `elkEdgeId(...)` strings `netToElkEdges` produced. */
+interface ElkLayoutResult {
+  routes: Map<string, ElkEdgeSection[]>;
+  shiftX: number;
+  shiftY: number;
+}
+
 async function applyElkLayout(
   components: CircuitComponent[],
   localNets: LocalNet[],
   junctions: Map<string, { x: number; y: number }>,
   signal?: AbortSignal,
-): Promise<void> {
-  if (components.length === 0) return;
+): Promise<ElkLayoutResult> {
+  if (components.length === 0) return { routes: new Map(), shiftX: 0, shiftY: 0 };
   if (signal?.aborted) throw makeAbortError();
 
   const junctionNets = localNets.filter((net) => net.junctionId);
@@ -1395,6 +1477,18 @@ async function applyElkLayout(
     // Store by net name; routing later renders the junction as wire bends, not a visible component.
     junctions.set(net.node, { x: cleanX, y: cleanY });
   }
+
+  // ELK already ran an orthogonal edge router; capture the routes so the
+  // import loop can use them instead of re-routing on the main thread.
+  // Coordinates are still in ELK pixel space; the caller divides by
+  // ELK_SCALE and applies the same shifts used for component centres.
+  const routes = new Map<string, ElkEdgeSection[]>();
+  for (const edge of laidOut.edges ?? []) {
+    if (edge.id && edge.sections && edge.sections.length > 0) {
+      routes.set(edge.id, edge.sections);
+    }
+  }
+  return { routes, shiftX, shiftY };
 }
 
 function componentToElkNode(component: CircuitComponent): ElkNode {
@@ -1420,7 +1514,7 @@ function componentToElkNode(component: CircuitComponent): ElkNode {
 function netToElkEdges(net: LocalNet): ElkExtendedEdge[] {
   if (net.junctionId) {
     return net.pins.map((pin, idx) => ({
-      id: `edge:${net.node}:${idx}`,
+      id: elkEdgeId(net.node, idx),
       sources: [elkPortId(pin.component, pin.pinIdx)],
       targets: [net.junctionId!],
     }));
@@ -1428,20 +1522,41 @@ function netToElkEdges(net: LocalNet): ElkExtendedEdge[] {
   if (net.pins.length !== 2) return [];
   return [
     {
-      id: `edge:${net.node}`,
+      id: elkEdgeId(net.node),
       sources: [elkPortId(net.pins[0].component, net.pins[0].pinIdx)],
       targets: [elkPortId(net.pins[1].component, net.pins[1].pinIdx)],
     },
   ];
 }
 
+/** Single source of truth for the ELK edge ID strings — produced by
+ *  `netToElkEdges` and consumed by the post-layout route lookup. */
+function elkEdgeId(netNode: string, idx?: number): string {
+  return idx == null ? `edge:${netNode}` : `edge:${netNode}:${idx}`;
+}
+
 function elkPortId(component: CircuitComponent, pinIdx: number): string {
   return `${component.id}:pin:${pinIdx}`;
 }
 
-function elkPortSide(pin: { x: number; y: number }): string {
+type PinSide = "NORTH" | "SOUTH" | "EAST" | "WEST";
+
+function elkPortSide(pin: { x: number; y: number }): PinSide {
   if (Math.abs(pin.x) >= Math.abs(pin.y)) return pin.x < 0 ? "WEST" : "EAST";
   return pin.y < 0 ? "NORTH" : "SOUTH";
+}
+
+/** Cardinal side of `pin` in its component-local frame, used by
+ *  `consumeElkRoute`'s stub-stitching to pick which axis to traverse
+ *  last so the wire meets the pin perpendicular to the component side. */
+function pinSideOf(pin: ImportedPin): PinSide {
+  const local = getPinLayout(pin.component)[pin.pinIdx];
+  if (!local) return "WEST";
+  // Apply rotation to translate the local pin position back into world-
+  // aligned axes — the side label is what the world sees, not what the
+  // unrotated symbol sees.
+  const rotated = rotatePoint(local, pin.component.rotation);
+  return elkPortSide(rotated);
 }
 
 function snapImportedCoord(value: number): number {
@@ -1496,6 +1611,119 @@ function addWireRoute(
     ignoreComponentIds: new Set(allowedIntersections.map((component) => component.id)),
   });
   if (points.length >= 2) wires.push({ id: makeId("w"), points });
+}
+
+/** Padding around component bounding boxes when checking whether an ELK
+ *  route crosses an unrelated component. Mirrors `ROUTE_COMPONENT_PAD`
+ *  from placement.ts (we keep them in sync but don't share the constant
+ *  to avoid leaking the routing module's internals). */
+const ELK_ROUTE_OBSTACLE_PAD = 0.3;
+const ELK_ROUTE_SNAP_TOLERANCE = 0.5;
+const ELK_ROUTE_STUB_TOLERANCE = 2.0;
+
+/** Translate a single ELK pixel-space point into our half-cell coord
+ *  system, matching the component-centre translation in `applyElkLayout`:
+ *  first snap the raw / ELK_SCALE value, then add the post-layout shift
+ *  through `normalizeCoord` so we land on the same grid as the components. */
+function translateElkPoint(
+  point: { x: number; y: number },
+  shiftX: number,
+  shiftY: number,
+): [number, number] {
+  return [
+    normalizeCoord(snapImportedCoord(point.x / ELK_SCALE) + shiftX),
+    normalizeCoord(snapImportedCoord(point.y / ELK_SCALE) + shiftY),
+  ];
+}
+
+/** Try to convert an ELK-routed edge into a wire polyline in cell units.
+ *  Returns null when the route is missing, its endpoints can't be
+ *  stitched to the actual pin coords without too much fudging, or the
+ *  result would cross a component body other than `pinComponents`'.
+ *  Caller falls back to the main-thread router in that case. */
+function consumeElkRoute(
+  routes: Map<string, ElkEdgeSection[]>,
+  edgeId: string,
+  expectedFrom: { x: number; y: number },
+  expectedTo: { x: number; y: number },
+  fromPinSide: "NORTH" | "SOUTH" | "EAST" | "WEST",
+  toPinSide: "NORTH" | "SOUTH" | "EAST" | "WEST",
+  shiftX: number,
+  shiftY: number,
+  obstacles: CircuitComponent[],
+  pinComponentIds: Set<string>,
+): [number, number][] | null {
+  const sections = routes.get(edgeId);
+  if (!sections || sections.length === 0) return null;
+
+  let polyline: [number, number][] = [];
+  for (const section of sections) {
+    if (!section.startPoint || !section.endPoint) return null;
+    const points: [number, number][] = [];
+    points.push(translateElkPoint(section.startPoint, shiftX, shiftY));
+    for (const bend of section.bendPoints ?? []) {
+      points.push(translateElkPoint(bend, shiftX, shiftY));
+    }
+    points.push(translateElkPoint(section.endPoint, shiftX, shiftY));
+    if (polyline.length > 0 && sameTuple(polyline[polyline.length - 1], points[0])) {
+      polyline.push(...points.slice(1));
+    } else {
+      polyline.push(...points);
+    }
+  }
+  polyline = compactWirePoints(polyline);
+  if (polyline.length < 2) return null;
+
+  const stitchedStart = stitchPinEndpoint(polyline, expectedFrom, fromPinSide, "start");
+  if (!stitchedStart) return null;
+  polyline = stitchedStart;
+  const stitchedEnd = stitchPinEndpoint(polyline, expectedTo, toPinSide, "end");
+  if (!stitchedEnd) return null;
+  polyline = stitchedEnd;
+  polyline = compactWirePoints(polyline);
+  if (polyline.length < 2) return null;
+
+  for (const component of obstacles) {
+    if (pinComponentIds.has(component.id)) continue;
+    const rect = componentVisualBoundsFor(component, ELK_ROUTE_OBSTACLE_PAD);
+    if (wireIntersectsRect(polyline, rect)) return null;
+  }
+  return polyline;
+}
+
+function stitchPinEndpoint(
+  polyline: [number, number][],
+  pin: { x: number; y: number },
+  side: "NORTH" | "SOUTH" | "EAST" | "WEST",
+  end: "start" | "end",
+): [number, number][] | null {
+  const idx = end === "start" ? 0 : polyline.length - 1;
+  const ep = polyline[idx];
+  const dx = pin.x - ep[0];
+  const dy = pin.y - ep[1];
+  const d = Math.max(Math.abs(dx), Math.abs(dy));
+  if (d <= ELK_ROUTE_SNAP_TOLERANCE) {
+    const next = polyline.slice();
+    next[idx] = [normalizeCoord(pin.x), normalizeCoord(pin.y)];
+    return next;
+  }
+  if (d > ELK_ROUTE_STUB_TOLERANCE) return null;
+  // Pick an L corner so the segment touching the pin is perpendicular to
+  // the component side the pin sits on (WEST/EAST pin → final segment
+  // is horizontal, NORTH/SOUTH pin → final segment is vertical).
+  const horizontalFinal = side === "WEST" || side === "EAST";
+  const corner: [number, number] = horizontalFinal
+    ? [normalizeCoord(ep[0]), normalizeCoord(pin.y)]
+    : [normalizeCoord(pin.x), normalizeCoord(ep[1])];
+  const pinPt: [number, number] = [normalizeCoord(pin.x), normalizeCoord(pin.y)];
+  if (end === "start") {
+    return [pinPt, corner, ...polyline];
+  }
+  return [...polyline, corner, pinPt];
+}
+
+function sameTuple(a: [number, number], b: [number, number]): boolean {
+  return a[0] === b[0] && a[1] === b[1];
 }
 
 function netJunctionPoint(points: { x: number; y: number }[]): { x: number; y: number } {

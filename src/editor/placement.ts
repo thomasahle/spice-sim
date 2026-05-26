@@ -903,7 +903,7 @@ export function removeLastWireDraftPoint(
   return points.slice(0, -1);
 }
 
-function compactWirePoints(points: [number, number][]): [number, number][] {
+export function compactWirePoints(points: [number, number][]): [number, number][] {
   const out: [number, number][] = [];
   for (const p of points) {
     if (out.length === 0 || !sameTuple(out[out.length - 1], p)) out.push(p);
