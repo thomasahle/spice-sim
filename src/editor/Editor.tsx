@@ -1270,10 +1270,16 @@ export function Editor() {
     setDoc(updater(docRef.current));
     invalidateSimulationState();
   }
-  async function importNetlistFromText(text: string): Promise<string[]> {
+  /** Parse a SPICE netlist string and replace the current doc. Accepts an
+   *  AbortSignal for cancelling the (potentially slow) ELK auto-layout and
+   *  a `mode` to force the faster label-only fallback up front. */
+  async function importNetlistFromText(
+    text: string,
+    opts: { signal?: AbortSignal; mode?: "auto" | "labels" } = {},
+  ): Promise<string[]> {
     if (!confirmDiscardIfDirty()) return [];
     const { importNetlist } = await loadNetlistImportModule();
-    const imported = await importNetlist(text);
+    const imported = await importNetlist(text, opts);
     commit(() => normalizeDoc(imported.doc));
     setFilePath(null);
     setDiskDirty(true);
@@ -1281,8 +1287,11 @@ export function Editor() {
     clearSimulationState();
     setShowStartupEmptyCard(false);
     setWaveformVisible(false);
+    const suffix = imported.warnings.length
+      ? ` (${imported.warnings.length} warning${imported.warnings.length === 1 ? "" : "s"})`
+      : "";
     setStatus(
-      `Imported pasted netlist${imported.warnings.length ? ` (${imported.warnings.length} warnings)` : ""}`,
+      `Imported pasted netlist${imported.labelOnly ? " — label-only layout" : ""}${suffix}`,
     );
     window.setTimeout(fitToContent, 0);
     return imported.warnings;
@@ -7516,8 +7525,8 @@ export function Editor() {
       {importNetlistOpen && (
         <ImportNetlistModal
           onClose={() => setImportNetlistOpen(false)}
-          onImport={async (text) => {
-            const warnings = await importNetlistFromText(text);
+          onImport={async (text, opts) => {
+            const warnings = await importNetlistFromText(text, opts);
             setImportNetlistOpen(false);
             return warnings;
           }}
@@ -7744,21 +7753,31 @@ function ImportNetlistModal({
   onImport,
 }: {
   onClose: () => void;
-  onImport: (text: string) => Promise<string[]>;
+  onImport: (
+    text: string,
+    opts: { signal?: AbortSignal; mode?: "auto" | "labels" },
+  ) => Promise<string[]>;
 }) {
   const cardRef = useRef<HTMLDivElement | null>(null);
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const prevFocusRef = useRef<HTMLElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+
   useEffect(() => {
     prevFocusRef.current = document.activeElement as HTMLElement | null;
     textAreaRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        if (busy) {
+          abortRef.current?.abort();
+        } else {
+          onClose();
+        }
       } else if (e.key === "Tab") {
         trapModalTab(e, cardRef.current);
       }
@@ -7768,24 +7787,63 @@ function ImportNetlistModal({
       window.removeEventListener("keydown", onKey, true);
       prevFocusRef.current?.focus?.();
     };
-  }, [onClose]);
-  async function doImport() {
+  }, [onClose, busy]);
+
+  // Tick an elapsed-seconds counter while the import is running so the
+  // user knows the app hasn't frozen.
+  useEffect(() => {
+    if (!busy) {
+      setElapsed(0);
+      return;
+    }
+    const start = performance.now();
+    setElapsed(0);
+    const handle = window.setInterval(() => {
+      setElapsed((performance.now() - start) / 1000);
+    }, 100);
+    return () => window.clearInterval(handle);
+  }, [busy]);
+
+  async function runImport(mode: "auto" | "labels") {
     const trimmed = text.trim();
     if (!trimmed) {
       setError("Paste a SPICE netlist first.");
       return;
     }
     setError(null);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy(true);
     try {
-      await onImport(trimmed);
+      await onImport(trimmed, { signal: controller.signal, mode });
     } catch (e) {
+      // AbortError when we cancel ELK is recovered inside `importNetlist`
+      // (it retries with mode="labels"), so any error reaching here is
+      // a real parse / build failure.
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
+    } finally {
+      abortRef.current = null;
     }
   }
+
+  function fallbackToLabels() {
+    abortRef.current?.abort();
+  }
+
+  const showFallback = busy && elapsed >= 2;
+  const partCount = useMemo(() => countLikelyParts(text), [text]);
+  const sizeHint = partCount
+    ? `~${partCount} component${partCount === 1 ? "" : "s"} detected`
+    : null;
+
   return (
-    <div className="modal-scrim" onMouseDown={onClose} role="presentation">
+    <div
+      className="modal-scrim"
+      onMouseDown={busy ? undefined : onClose}
+      role="presentation"
+    >
       <div
         ref={cardRef}
         className="modal-card netlist-modal"
@@ -7796,7 +7854,13 @@ function ImportNetlistModal({
       >
         <div className="modal-header">
           <div className="modal-title">Import netlist</div>
-          <button className="icon-btn" onClick={onClose} title="Close" aria-label="Close dialog">
+          <button
+            className="icon-btn"
+            onClick={onClose}
+            disabled={busy}
+            title="Close"
+            aria-label="Close dialog"
+          >
             <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
               <line x1={3.5} y1={3.5} x2={10.5} y2={10.5} />
               <line x1={10.5} y1={3.5} x2={3.5} y2={10.5} />
@@ -7820,7 +7884,56 @@ function ImportNetlistModal({
           style={{ minHeight: 220, fontFamily: "var(--mono)", fontSize: 12, resize: "vertical" }}
           disabled={busy}
         />
-        {error && (
+        {sizeHint && !busy && (
+          <div style={{ marginTop: 6, fontSize: 11, color: "var(--ink-muted)" }}>
+            {sizeHint}
+            {partCount > 80 && (
+              <>
+                {" — large netlists can take a few seconds to auto-layout. "}
+                <button
+                  type="button"
+                  onClick={() => runImport("labels")}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    color: "var(--accent)",
+                    cursor: "pointer",
+                    boxShadow: "none",
+                  }}
+                >
+                  Skip auto-layout
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        {busy && (
+          <div className="form-warn" role="status" aria-live="polite" style={{ marginTop: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span className="tb-run-spinner" aria-hidden="true" />
+              <strong>Importing… {elapsed.toFixed(1)}s</strong>
+            </div>
+            <div style={{ marginTop: 4, color: "var(--ink-muted)", fontSize: 11 }}>
+              Auto-layout running over {partCount || "the"} component
+              {partCount === 1 ? "" : "s"}. ELK is single-pass and grows
+              super-linearly with size; expect a few seconds per 100
+              components.
+            </div>
+            {showFallback && (
+              <div style={{ marginTop: 8 }}>
+                <button type="button" onClick={fallbackToLabels}>
+                  Cancel auto-layout · use disconnected (label-only) layout
+                </button>
+              </div>
+            )}
+            <progress
+              style={{ marginTop: 8, width: "100%" }}
+              aria-label={`Importing, ${elapsed.toFixed(1)} seconds elapsed`}
+            />
+          </div>
+        )}
+        {error && !busy && (
           <div className="form-warn" style={{ marginTop: 8 }}>
             {error}
           </div>
@@ -7829,13 +7942,32 @@ function ImportNetlistModal({
           <button onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="run-btn" onClick={doImport} disabled={busy || !text.trim()}>
+          <button
+            className="run-btn"
+            onClick={() => runImport("auto")}
+            disabled={busy || !text.trim()}
+          >
             {busy ? "Importing…" : "Import"}
           </button>
         </div>
       </div>
     </div>
   );
+}
+
+/** Quick heuristic for how many SPICE components are in a netlist —
+ *  count non-blank, non-comment, non-directive lines. Used to give the
+ *  user a "this is going to take a while" hint before they hit Import. */
+function countLikelyParts(text: string): number {
+  let n = 0;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith("*")) continue;
+    if (line.startsWith(".")) continue;
+    n += 1;
+  }
+  return n;
 }
 
 function trapModalTab(e: KeyboardEvent, root: HTMLElement | null) {

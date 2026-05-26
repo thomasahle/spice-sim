@@ -56,6 +56,21 @@ interface ParsedLines {
 export interface NetlistImportResult {
   doc: CircuitDoc;
   warnings: string[];
+  /** True when ELK auto-layout was skipped — components were placed in a
+   *  grid and connectivity is expressed entirely through net labels.
+   *  Set when the caller chose label-only mode upfront or aborted ELK. */
+  labelOnly?: boolean;
+}
+
+export interface NetlistImportOptions {
+  /** Abort an in-flight ELK auto-layout. Once aborted the layout
+   *  falls back to the label-only grid placement. */
+  signal?: AbortSignal;
+  /** "auto" → run ELK auto-layout (default).
+   *  "labels" → skip ELK entirely; place components on a grid and rely
+   *             on net labels for connectivity. Much faster on large
+   *             netlists; visually messier. */
+  mode?: "auto" | "labels";
 }
 
 export type ImportNetKind =
@@ -106,11 +121,30 @@ export interface NetlistImportIr {
   analysis: AnalysisSpec;
 }
 
-export async function importNetlist(text: string): Promise<NetlistImportResult> {
+export async function importNetlist(
+  text: string,
+  opts: NetlistImportOptions = {},
+): Promise<NetlistImportResult> {
   const { ir, warnings } = parseNetlistImportIr(text);
 
-  const { components, wires } = await layoutImportedPage(ir.root);
-  if (!components.some((c) => c.kind === "GND")) {
+  let labelOnly = false;
+  const layoutOpts = { signal: opts.signal, mode: opts.mode ?? "auto" } as const;
+
+  // Root page: run the requested layout; on abort, transparently fall back
+  // to label-only so the user still gets a doc out of the import.
+  let rootLayout;
+  try {
+    rootLayout = await layoutImportedPage(ir.root, layoutOpts);
+  } catch (e) {
+    if (isAbortError(e)) {
+      labelOnly = true;
+      rootLayout = await layoutImportedPage(ir.root, { ...layoutOpts, mode: "labels" });
+    } else {
+      throw e;
+    }
+  }
+
+  if (!rootLayout.components.some((c) => c.kind === "GND")) {
     warnings.push("Imported netlist has no node 0 reference in supported elements.");
   }
 
@@ -119,14 +153,25 @@ export async function importNetlist(text: string): Promise<NetlistImportResult> 
     id: makeId("page"),
     name: "main",
     description: "",
-    components,
-    wires,
+    components: rootLayout.components,
+    wires: rootLayout.wires,
     probes: [],
   };
 
   const subPages = [];
+  const subLayoutMode = labelOnly ? "labels" : layoutOpts.mode;
   for (const subckt of ir.subcircuits) {
-    const layout = await layoutImportedPage(subckt);
+    let layout;
+    try {
+      layout = await layoutImportedPage(subckt, { ...layoutOpts, mode: subLayoutMode });
+    } catch (e) {
+      if (isAbortError(e)) {
+        labelOnly = true;
+        layout = await layoutImportedPage(subckt, { ...layoutOpts, mode: "labels" });
+      } else {
+        throw e;
+      }
+    }
     subPages.push({
       ...emptyDoc.pages[0],
       id: makeId("page"),
@@ -138,6 +183,12 @@ export async function importNetlist(text: string): Promise<NetlistImportResult> 
     });
   }
 
+  if (labelOnly) {
+    warnings.push(
+      "Auto-layout skipped: components were placed on a grid and connectivity is shown via net labels. Run Auto arrange to reflow when you have time.",
+    );
+  }
+
   return {
     doc: {
       pages: [root, ...subPages],
@@ -147,7 +198,64 @@ export async function importNetlist(text: string): Promise<NetlistImportResult> 
       simSettings: emptyDoc.simSettings,
     },
     warnings,
+    labelOnly: labelOnly || layoutOpts.mode === "labels" ? true : undefined,
   };
+}
+
+function isAbortError(e: unknown): boolean {
+  return (
+    e instanceof Error &&
+    (e.name === "AbortError" || e.message === "AbortError")
+  );
+}
+
+function makeAbortError(): Error {
+  const err = new Error("AbortError");
+  err.name = "AbortError";
+  return err;
+}
+
+/** Fallback layout when ELK is unwanted or aborted. Components go on a
+ *  square-ish grid with enough spacing to leave room for their own pins.
+ *  The grid is rough but deterministic — Auto arrange can clean it up
+ *  later once the user is ready to wait. */
+function layoutComponentsAsGrid(components: CircuitComponent[]): void {
+  if (components.length === 0) return;
+  const cols = Math.max(1, Math.ceil(Math.sqrt(components.length)));
+  const dx = 12;
+  const dy = 10;
+  components.forEach((component, idx) => {
+    const col = idx % cols;
+    const row = Math.floor(idx / cols);
+    component.x = normalizeCoord(col * dx);
+    component.y = normalizeCoord(row * dy);
+  });
+}
+
+/** For every multi-pin local net, drop a LABEL stub at each pin so the
+ *  netlist still resolves the same net. Used by the label-only layout
+ *  path — no wires are drawn, the labels do all the work. */
+function promoteLocalNetsToLabels(
+  localNets: LocalNet[],
+  components: CircuitComponent[],
+  netPins: Map<string, ImportedPin[]>,
+): void {
+  for (const net of localNets) {
+    const pins = netPins.get(net.node) ?? [];
+    if (pins.length < 2) continue;
+    for (const pin of pins) {
+      const p = pinWorldPos(pin.component, pin.pinIdx);
+      components.push({
+        id: makeId("label"),
+        kind: "LABEL",
+        x: snapImportedCoord(p.x),
+        y: snapImportedCoord(p.y),
+        rotation: 0,
+        value: net.node,
+        params: {},
+      });
+    }
+  }
 }
 
 export function parseNetlistImportIr(text: string): { ir: NetlistImportIr; warnings: string[] } {
@@ -171,11 +279,15 @@ export function parseNetlistImportIr(text: string): { ir: NetlistImportIr; warni
     }
     subcircuits.push(buildImportPageIr(sanitizeSubcktName(subckt.name), subckt.pins, parsed));
   }
+  const subcircuitPinSides = new Map(
+    subcircuits.map((subckt) => [subckt.name.toLowerCase(), inferSubcircuitPinSidesFromNames(subckt.pins)]),
+  );
+  const root = applySubcircuitInstanceSideHints(buildImportPageIr("main", [], main), subcircuitPinSides);
 
   return {
     ir: {
-      root: buildImportPageIr("main", [], main),
-      subcircuits,
+      root,
+      subcircuits: subcircuits.map((subckt) => applySubcircuitInstanceSideHints(subckt, subcircuitPinSides)),
       directives,
       analysis,
     },
@@ -307,6 +419,39 @@ function buildImportPageIr(
   };
 }
 
+function applySubcircuitInstanceSideHints(
+  page: ImportPageIr,
+  sideHintsBySubcircuitName: Map<string, string>,
+): ImportPageIr {
+  return {
+    ...page,
+    parts: page.parts.map((part) => {
+      if (part.kind !== "SUBX" || part.params?.pinSides) return part;
+      const sideHints = sideHintsBySubcircuitName.get(part.value.toLowerCase());
+      if (!sideHints) return part;
+      const nPins = Math.min(part.nodes.length, sideHints.length, MAX_SUBCIRCUIT_PINS);
+      if (nPins <= 0) return part;
+      return {
+        ...part,
+        params: {
+          ...(part.params ?? {}),
+          pinSides: sideHints.slice(0, nPins),
+        },
+      };
+    }),
+  };
+}
+
+function inferSubcircuitPinSidesFromNames(pins: string[]): string {
+  return pins.slice(0, MAX_SUBCIRCUIT_PINS).map((pin) => {
+    const normalized = normalizeNodeName(pin).toLowerCase();
+    if (isPositiveRailPinName(normalized)) return "T";
+    if (isNegativeRailPinName(normalized)) return "B";
+    if (isOutputPinName(normalized)) return "R";
+    return "L";
+  }).join("");
+}
+
 function buildImportNets(parts: ImportPartIr[], externalPins: string[]): ImportNetIr[] {
   const pinMap = new Map<string, ImportPinIr[]>();
   for (const part of parts) {
@@ -406,6 +551,8 @@ function parseLayoutAnnotation(line: string): { name: string; annotation: Import
       annotation.mirrored = /^(1|true|yes|on)$/i.test(value);
     } else if (key === "w" || key === "h") {
       params[key] = value;
+    } else if (key.toLowerCase() === "pinsides" && /^[LRTB]+$/i.test(value)) {
+      params.pinSides = value.toUpperCase();
     }
   }
 
@@ -589,6 +736,7 @@ function getElk(): Promise<ELK> {
 
 async function layoutImportedPage(
   page: ImportPageIr,
+  opts: { signal?: AbortSignal; mode?: "auto" | "labels" } = {},
 ): Promise<{ components: CircuitComponent[]; wires: { id: string; points: [number, number][] }[] }> {
   const components: CircuitComponent[] = [];
   const wires: { id: string; points: [number, number][] }[] = [];
@@ -636,11 +784,25 @@ async function layoutImportedPage(
   });
 
   const routingPlan = classifyNets(netPins, page.nets);
-  await applyElkLayout(
-    components.filter((component) => component.kind !== "LABEL"),
-    routingPlan.localNets,
-    routingPlan.junctions,
-  );
+  if (opts.mode === "labels") {
+    // Skip ELK entirely. Lay components out on a grid; downstream code
+    // converts every local net into a set of LABEL stubs (one per pin)
+    // rather than routed wires, so the schematic still represents the
+    // same connectivity — just visually flat.
+    layoutComponentsAsGrid(
+      components.filter((component) => component.kind !== "LABEL"),
+    );
+    promoteLocalNetsToLabels(routingPlan.localNets, components, netPins);
+    // Drop the local-net routing plan so no wires get drawn.
+    routingPlan.localNets = [];
+  } else {
+    await applyElkLayout(
+      components.filter((component) => component.kind !== "LABEL"),
+      routingPlan.localNets,
+      routingPlan.junctions,
+      opts.signal,
+    );
+  }
   applyCircuitSpecificLayouts(components, netPins);
   applyImportedLayoutAnnotations(components, layoutByComponentId);
 
@@ -1062,8 +1224,10 @@ async function applyElkLayout(
   components: CircuitComponent[],
   localNets: LocalNet[],
   junctions: Map<string, { x: number; y: number }>,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (components.length === 0) return;
+  if (signal?.aborted) throw makeAbortError();
 
   const junctionNets = localNets.filter((net) => net.junctionId);
   const graph: ElkNode = {
@@ -1087,7 +1251,22 @@ async function applyElkLayout(
     edges: localNets.flatMap(netToElkEdges),
   };
 
-  const laidOut = await (await getElk()).layout(graph);
+  const elk = await getElk();
+  // ELK has no native cancellation, so race the layout against the abort
+  // signal. If aborted, ELK keeps running in the background (one-off
+  // wasted CPU on import), but the caller falls back to label-only.
+  const laidOut = signal
+    ? await Promise.race([
+        elk.layout(graph),
+        new Promise<never>((_, reject) => {
+          if (signal.aborted) reject(makeAbortError());
+          else
+            signal.addEventListener("abort", () => reject(makeAbortError()), {
+              once: true,
+            });
+        }),
+      ])
+    : await elk.layout(graph);
   const children = laidOut.children ?? [];
   const byId = new Map(children.map((child) => [child.id, child]));
   const componentById = new Map(components.map((component) => [component.id, component]));
@@ -1272,6 +1451,19 @@ function tuplePoint(point: [number, number]): { x: number; y: number } {
 
 function isGlobalNet(node: string): boolean {
   return /^(vdd|vcc|vee|vss|vssa|vssd|avdd|dvdd|avss|dvss|\+?\d+v|-?\d+v)$/i.test(node);
+}
+
+function isPositiveRailPinName(node: string): boolean {
+  return /^(vdd|vcc|avdd|dvdd|\+?\d+(?:\.\d+)?v?)$/i.test(node);
+}
+
+function isNegativeRailPinName(node: string): boolean {
+  return /^(0|gnd|vss|vssa|vssd|avss|dvss|vee|-?\d+(?:\.\d+)?v?)$/i.test(node) && !isPositiveRailPinName(node);
+}
+
+function isOutputPinName(node: string): boolean {
+  return /^(y|z|h|q\d*|out\d*|output\d*|vout|vo|sum|carry|cout|result)$/i.test(node)
+    || /(^|[_-])out($|[_-]|\d)/i.test(node);
 }
 
 function defaultRotation(kind: ComponentKind): Rotation {
