@@ -127,8 +127,11 @@ export const DEMOS: Demo[] = [
           { id: "w1", points: [[-14, -2], [-14, -3], [-10, -3]] },
           // R1 right → op V- (and Rf left)
           { id: "w2", points: [[-6, -3], [-3, -3]] },
-          // Rf left → op V- node (already connected via wire above)
-          { id: "w3", points: [[-5, -7], [-3, -7], [-3, -3]] },
+          // Rf left → op V- node. The down-leg has to stay clear of
+          // x=-3 between y=-3 and y=-7, because the OPAMP V+ pin sits
+          // at (-3, -5) and `g_p` (GND) at (-3, -6). Drop on x=-5 and
+          // join the inverting node from the left instead.
+          { id: "w3", points: [[-5, -7], [-5, -3], [-3, -3]] },
           // Rf right → op OUT
           { id: "w4", points: [[-1, -7], [3, -7], [3, -4]] },
           // op OUT → label
