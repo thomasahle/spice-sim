@@ -389,12 +389,15 @@ export function SubxGlyph({
         );
       })}
       {label && (
-        <SvgInlineMathText
+        // Subcircuit name is an identifier (e.g. `rc_stage`), not a
+        // formula. Render as plain SVG text so KaTeX doesn't reinterpret
+        // underscores as subscripts.
+        <text
           x={0}
           y={0.2}
           fontSize={0.6}
-          text={label}
           textAnchor="middle"
+          dominantBaseline="middle"
           className="subx-body-label"
           pointerEvents="auto"
           style={{
@@ -402,7 +405,9 @@ export function SubxGlyph({
             fontFamily: "ui-monospace, SF Mono, Menlo, monospace",
             fontWeight: 600,
           }}
-        />
+        >
+          {label}
+        </text>
       )}
     </g>
   );
