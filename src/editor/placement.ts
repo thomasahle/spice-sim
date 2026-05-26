@@ -357,6 +357,14 @@ export interface WireRoutingContext {
   wires?: Wire[];
   ignoreComponentIds?: Set<string>;
   ignoreWireIds?: Set<string>;
+  // Opt out of the grid-based fallback router (Dijkstra over a sparse
+  // grid of component bbox edges). Quality-wise it's a strict improvement
+  // when it succeeds, but its cost is super-linear in the number of
+  // components+wires already on the page and it blocks the main thread
+  // for seconds on big imports. Callers in batch contexts (netlist
+  // import) can set this to keep each route in the ~ms range and let the
+  // UI thread stay responsive enough to abort.
+  skipGridRouter?: boolean;
 }
 
 function routeWireSegmentForContext(
@@ -379,8 +387,10 @@ export function routeWireSegmentAvoiding(
   if (!orthogonal) return bestFreeformRoute(from, to, context);
 
   const candidates = orthogonalRouteCandidates(from, to, context);
-  const gridRoute = gridRouteCandidate(from, to, context);
-  if (gridRoute) candidates.push(gridRoute);
+  if (!context.skipGridRouter) {
+    const gridRoute = gridRouteCandidate(from, to, context);
+    if (gridRoute) candidates.push(gridRoute);
+  }
   let best = routeWireSegment(from, to, true);
   let bestScore = Number.POSITIVE_INFINITY;
   for (const candidate of candidates) {

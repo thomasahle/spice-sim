@@ -1406,6 +1406,13 @@ async function applyElkLayout(
   if (signal?.aborted) throw makeAbortError();
 
   const junctionNets = localNets.filter((net) => net.junctionId);
+  // NETWORK_SIMPLEX is the default node-placement strategy and gives the
+  // tightest layouts, but its cost is super-linear in the node count.
+  // For big netlists (~100+ parts) it dominates total import time and
+  // the user is left staring at "Laying out…" for many seconds. Switch
+  // to BRANDES_KOEPF, which still produces clean orthogonal layouts but
+  // is markedly faster on large graphs.
+  const useFastPlacement = components.length > 80;
   const graph: ElkNode = {
     id: "import-root",
     layoutOptions: {
@@ -1415,6 +1422,9 @@ async function applyElkLayout(
       "elk.spacing.nodeNode": "64",
       "elk.layered.spacing.nodeNodeBetweenLayers": "108",
       "elk.layered.spacing.edgeNodeBetweenLayers": "48",
+      "elk.layered.nodePlacement.strategy": useFastPlacement
+        ? "BRANDES_KOEPF"
+        : "NETWORK_SIMPLEX",
     },
     children: [
       ...components.map(componentToElkNode),
@@ -1609,6 +1619,12 @@ function addWireRoute(
     components: obstacles,
     wires,
     ignoreComponentIds: new Set(allowedIntersections.map((component) => component.id)),
+    // Skip the grid (Dijkstra) fallback router during netlist import —
+    // it can take many seconds per net on big circuits and blocks the
+    // main thread between abort checks. Orthogonal candidate routes are
+    // good enough for auto-imported wiring; the user can Auto-format
+    // later if they want the obstacle-aware version.
+    skipGridRouter: true,
   });
   if (points.length >= 2) wires.push({ id: makeId("w"), points });
 }
