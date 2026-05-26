@@ -808,11 +808,16 @@ export function Editor() {
   useEffect(() => {
     const sidebar = () => setPagesCollapsed((c) => !c);
     const inspector = () => setInspectorCollapsed((c) => !c);
+    const share = () => {
+      void copyShareLink();
+    };
     window.addEventListener("spicesim:toggle-sidebar", sidebar);
     window.addEventListener("spicesim:toggle-inspector", inspector);
+    window.addEventListener("spicesim:share", share);
     return () => {
       window.removeEventListener("spicesim:toggle-sidebar", sidebar);
       window.removeEventListener("spicesim:toggle-inspector", inspector);
+      window.removeEventListener("spicesim:share", share);
     };
   }, []);
   useEffect(() => {

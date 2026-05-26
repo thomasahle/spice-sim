@@ -125,6 +125,9 @@ export default function App() {
   function toggleInspector() {
     window.dispatchEvent(new CustomEvent("spicesim:toggle-inspector"));
   }
+  function shareCircuit() {
+    window.dispatchEvent(new CustomEvent("spicesim:share"));
+  }
 
   const stars = useGithubStars();
 
@@ -187,6 +190,33 @@ export default function App() {
             <span className="app-header-name">Spice Sim</span>
           </a>
           <div className="app-header-spacer" />
+          <button
+            type="button"
+            className="app-header-share"
+            onClick={shareCircuit}
+            title="Copy a shareable circuit URL"
+            aria-label="Share circuit"
+          >
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.6}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+              width={14}
+              height={14}
+              className="app-header-share-icon"
+            >
+              <circle cx="12" cy="3.5" r="1.8" />
+              <circle cx="4" cy="8" r="1.8" />
+              <circle cx="12" cy="12.5" r="1.8" />
+              <line x1="5.6" y1="7" x2="10.4" y2="4.4" />
+              <line x1="5.6" y1="9" x2="10.4" y2="11.6" />
+            </svg>
+            <span className="app-header-share-label">Share</span>
+          </button>
           <a
             className="app-header-stars"
             href={`https://github.com/${REPO_SLUG}`}
