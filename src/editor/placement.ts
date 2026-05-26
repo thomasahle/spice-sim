@@ -932,13 +932,17 @@ function orthogonalRouteCandidates(
   context: WireRoutingContext,
 ): [number, number][][] {
   const candidates: [number, number][][] = [];
+  // Dedup via a key set instead of an O(N) `candidates.some(...)` scan that
+  // re-stringifies every existing candidate on every add. With many
+  // obstacles per net this was O(N²) per net and dominated the per-net
+  // routing cost (~500 ms on the user's 76-component import).
+  const seen = new Set<string>();
   const add = (points: [number, number][]) => {
     const compacted = compactWirePoints(points.map(normalizeTuple));
     if (compacted.length < 2) return;
     const key = compacted.map((p) => `${p[0]},${p[1]}`).join("|");
-    if (candidates.some((candidate) => candidate.map((p) => `${p[0]},${p[1]}`).join("|") === key)) {
-      return;
-    }
+    if (seen.has(key)) return;
+    seen.add(key);
     candidates.push(compacted);
   };
 
