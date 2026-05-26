@@ -1205,6 +1205,8 @@ function gridSegmentWirePenalty(
   return penalty;
 }
 
+const ROUTE_PIN_ESCAPE = 0.001;
+
 function obstacleRects(
   context: WireRoutingContext,
   from: { x: number; y: number },
@@ -1212,12 +1214,28 @@ function obstacleRects(
 ): Rect[] {
   const rects: Rect[] = [];
   for (const component of context.components ?? []) {
-    if (context.ignoreComponentIds?.has(component.id)) continue;
-    const rect = componentVisualBoundsFor(component, ROUTE_COMPONENT_PAD);
-    if (pointInRouteRect(from, rect) || pointInRouteRect(to, rect)) continue;
+    const body = componentVisualBoundsFor(component, 0);
+    // Endpoint *strictly* inside the body (pin buried deep, e.g. inline
+    // parts) — there's no way to route without entering, so drop the
+    // obstacle entirely.
+    if (pointStrictlyInside(from, body) || pointStrictlyInside(to, body)) continue;
+    // Endpoint sitting on the body edge (V/I/transistor terminals) — the
+    // pin would lie inside a padded obstacle, blocking every route that
+    // starts there. Use an infinitesimally-shrunken body as the obstacle
+    // so the pin is just outside, but routes that try to cross the body
+    // interior still get penalised.
+    const onEdge =
+      pointInRouteRect(from, body) || pointInRouteRect(to, body);
+    const rect = onEdge
+      ? componentVisualBoundsFor(component, -ROUTE_PIN_ESCAPE)
+      : componentVisualBoundsFor(component, ROUTE_COMPONENT_PAD);
     rects.push(rect);
   }
   return rects;
+}
+
+function pointStrictlyInside(point: { x: number; y: number }, rect: Rect): boolean {
+  return point.x > rect.x1 && point.x < rect.x2 && point.y > rect.y1 && point.y < rect.y2;
 }
 
 function routeLength(points: [number, number][]): number {
