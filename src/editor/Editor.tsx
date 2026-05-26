@@ -7896,8 +7896,14 @@ function ImportNetlistModal({
     abortRef.current?.abort();
   }
 
-  const showFallback = busy && elapsed >= 2;
   const partCount = useMemo(() => countLikelyParts(text), [text]);
+  // Show the "use label-only layout" escape hatch as soon as the user
+  // can see ELK is going to take a while. For small netlists, wait 2 s
+  // (avoids flashing the button on quick imports). For large netlists
+  // (>80 parts) surface it immediately — the user already saw the
+  // "large netlists can take a few seconds" warning before hitting
+  // Import, and shouldn't have to wait another two before getting out.
+  const showFallback = busy && (elapsed >= 2 || partCount > 80);
   const sizeHint = partCount
     ? `~${partCount} component${partCount === 1 ? "" : "s"} detected`
     : null;
