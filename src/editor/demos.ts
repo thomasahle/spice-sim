@@ -225,7 +225,10 @@ export const DEMOS: Demo[] = [
       ],
       probes: [],
       directives: ".model NMOS_DEF NMOS (LEVEL=1 VTO=1 KP=20u)\n",
-      analysis: { kind: "dc", src: "vgs", start: "0", stop: "3", step: "0.05" },
+      // Sources are renamed sequentially (V1, V2, …) at netlist
+      // generation, so the sweep references the first V source by its
+      // generated name. vgs comes first in `components`, so it is V1.
+      analysis: { kind: "dc", src: "V1", start: "0", stop: "3", step: "0.05" },
     }),
   },
   {
