@@ -152,7 +152,7 @@ import {
 } from "./measurementUnits";
 import { layoutProbeScopes, probeScopeLabelBounds } from "./scopeLayout";
 import { DEMOS } from "./demos";
-import { exportCsv, exportNetlist, exportSvg, onMenuEvent, openDoc, openNetlist, saveDoc } from "../sim/files";
+import { exportCsv, exportNetlist, exportSvg, onMenuEvent, openDoc, saveDoc } from "../sim/files";
 import { applyWheelPan } from "./panMath";
 import { deletionStatus, selectionSummary } from "./editorStatus";
 import { sharedDocFromHash, shareUrlForDoc } from "./shareUrl";
@@ -743,6 +743,7 @@ export function Editor() {
     }
   });
   const [netlistOpen, setNetlistOpen] = useState(false);
+  const [importNetlistOpen, setImportNetlistOpen] = useState(false);
   const [engineOk, setEngineOk] = useState<boolean | null>(null);
   const [activeToolGroupId, setActiveToolGroupId] = useState<string | null>(null);
   const [activeToolGroupTop, setActiveToolGroupTop] = useState(0);
@@ -1269,6 +1270,23 @@ export function Editor() {
     setDoc(updater(docRef.current));
     invalidateSimulationState();
   }
+  async function importNetlistFromText(text: string): Promise<string[]> {
+    if (!confirmDiscardIfDirty()) return [];
+    const { importNetlist } = await loadNetlistImportModule();
+    const imported = await importNetlist(text);
+    commit(() => normalizeDoc(imported.doc));
+    setFilePath(null);
+    setDiskDirty(true);
+    resetInteractionState();
+    clearSimulationState();
+    setShowStartupEmptyCard(false);
+    setWaveformVisible(false);
+    setStatus(
+      `Imported pasted netlist${imported.warnings.length ? ` (${imported.warnings.length} warnings)` : ""}`,
+    );
+    window.setTimeout(fitToContent, 0);
+    return imported.warnings;
+  }
   function undo() {
     const p = pastRef.current;
     if (p.length === 0) return;
@@ -1473,22 +1491,10 @@ export function Editor() {
         break;
       }
       case "file:import_netlist": {
-        if (!confirmDiscardIfDirty()) return;
-        const r = await openNetlist();
-        if (!r) return;
-        const { importNetlist } = await loadNetlistImportModule();
-        const imported = await importNetlist(r.text);
-        commit(() => normalizeDoc(imported.doc));
-        setFilePath(null);
-        setDiskDirty(true);
-        resetInteractionState();
-        clearSimulationState();
-        setShowStartupEmptyCard(false);
-        setWaveformVisible(false);
-        setStatus(
-          `Imported netlist ${r.path}${imported.warnings.length ? ` (${imported.warnings.length} warnings)` : ""}`,
-        );
-        window.setTimeout(fitToContent, 0);
+        // Paste-to-import: the file-open path is already covered by the
+        // dedicated "Open" command, so this menu now surfaces a modal
+        // with a textarea instead of a second file picker.
+        setImportNetlistOpen(true);
         break;
       }
       case "file:save": {
@@ -7507,6 +7513,16 @@ export function Editor() {
           onClose={() => setNetlistOpen(false)}
         />
       )}
+      {importNetlistOpen && (
+        <ImportNetlistModal
+          onClose={() => setImportNetlistOpen(false)}
+          onImport={async (text) => {
+            const warnings = await importNetlistFromText(text);
+            setImportNetlistOpen(false);
+            return warnings;
+          }}
+        />
+      )}
     </div>
     <StatusBar
       engineOk={engineOk}
@@ -7716,6 +7732,105 @@ function NetlistModal({
           </button>
           <button className="run-btn" onClick={onClose}>
             Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ImportNetlistModal({
+  onClose,
+  onImport,
+}: {
+  onClose: () => void;
+  onImport: (text: string) => Promise<string[]>;
+}) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const prevFocusRef = useRef<HTMLElement | null>(null);
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    prevFocusRef.current = document.activeElement as HTMLElement | null;
+    textAreaRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      } else if (e.key === "Tab") {
+        trapModalTab(e, cardRef.current);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      prevFocusRef.current?.focus?.();
+    };
+  }, [onClose]);
+  async function doImport() {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      setError("Paste a SPICE netlist first.");
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      await onImport(trimmed);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="modal-scrim" onMouseDown={onClose} role="presentation">
+      <div
+        ref={cardRef}
+        className="modal-card netlist-modal"
+        onMouseDown={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Import netlist"
+      >
+        <div className="modal-header">
+          <div className="modal-title">Import netlist</div>
+          <button className="icon-btn" onClick={onClose} title="Close" aria-label="Close dialog">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+              <line x1={3.5} y1={3.5} x2={10.5} y2={10.5} />
+              <line x1={10.5} y1={3.5} x2={3.5} y2={10.5} />
+            </svg>
+          </button>
+        </div>
+        <p style={{ margin: "0 0 8px", color: "var(--ink-muted)", fontSize: 12 }}>
+          Paste a SPICE-style netlist. It will replace the current schematic
+          (use <strong>Open</strong> instead to import from a file on disk).
+        </p>
+        <textarea
+          ref={textAreaRef}
+          className="value-input netlist-pre"
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            if (error) setError(null);
+          }}
+          placeholder={"V1 in 0 DC 5\nR1 in out 1k\nC1 out 0 1uF\n.tran 10u 10m\n.end"}
+          spellCheck={false}
+          style={{ minHeight: 220, fontFamily: "var(--mono)", fontSize: 12, resize: "vertical" }}
+          disabled={busy}
+        />
+        {error && (
+          <div className="form-warn" style={{ marginTop: 8 }}>
+            {error}
+          </div>
+        )}
+        <div className="modal-actions">
+          <button onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="run-btn" onClick={doImport} disabled={busy || !text.trim()}>
+            {busy ? "Importing…" : "Import"}
           </button>
         </div>
       </div>
