@@ -236,8 +236,12 @@ export const DEMOS: Demo[] = [
       components: [
         { id: "v1", kind: "V", x: -8, y: 0, rotation: 0, value: "AC 1" },
         { id: "r1", kind: "R", x: -3, y: -3, rotation: 0, value: "100" },
-        { id: "c1", kind: "C", x: 3, y: -3, rotation: 0, value: "1u" },
-        { id: "l1", kind: "L", x: 8, y: 0, rotation: 90, value: "10m" },
+        // C horizontal (rotation 90) so its pins land on (1, -3) / (5, -3),
+        // matching the series-resonant wire chain. L vertical (rotation 0)
+        // so its pins land on (8, -2) / (8, 2), connecting the chain's
+        // output node to ground.
+        { id: "c1", kind: "C", x: 3, y: -3, rotation: 90, value: "1u" },
+        { id: "l1", kind: "L", x: 8, y: 0, rotation: 0, value: "10m" },
         { id: "g_in", kind: "GND", x: -8, y: 4, rotation: 0, value: "" },
         { id: "g_out", kind: "GND", x: 8, y: 4, rotation: 0, value: "" },
         { id: "lbl_out", kind: "LABEL", x: 8, y: -3, rotation: 0, value: "out" },
