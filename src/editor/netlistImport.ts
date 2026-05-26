@@ -3,7 +3,7 @@ import type {
   ElkExtendedEdge,
   ElkNode,
   ElkPort,
-} from "elkjs/lib/elk.bundled.js";
+} from "elkjs/lib/elk-api.js";
 import {
   type AnalysisSpec,
   type CircuitComponent,
@@ -719,19 +719,53 @@ const ELK_SCALE = 48;
 
 let elkPromise: Promise<ELK> | null = null;
 
+let elkWorker: Worker | null = null;
+
+const ELK_DEFAULT_LAYOUT_OPTIONS = {
+  "elk.algorithm": "layered",
+  "elk.direction": "RIGHT",
+  "elk.edgeRouting": "ORTHOGONAL",
+  "elk.spacing.nodeNode": "64",
+  "elk.layered.spacing.nodeNodeBetweenLayers": "96",
+  "elk.layered.spacing.edgeNodeBetweenLayers": "48",
+  "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+} as const;
+
 function getElk(): Promise<ELK> {
-  elkPromise ??= import("elkjs/lib/elk.bundled.js").then(({ default: ElkConstructor }) => new ElkConstructor({
-    defaultLayoutOptions: {
-      "elk.algorithm": "layered",
-      "elk.direction": "RIGHT",
-      "elk.edgeRouting": "ORTHOGONAL",
-      "elk.spacing.nodeNode": "64",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "96",
-      "elk.layered.spacing.edgeNodeBetweenLayers": "48",
-      "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
-    },
-  }));
+  if (elkPromise) return elkPromise;
+  // Browsers: worker-backed elk-api so layout runs off the main thread.
+  // Without this the import-progress spinner can't repaint and the
+  // user has no way to click "abort" while a multi-second layout runs.
+  // Node (unit-test runner): no global Worker, fall back to the bundled
+  // in-process variant so the layout tests still execute.
+  if (typeof Worker !== "undefined") {
+    elkPromise = import("elkjs/lib/elk-api.js").then(({ default: ElkConstructor }) => new ElkConstructor({
+      workerFactory: () => {
+        const w = new Worker(
+          new URL("elkjs/lib/elk-worker.min.js", import.meta.url),
+          { type: "classic" },
+        );
+        elkWorker = w;
+        return w;
+      },
+      defaultLayoutOptions: { ...ELK_DEFAULT_LAYOUT_OPTIONS },
+    }));
+  } else {
+    elkPromise = import("elkjs/lib/elk.bundled.js").then(({ default: ElkConstructor }) => new ElkConstructor({
+      defaultLayoutOptions: { ...ELK_DEFAULT_LAYOUT_OPTIONS },
+    }));
+  }
   return elkPromise;
+}
+
+/** Force-terminate the elk worker (called when the user aborts a layout)
+ *  and clear our cached ELK instance so the next call spins up a fresh
+ *  worker. Without this the aborted layout keeps running and the next
+ *  layout request queues behind it. */
+function terminateElkWorker(): void {
+  elkWorker?.terminate();
+  elkWorker = null;
+  elkPromise = null;
 }
 
 async function layoutImportedPage(
@@ -1253,17 +1287,19 @@ async function applyElkLayout(
 
   const elk = await getElk();
   // ELK has no native cancellation, so race the layout against the abort
-  // signal. If aborted, ELK keeps running in the background (one-off
-  // wasted CPU on import), but the caller falls back to label-only.
+  // signal. If aborted, tear down the worker so its queued layout isn't
+  // still hogging a CPU after the user has fallen back to label-only —
+  // the next import call will spin up a fresh worker via getElk().
   const laidOut = signal
     ? await Promise.race([
         elk.layout(graph),
         new Promise<never>((_, reject) => {
-          if (signal.aborted) reject(makeAbortError());
-          else
-            signal.addEventListener("abort", () => reject(makeAbortError()), {
-              once: true,
-            });
+          const onAbort = () => {
+            terminateElkWorker();
+            reject(makeAbortError());
+          };
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
         }),
       ])
     : await elk.layout(graph);
