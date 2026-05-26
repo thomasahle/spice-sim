@@ -2,8 +2,8 @@
 // <g> applies a `scale(cellPx)` so the editor controls grid pitch.
 
 import type { ComponentKind } from "./model";
-import { compactInlineMathText, estimateInlineMathTextWidth } from "./mathText.ts";
-import { inlineMathTspans, SvgInlineMathText } from "./mathTextSvg";
+import { estimateInlineMathTextWidth } from "./mathText.ts";
+import { SvgInlineMathText } from "./mathTextSvg";
 import { subxPinLabelMaxWidth } from "./subxLayout.ts";
 
 interface Props {
@@ -18,14 +18,19 @@ interface Props {
   subxLabel?: string;
   /** SUBX-only: ordered public pin labels resolved from the referenced schematic. */
   subxPinLabels?: string[];
+  /** SUBX-only: one side per pin: L, R, T, or B. */
+  subxPinSides?: string[] | null;
 }
 
 const SW = 0.12; // line width in cell units
 
-export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = false, mirrored = false, subxPins, subxLabel, subxPinLabels }: Props) {
+export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = false, mirrored = false, subxPins, subxLabel, subxPinLabels, subxPinSides }: Props) {
   const stroke = selected ? "var(--accent)" : "var(--ink)";
   const lead = palette ? 1.45 : 2;
-  const sourceRadius = palette ? 1.08 : 0.9;
+  // Larger symbols on the canvas: bodies extend close to the pins so the
+  // visible "tail" between body and wire is short. Palette icons keep
+  // their smaller proportions so they sit nicely in the toolbar slots.
+  const sourceRadius = palette ? 1.08 : 1.5;
   const passiveLead = palette ? 1.55 : 2;
   const transistorLead = palette ? 1.55 : 2;
   const common = {
@@ -40,27 +45,30 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
     transform: mirrored ? "scale(-1 1)" : undefined,
   };
   switch (kind) {
-    case "R":
+    case "R": {
+      const rBody = palette ? 1 : 1.5;
+      const step = rBody / 6;
       return (
         <g {...commonWithTransform}>
-          <line x1={-passiveLead} y1={0} x2={-1} y2={0} />
+          <line x1={-passiveLead} y1={0} x2={-rBody} y2={0} />
           <polyline
             points={[
-              [-1, 0],
-              [-0.83, -0.45],
-              [-0.5, 0.45],
-              [-0.17, -0.45],
-              [0.17, 0.45],
-              [0.5, -0.45],
-              [0.83, 0.45],
-              [1, 0],
+              [-rBody, 0],
+              [-rBody + step, -0.45],
+              [-rBody + 3 * step, 0.45],
+              [-rBody + 5 * step, -0.45],
+              [-rBody + 7 * step, 0.45],
+              [-rBody + 9 * step, -0.45],
+              [-rBody + 11 * step, 0.45],
+              [rBody, 0],
             ]
               .map((p) => p.join(","))
               .join(" ")}
           />
-          <line x1={1} y1={0} x2={passiveLead} y2={0} />
+          <line x1={rBody} y1={0} x2={passiveLead} y2={0} />
         </g>
       );
+    }
     case "V":
       return (
         <g {...commonWithTransform}>
@@ -96,15 +104,19 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
           <polyline points="-0.22,0.15 0,0.5 0.22,0.15" />
         </g>
       );
-    case "C":
+    case "C": {
+      // Plates pushed further apart on the canvas so the tail between
+      // plate and pin is short while still reading as a capacitor.
+      const plate = palette ? 0.35 : 0.55;
       return (
         <g {...commonWithTransform}>
-          <line x1={0} y1={-passiveLead} x2={0} y2={-0.35} />
-          <line x1={-0.9} y1={-0.35} x2={0.9} y2={-0.35} />
-          <line x1={-0.9} y1={0.35} x2={0.9} y2={0.35} />
-          <line x1={0} y1={0.35} x2={0} y2={passiveLead} />
+          <line x1={0} y1={-passiveLead} x2={0} y2={-plate} />
+          <line x1={-0.9} y1={-plate} x2={0.9} y2={-plate} />
+          <line x1={-0.9} y1={plate} x2={0.9} y2={plate} />
+          <line x1={0} y1={plate} x2={0} y2={passiveLead} />
         </g>
       );
+    }
     case "L":
       return (
         <g {...commonWithTransform}>
@@ -232,6 +244,7 @@ export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = fal
           ]}
           label={subxLabel}
           pinLabels={subxPinLabels}
+          pinSides={subxPinSides}
           selected={selected}
         />
       );
@@ -288,23 +301,30 @@ export function SubxGlyph({
   pins,
   label,
   pinLabels,
+  pinSides,
   selected,
   strokeWidth = SW,
 }: {
   pins: { x: number; y: number }[];
   label?: string;
   pinLabels?: string[];
+  pinSides?: string[] | null;
   selected?: boolean;
   strokeWidth?: number;
 }) {
   const stroke = selected ? "var(--accent)" : "var(--ink)";
-  const pinExtent = Math.max(3, ...pins.map((p) => Math.abs(p.x)));
+  const sides = normalizedSubxPinSides(pins, pinSides);
+  const sidePins = pins.filter((_, i) => sides[i] === "L" || sides[i] === "R");
+  const topBottomPins = pins.filter((_, i) => sides[i] === "T" || sides[i] === "B");
   const labelHalfW = label ? subxLabelWidth(label) / 2 + 0.42 : 0;
-  const bodyHalfW = Math.max(1.7, pinExtent - 0.6, labelHalfW);
-  const minY = Math.min(...pins.map((p) => p.y));
-  const maxY = Math.max(...pins.map((p) => p.y));
-  const bodyY = minY - 0.6;
-  const bodyH = maxY - minY + 1.2;
+  const sideWidth = Math.max(0, ...sidePins.map((p) => Math.abs(p.x) - 0.6));
+  const topBottomWidth = Math.max(0, ...topBottomPins.map((p) => Math.abs(p.x) + 0.6));
+  const bodyHalfW = Math.max(1.7, sideWidth, topBottomWidth, labelHalfW);
+  const sideHeight = Math.max(0, ...sidePins.map((p) => Math.abs(p.y) + 0.6));
+  const topBottomHeight = Math.max(0, ...topBottomPins.map((p) => Math.abs(p.y) - 0.6));
+  const bodyHalfH = Math.max(0.6, sideHeight, topBottomHeight);
+  const bodyY = -bodyHalfH;
+  const bodyH = bodyHalfH * 2;
   return (
     <g>
       <rect
@@ -320,41 +340,52 @@ export function SubxGlyph({
         strokeWidth={strokeWidth}
       />
       {/* Short leads from each pin into the body. */}
-      {pins.map((p, i) => (
-        <line
-          key={i}
-          x1={p.x}
-          y1={p.y}
-          x2={p.x < 0 ? -bodyHalfW : bodyHalfW}
-          y2={p.y}
-          stroke={stroke}
-          strokeWidth={strokeWidth}
-        />
-      ))}
+      {pins.map((p, i) => {
+        const end = subxLeadEndpoint(p, sides[i], bodyHalfW, bodyHalfH);
+        return (
+          <line
+            key={i}
+            x1={p.x}
+            y1={p.y}
+            x2={end.x}
+            y2={end.y}
+            stroke={stroke}
+            strokeWidth={strokeWidth}
+          />
+        );
+      })}
       {pinLabels?.map((pinLabel, i) => {
         const p = pins[i];
         if (!p || !pinLabel.trim()) return null;
-        const isLeft = p.x < 0;
+        const side = sides[i];
         const fontSize = 0.32;
-        const maxLabelWidth = subxPinLabelMaxWidth(bodyHalfW, fontSize);
-        const atoms = compactInlineMathText(pinLabel.trim(), maxLabelWidth);
+        const maxLabelWidth =
+          side === "T" || side === "B"
+            ? Math.max(0.8, subxHorizontalPinLabelWidth(sides, side, bodyHalfW))
+            : subxPinLabelMaxWidth(bodyHalfW, fontSize);
+        const labelPosition = subxPinLabelPosition(p, side, bodyHalfW, bodyHalfH);
         return (
-          <text
+          <g
             key={`label-${i}`}
-            x={isLeft ? -bodyHalfW + 0.28 : bodyHalfW - 0.28}
-            y={p.y + 0.11}
-            fontSize={fontSize}
-            textAnchor={isLeft ? "start" : "end"}
-            className="subx-pin-label"
-            style={{
-              fill: selected ? "var(--accent)" : "var(--ink-muted)",
-              fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-              fontWeight: 600,
-              pointerEvents: "none",
-            }}
+            className="subx-pin-label-hit"
+            data-subx-pin-label-index={i}
+            pointerEvents="all"
           >
-            {inlineMathTspans(atoms, fontSize)}
-          </text>
+            <SvgInlineMathText
+              x={labelPosition.x}
+              y={labelPosition.y}
+              fontSize={fontSize}
+              textAnchor={labelPosition.anchor}
+              className="subx-pin-label"
+              text={pinLabel.trim()}
+              maxWidth={maxLabelWidth}
+              pointerEvents="auto"
+              style={{
+                fill: selected ? "var(--accent)" : "var(--ink-muted)",
+                fontWeight: 600,
+              }}
+            />
+          </g>
         );
       })}
       {label && (
@@ -364,6 +395,8 @@ export function SubxGlyph({
           fontSize={0.6}
           text={label}
           textAnchor="middle"
+          className="subx-body-label"
+          pointerEvents="auto"
           style={{
             fill: stroke,
             fontFamily: "ui-monospace, SF Mono, Menlo, monospace",
@@ -373,6 +406,43 @@ export function SubxGlyph({
       )}
     </g>
   );
+}
+
+function normalizedSubxPinSides(pins: { x: number; y: number }[], pinSides: string[] | null | undefined): string[] {
+  if (pinSides?.length === pins.length && pinSides.every((side) => /^[LRTB]$/.test(side))) {
+    return pinSides;
+  }
+  return pins.map((pin) => (pin.x < 0 ? "L" : "R"));
+}
+
+function subxLeadEndpoint(
+  pin: { x: number; y: number },
+  side: string,
+  bodyHalfW: number,
+  bodyHalfH: number,
+): { x: number; y: number } {
+  if (side === "T") return { x: pin.x, y: -bodyHalfH };
+  if (side === "B") return { x: pin.x, y: bodyHalfH };
+  if (side === "L") return { x: -bodyHalfW, y: pin.y };
+  return { x: bodyHalfW, y: pin.y };
+}
+
+function subxPinLabelPosition(
+  pin: { x: number; y: number },
+  side: string,
+  bodyHalfW: number,
+  bodyHalfH: number,
+): { x: number; y: number; anchor: "start" | "middle" | "end" } {
+  if (side === "T") return { x: pin.x, y: -bodyHalfH + 0.42, anchor: "middle" };
+  if (side === "B") return { x: pin.x, y: bodyHalfH - 0.18, anchor: "middle" };
+  if (side === "L") return { x: -bodyHalfW + 0.28, y: pin.y + 0.11, anchor: "start" };
+  return { x: bodyHalfW - 0.28, y: pin.y + 0.11, anchor: "end" };
+}
+
+function subxHorizontalPinLabelWidth(sides: string[], side: string, bodyHalfW: number): number {
+  const count = sides.filter((candidate) => candidate === side).length;
+  if (count <= 1) return bodyHalfW * 2 - 0.6;
+  return (bodyHalfW * 2 - 0.6) / count;
 }
 
 // Compact glyph for the palette (no rotation, small viewBox).

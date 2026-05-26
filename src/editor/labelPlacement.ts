@@ -29,6 +29,7 @@ export interface NetLabelLayout {
 const NET_LABEL_STEM = 0.42;
 const NET_LABEL_LONG_STEM = 1.35;
 const NET_LABEL_CHIP_H = 0.88;
+const NET_LABEL_SCRIPT_CHIP_H = 1.6;
 const NET_LABEL_TEXT_BASELINE = 0.67;
 
 export function valueLabelOffset(
@@ -170,12 +171,12 @@ function labelCandidates(c: CircuitComponent): LabelOffset[] {
           { x: 0, y: -1.35, anchor: "middle" },
         ]
       : [
-          { x: 2.15, y: 0.25, anchor: "start" },
-          { x: -2.15, y: 0.25, anchor: "end" },
-          { x: 2.15, y: 1.15, anchor: "start" },
-          { x: -2.15, y: 1.15, anchor: "end" },
-          { x: 2.15, y: -1.15, anchor: "start" },
-          { x: -2.15, y: -1.15, anchor: "end" },
+          { x: 1.75, y: 0.25, anchor: "start" },
+          { x: -1.75, y: 0.25, anchor: "end" },
+          { x: 1.75, y: 1.15, anchor: "start" },
+          { x: -1.75, y: 1.15, anchor: "end" },
+          { x: 1.75, y: -1.15, anchor: "start" },
+          { x: -1.75, y: -1.15, anchor: "end" },
           { x: 2.55, y: 0.95, anchor: "start" },
           { x: -2.55, y: 0.95, anchor: "end" },
           { x: 2.55, y: -0.9, anchor: "start" },
@@ -277,7 +278,7 @@ function selfOverlapWeight(component: CircuitComponent): number {
 
 function netLabelCandidates(c: CircuitComponent, text: string): NetLabelLayout[] {
   const chipW = netLabelWidth(text);
-  const chipH = NET_LABEL_CHIP_H;
+  const chipH = netLabelHeight(text);
   const y = c.y - chipH / 2;
   const topY = c.y - NET_LABEL_STEM - chipH;
   const bottomY = c.y + NET_LABEL_STEM;
@@ -326,6 +327,10 @@ function makeNetLabelLayout(
 
 function netLabelWidth(text: string): number {
   return Math.max(1.55, estimateInlineMathTextWidth(text) * 0.6 + 0.72);
+}
+
+function netLabelHeight(text: string): number {
+  return /(?:^|[^\\])[_^]/.test(text) ? NET_LABEL_SCRIPT_CHIP_H : NET_LABEL_CHIP_H;
 }
 
 function netLabelOverlapScore(

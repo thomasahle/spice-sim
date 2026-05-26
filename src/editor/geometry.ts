@@ -1,5 +1,5 @@
 import { getPinLayout, type CircuitComponent, type ComponentKind, type Rotation } from "./model.ts";
-import { estimateInlineMathTextWidth } from "./mathText.ts";
+import { displayMathTextLines, estimateInlineMathTextWidth } from "./mathText.ts";
 
 export interface Rect {
   x1: number;
@@ -246,7 +246,7 @@ function componentVisualBounds(kind: ComponentKind): Bounds {
     case "V":
     case "B":
     case "I":
-      return { x1: -0.98, y1: -2, x2: 0.98, y2: 2 };
+      return { x1: -1.55, y1: -2, x2: 1.55, y2: 2 };
     case "C":
       return { x1: -1.02, y1: -2, x2: 1.02, y2: 2 };
     case "L":
@@ -278,19 +278,73 @@ function componentVisualBounds(kind: ComponentKind): Bounds {
 export function noteTextLines(value: string): string[] {
   const text = value.trimEnd() || "Note";
   const wrapped: string[] = [];
-  for (const raw of text.split(/\r?\n/)) {
+  const rawLines = text.split(/\r?\n/);
+  for (let lineIndex = 0; lineIndex < rawLines.length; lineIndex += 1) {
+    const raw = rawLines[lineIndex];
     const line = raw.trimEnd();
     if (!line) {
       wrapped.push("");
       continue;
     }
-    if (lineHasMathEnvironment(line)) {
-      wrapped.push(line);
+    const environmentEnd = mathEnvironmentEndToken(line);
+    if (environmentEnd) {
+      let environmentText = line;
+      while (!environmentText.includes(environmentEnd) && lineIndex + 1 < rawLines.length) {
+        lineIndex += 1;
+        environmentText += ` ${rawLines[lineIndex].trimEnd()}`;
+      }
+      if (environmentText.includes(environmentEnd)) {
+        const environmentRows = displayMathTextLines(environmentText);
+        wrapped.push(...environmentRows);
+        wrapped.push("");
+      } else {
+        wrapped.push(...wrapNoteLine(line, NOTE_WRAP_RENDERED_WIDTH));
+      }
       continue;
     }
     wrapped.push(...wrapNoteLine(line, NOTE_WRAP_RENDERED_WIDTH));
   }
   return wrapped.slice(0, 24);
+}
+
+export function noteRenderLines(value: string): string[] {
+  return noteRenderItems(value).map((item) => item.text);
+}
+
+export interface NoteRenderItem {
+  text: string;
+  row: number;
+}
+
+export function noteRenderItems(value: string): NoteRenderItem[] {
+  const text = value.trimEnd() || "Note";
+  const items: NoteRenderItem[] = [];
+  const rawLines = text.split(/\r?\n/);
+  let row = 0;
+  for (let lineIndex = 0; lineIndex < rawLines.length; lineIndex += 1) {
+    const line = rawLines[lineIndex].trimEnd();
+    if (!line) {
+      items.push({ text: "", row });
+      row += 1;
+      continue;
+    }
+    const environmentEnd = mathEnvironmentEndToken(line);
+    if (environmentEnd) {
+      let environmentText = line;
+      while (!environmentText.includes(environmentEnd) && lineIndex + 1 < rawLines.length) {
+        lineIndex += 1;
+        environmentText += `\n${rawLines[lineIndex].trimEnd()}`;
+      }
+      items.push({ text: environmentText, row });
+      row += Math.max(1.65, displayMathTextLines(environmentText).length * 1.2 + 0.45);
+      continue;
+    }
+    for (const wrapped of wrapNoteLine(line, NOTE_WRAP_RENDERED_WIDTH)) {
+      items.push({ text: wrapped, row });
+      row += 1;
+    }
+  }
+  return items.filter((item) => item.row < 24);
 }
 
 export function noteWidth(lines: string[]): number {
@@ -299,7 +353,7 @@ export function noteWidth(lines: string[]): number {
 }
 
 export function noteHeight(lines: string[]): number {
-  return Math.max(1.55, lines.length * 0.45 + 0.85);
+  return Math.max(1.55, lines.length * NOTE_RENDER_ROW_STEP + 0.95);
 }
 
 export function noteComponentWidth(c: CircuitComponent, lines = noteTextLines(c.value)): number {
@@ -313,6 +367,7 @@ export function noteComponentHeight(c: CircuitComponent, lines = noteTextLines(c
 }
 
 const NOTE_WRAP_RENDERED_WIDTH = 12.8;
+export const NOTE_RENDER_ROW_STEP = 0.88;
 
 function wrapNoteLine(line: string, maxRenderedWidth: number): string[] {
   if (estimateInlineMathTextWidth(line) <= maxRenderedWidth) return [line];
@@ -335,8 +390,9 @@ function wrapNoteLine(line: string, maxRenderedWidth: number): string[] {
   return out.flatMap((part) => hardWrapNotePart(part, maxRenderedWidth));
 }
 
-function lineHasMathEnvironment(line: string): boolean {
-  return /\\begin\{[A-Za-z*]+\}/.test(line) && /\\end\{[A-Za-z*]+\}/.test(line);
+function mathEnvironmentEndToken(line: string): string | null {
+  const match = line.match(/\\begin\{([A-Za-z*]+)\}/);
+  return match ? `\\end{${match[1]}}` : null;
 }
 
 function hardWrapNotePart(part: string, maxRenderedWidth: number): string[] {

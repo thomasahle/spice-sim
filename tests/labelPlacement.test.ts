@@ -37,7 +37,7 @@ test("source labels prefer side placement instead of sitting under the source", 
 
   const offset = valueLabelOffset(source, page([source]), "~1V 1kHz");
 
-  assert.deepEqual(offset, { x: 2.15, y: 0.25, anchor: "start" });
+  assert.deepEqual(offset, { x: 1.75, y: 0.25, anchor: "start" });
 });
 
 test("source labels avoid attached output wires", () => {
@@ -195,7 +195,7 @@ test("source labels stay close when nearby component overlap is only incidental"
 
   const offset = valueLabelOffset(source, schematic, "Pulse 0-5V");
 
-  assert.deepEqual(offset, { x: 2.15, y: 0.25, anchor: "start" });
+  assert.deepEqual(offset, { x: 1.75, y: 0.25, anchor: "start" });
 });
 
 test("net labels choose an open side instead of covering the connected wire", () => {
@@ -210,4 +210,14 @@ test("net labels choose an open side instead of covering the connected wire", ()
 
   assert.equal(wireIntersectsRect(schematic.wires[0].points, layout.bounds), false);
   assert.equal(rectsIntersect(layout.bounds, componentVisualBoundsFor(resistor, 0.18)), false);
+});
+
+test("net labels with TeX scripts get enough chip height for KaTeX glyphs", () => {
+  const label: CircuitComponent = { id: "lbl", kind: "LABEL", x: 0, y: 0, rotation: 0, value: "W_+" };
+  const schematic = page([label]);
+
+  const layout = netLabelLayout(label, schematic, "W_+");
+
+  assert.ok(layout.chipH > 1.1);
+  assert.equal(layout.bounds.y2 - layout.bounds.y1, layout.chipH);
 });
