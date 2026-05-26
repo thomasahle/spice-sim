@@ -150,7 +150,10 @@ export const DEMOS: Demo[] = [
     build: () => singlePageDoc({
       components: [
         { id: "v1", kind: "V", x: -8, y: 0, rotation: 0, value: "SIN(0 5 60)" },
-        { id: "d1", kind: "D", x: 0, y: -3, rotation: 0, value: "D" },
+        // rotation 270 puts the diode horizontal with the anode on the
+        // left and the cathode on the right, so the wire endpoints at
+        // (-2, -3) / (2, -3) land exactly on the diode's pins.
+        { id: "d1", kind: "D", x: 0, y: -3, rotation: 270, value: "DMOD" },
         { id: "r1", kind: "R", x: 4, y: 0, rotation: 90, value: "10k" },
         { id: "g_in", kind: "GND", x: -8, y: 4, rotation: 0, value: "" },
         { id: "g_out", kind: "GND", x: 4, y: 4, rotation: 0, value: "" },
@@ -174,7 +177,10 @@ export const DEMOS: Demo[] = [
     build: () => singlePageDoc({
       components: [
         { id: "v1", kind: "V", x: -4, y: 0, rotation: 0, value: "0" },
-        { id: "d1", kind: "D", x: 4, y: 0, rotation: 90, value: "D" },
+        // Vertical diode (rotation 0) so its pins line up with the
+        // top/bottom wires that connect anode to v1's + pin and cathode
+        // to ground.
+        { id: "d1", kind: "D", x: 4, y: 0, rotation: 0, value: "DMOD" },
         { id: "g1", kind: "GND", x: -4, y: 4, rotation: 0, value: "" },
         { id: "g2", kind: "GND", x: 4, y: 4, rotation: 0, value: "" },
         { id: "lbl_in", kind: "LABEL", x: -4, y: -3, rotation: 0, value: "in" },
@@ -206,11 +212,16 @@ export const DEMOS: Demo[] = [
         { id: "lbl_d", kind: "LABEL", x: 3, y: -3, rotation: 0, value: "d" },
       ],
       wires: [
-        { id: "w1", points: [[-8, -2], [-8, -1], [-3, -1], [-3, 0]] },
+        // vgs+ → NMOS gate at (-2, 0). Keep the (-3, -1) vertex so the
+        // attached `g` net label stays on a wire vertex.
+        { id: "w1", points: [[-8, -2], [-8, -1], [-3, -1], [-2, -1], [-2, 0]] },
         { id: "w2", points: [[-8, 2], [-8, 4]] },
-        { id: "w3", points: [[3, -2], [3, -3], [8, -3], [8, -2]] },
+        // NMOS drain at (0, -2) → vds+ at (8, -2). Detour to y=-3 so
+        // the wire passes above the drain pin and the device label.
+        { id: "w3", points: [[0, -2], [0, -3], [8, -3], [8, -2]] },
         { id: "w4", points: [[8, 2], [8, 4]] },
-        { id: "w5", points: [[3, 2], [3, 3], [0, 3], [0, 4]] },
+        // NMOS source at (0, 2) → ground.
+        { id: "w5", points: [[0, 2], [0, 4]] },
       ],
       probes: [],
       directives: ".model NMOS_DEF NMOS (LEVEL=1 VTO=1 KP=20u)\n",
