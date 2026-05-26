@@ -371,20 +371,21 @@ export function SubxGlyph({
             data-subx-pin-label-index={i}
             pointerEvents="all"
           >
-            <SvgInlineMathText
+            <text
               x={labelPosition.x}
               y={labelPosition.y}
               fontSize={fontSize}
               textAnchor={labelPosition.anchor}
+              dominantBaseline="middle"
               className="subx-pin-label"
-              text={pinLabel.trim()}
-              maxWidth={maxLabelWidth}
               pointerEvents="auto"
               style={{
                 fill: selected ? "var(--accent)" : "var(--ink-muted)",
                 fontWeight: 600,
               }}
-            />
+            >
+              {pinLabel.trim()}
+            </text>
           </g>
         );
       })}
