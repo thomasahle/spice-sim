@@ -121,7 +121,7 @@ import {
 } from "./modelPresets";
 import { isAcStimulus, sourceValueWithAcStimulus } from "./sourceValues";
 import { isIndependentSourceKind, isSimulationStimulusKind } from "./sourceKinds";
-import { simulate, engineProbe } from "../sim/api";
+import { simulate, engineProbe, resetHttpProbe } from "../sim/api";
 import type { SimResult } from "../sim/api";
 import { analysisToApi, analysisWithSweepSource, validateAnalysisSpec } from "./analysisValidation";
 import { describeAutoRunStatus } from "./autoRunStatus";
@@ -1221,7 +1221,12 @@ export function Editor() {
   engineOkRef.current = engineOk;
 
   const probeEngine = useCallback((showProbing = false) => {
-    if (showProbing) setEngineName("probing…");
+    if (showProbing) {
+      setEngineName("probing…");
+      // Explicit refresh: re-arm the HTTP bridge probe so a dev bridge that
+      // started after page load can be picked up without a reload.
+      resetHttpProbe();
+    }
     return engineProbe()
       .then((info) => {
         setEngineName(`${info.name} · ${cleanEngineVersion(info.version)}`);

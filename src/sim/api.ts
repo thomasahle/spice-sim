@@ -62,8 +62,21 @@ function isTauri(): boolean {
 // the browser can load before the Tauri HTTP bridge starts; a cached negative
 // result would make the app stay offline until reload.
 let httpAvailable = false;
+// We still want to avoid *re-fetching* `/ping` on every probe once it has
+// failed: in a browser-only deployment the bridge never exists, and each
+// failed fetch logs a console error the JS catch can't suppress. So we
+// remember that we've probed and skip further fetches until `resetHttpProbe`
+// is called (wired to the Engine panel's Refresh button), which lets a
+// late-started dev bridge reconnect on demand.
+let httpProbed = false;
 export function nextHttpProbeCache(previous: boolean, ok: boolean): boolean {
   return previous || ok;
+}
+
+/** Re-arm the HTTP probe so the next call fetches `/ping` again. Called when
+ *  the user explicitly asks to re-probe the engine (Refresh button). */
+export function resetHttpProbe(): void {
+  httpProbed = false;
 }
 
 export function engineErrorMessage(payload: unknown, fallback: string): string {
@@ -92,6 +105,10 @@ function messageFromUnknown(value: unknown): string {
 
 async function probeHttp(): Promise<boolean> {
   if (httpAvailable) return true;
+  // Already probed and the bridge wasn't there — don't re-fetch (each failed
+  // fetch to a refused port logs a browser console error). Refresh re-arms.
+  if (httpProbed) return false;
+  httpProbed = true;
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 800);
