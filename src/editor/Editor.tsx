@@ -210,6 +210,7 @@ import { useWorkspacePersistence } from "./useWorkspacePersistence";
 import { useTraceMetadata } from "./useTraceMetadata";
 import { useProbeConnectivity } from "./useProbeConnectivity";
 import { usePinAnnotations } from "./usePinAnnotations";
+import { useProbeScopes } from "./useProbeScopes";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -242,7 +243,7 @@ import { PlayBar } from "./PlayBar";
 import { MiniScope } from "./MiniScope";
 import { formatMeasurementAxisValue } from "./measurementFormatting";
 import { formatMeasurementResultValue } from "./measurementUnits";
-import { layoutProbeScopes, probeScopeLabelBounds } from "./scopeLayout";
+import { probeScopeLabelBounds } from "./scopeLayout";
 import { DEMOS } from "./demos";
 import { exportCsv, exportNetlist, exportSvg, onMenuEvent, openDoc, saveDoc } from "../sim/files";
 import { applyWheelPan } from "./panMath";
@@ -250,7 +251,6 @@ import { deletionStatus, selectionSummary } from "./editorStatus";
 import { sharedDocFromHash, shareUrlForDoc } from "./shareUrl";
 import { schematicSvgFromCanvas } from "./svgExport";
 import { findNamedTrace, findNodeTrace, latestNodeVoltages, traceNodeName } from "./simVectorLookup";
-import { inlineProbeScopeLabel, shouldRenderInlineProbeScope } from "./probeDisplay";
 import { formatSimulationErrorLog, summarizeSimulationError } from "./simulationErrors";
 import { defaultVisibleTraceNames } from "./traceVisibility";
 import { analysisXAxisLabel, axisUnitFromLabel } from "./waveformAxis";
@@ -5813,69 +5813,18 @@ export function Editor() {
     }
     return labels;
   }, [page.components, pinAnnotations.nodes.posToNode]);
-  const probeScopes = useMemo(() => {
-    const scale = simResult?.vectors.find((v) => v.is_scale)?.data ?? [];
-    const visibleScopeProbes = page.probes.filter((probe) => {
-      const node = pinAnnotations.nodes.posToNode.get(
-        `${coordKey(probe.x)},${coordKey(probe.y)}`,
-      );
-      const hasTrace = Boolean(
-        simResult && node && findNodeTrace(simResult.vectors, node, simResult.plot),
-      );
-      return shouldRenderInlineProbeScope(probe, {
-        selected: selectedIds.has(probe.id),
-        hovered: hoverId === probe.id,
-        dragging: scopeDrag?.probeId === probe.id,
-        hasTrace,
-      });
-    });
-    const scopePlacements = layoutProbeScopes(
-      { ...page, probes: visibleScopeProbes },
-      SCOPE_LAYOUT,
-    );
-    return page.probes.map((probe) => {
-      const visible = visibleScopeProbes.some((visibleProbe) => visibleProbe.id === probe.id);
-      const node = pinAnnotations.nodes.posToNode.get(
-        `${coordKey(probe.x)},${coordKey(probe.y)}`,
-      );
-      const placement = scopePlacements.get(probe.id) ?? {
-        dx: SCOPE_OFFSET_X,
-        dy: SCOPE_OFFSET_Y,
-      };
-      if (!node) {
-        return { probe, visible, node: null, label: undefined, scale: [], trace: [], placement };
-      }
-      const label = inlineProbeScopeLabel(
-        probe,
-        nodeDisplayLabels.get(node.toLowerCase()),
-      );
-      if (!simResult) return { probe, visible, node, label, scale, trace: [], placement };
-      const trace = findNodeTrace(simResult.vectors, node, simResult.plot);
-      if (!trace) return { probe, visible, node, label, scale, trace: [], placement };
-      return {
-        probe,
-        visible,
-        node,
-        label,
-        scale,
-        trace: trace.data,
-        placement,
-      };
-    });
-  }, [hoverId, nodeDisplayLabels, page, pinAnnotations.nodes.posToNode, scopeDrag, selectedIds, simResult]);
-  const probeScopeLabelIds = useMemo(
-    () =>
-      new Set(
-        probeScopes
-          .filter(({ label, node }) => Boolean(node && label?.trim()))
-          .map(({ probe }) => probe.id),
-    ),
-    [probeScopes],
-  );
-  const visibleProbeScopes = useMemo(
-    () => probeScopes.filter(({ visible }) => visible),
-    [probeScopes],
-  );
+  const { probeScopes, probeScopeLabelIds, visibleProbeScopes } = useProbeScopes({
+    page,
+    posToNode: pinAnnotations.nodes.posToNode,
+    nodeDisplayLabels,
+    hoverId,
+    selectedIds,
+    scopeDragProbeId: scopeDrag?.probeId ?? null,
+    simResult,
+    defaultDx: SCOPE_OFFSET_X,
+    defaultDy: SCOPE_OFFSET_Y,
+    scopeLayoutOptions: SCOPE_LAYOUT,
+  });
   const textEditOverlay = useMemo(() => {
     if (!textEdit) return null;
     const toPixels = (x: number, y: number, width: number, height: number) => ({
