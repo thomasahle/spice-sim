@@ -206,6 +206,7 @@ import {
   ToolIcon,
 } from "./editorChrome";
 import { EditorCanvasHUD } from "./EditorCanvasHUD";
+import { EditorCanvasNotice } from "./EditorCanvasNotice";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -7850,51 +7851,14 @@ export function Editor() {
             <span>{engineOk === false ? "Unavailable" : runningVisible ? "Running…" : "Run"}</span>
           </button>
         </div>
-        {(canvasNotice || disconnectedProbeIds.size > 0 || runFloatingPins.length > 0) && (
-          <div className="canvas-issue-banner" role="status" aria-live="polite">
-            {canvasNotice && (
-              <span className="canvas-issue-item">
-                <span className="canvas-issue-label">{canvasNotice}</span>
-              </span>
-            )}
-            {(disconnectedProbeIds.size > 0 || runFloatingPins.length > 0) && (
-              <>
-                {disconnectedProbeIds.size > 0 && (
-                  <span className="canvas-issue-item">
-                    <span className="canvas-issue-label">
-                      {disconnectedProbeIds.size} probe{disconnectedProbeIds.size === 1 ? "" : "s"} not connected
-                    </span>
-                    <button
-                      type="button"
-                      className="canvas-issue-action"
-                      aria-label={`Remove ${disconnectedProbeIds.size} disconnected probe${disconnectedProbeIds.size === 1 ? "" : "s"}`}
-                      onClick={removeDisconnectedProbes}
-                    >
-                      Remove
-                    </button>
-                  </span>
-                )}
-                {runFloatingPins.length > 0 && (
-                  <span className="canvas-issue-item">
-                    <span className="canvas-issue-label">
-                      {runFloatingPins.length === 1
-                        ? `${firstFloatingPinLabel} floating`
-                        : `${runFloatingPins.length} floating pins - first: ${firstFloatingPinLabel}`}
-                    </span>
-                    <button
-                      type="button"
-                      className="canvas-issue-action"
-                      aria-label={`Show ${firstFloatingPinLabel}`}
-                      onClick={() => selectFloatingPin(runFloatingPins[0])}
-                    >
-                      Show pin
-                    </button>
-                  </span>
-                )}
-              </>
-            )}
-          </div>
-        )}
+        <EditorCanvasNotice
+          canvasNotice={canvasNotice}
+          disconnectedProbeIds={disconnectedProbeIds}
+          runFloatingPins={runFloatingPins}
+          firstFloatingPinLabel={firstFloatingPinLabel}
+          onRemoveDisconnectedProbes={removeDisconnectedProbes}
+          onSelectFloatingPin={selectFloatingPin}
+        />
         {showStartupEmptyCard && page.components.length === 0 && page.wires.length === 0 && tool === "select" && (
           <div className="empty-canvas">
             <div className="empty-canvas-card">
