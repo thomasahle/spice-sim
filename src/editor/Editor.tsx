@@ -208,6 +208,7 @@ import { WaveformSection } from "./WaveformSection";
 import { EditorToolStrip } from "./EditorToolStrip";
 import { EditorLeftSidebar } from "./EditorLeftSidebar";
 import { useWorkspacePersistence } from "./useWorkspacePersistence";
+import { useTraceMetadata } from "./useTraceMetadata";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -235,14 +236,11 @@ import {
   deleteProject,
   type Workspace,
 } from "./projects";
-import { traceAliasKey, traceDisplayName } from "./traceNames";
+import { traceDisplayName } from "./traceNames";
 import { PlayBar } from "./PlayBar";
 import { MiniScope } from "./MiniScope";
 import { formatMeasurementAxisValue } from "./measurementFormatting";
-import {
-  formatMeasurementResultValue,
-  measurementDirectivesFromText,
-} from "./measurementUnits";
+import { formatMeasurementResultValue } from "./measurementUnits";
 import { layoutProbeScopes, probeScopeLabelBounds } from "./scopeLayout";
 import { DEMOS } from "./demos";
 import { exportCsv, exportNetlist, exportSvg, onMenuEvent, openDoc, saveDoc } from "../sim/files";
@@ -250,11 +248,10 @@ import { applyWheelPan } from "./panMath";
 import { deletionStatus, selectionSummary } from "./editorStatus";
 import { sharedDocFromHash, shareUrlForDoc } from "./shareUrl";
 import { schematicSvgFromCanvas } from "./svgExport";
-import { sweepRunLabelsFromDirectives } from "./sweepRunLabels";
 import { findNamedTrace, findNodeTrace, latestNodeVoltages, traceNodeName } from "./simVectorLookup";
 import { inlineProbeScopeLabel, shouldRenderInlineProbeScope } from "./probeDisplay";
 import { formatSimulationErrorLog, summarizeSimulationError } from "./simulationErrors";
-import { defaultVisibleTraceNames, traceNamesForNodes } from "./traceVisibility";
+import { defaultVisibleTraceNames } from "./traceVisibility";
 import { analysisXAxisLabel, axisUnitFromLabel } from "./waveformAxis";
 import {
   decodeSchematicClipboard,
@@ -6097,41 +6094,14 @@ export function Editor() {
     textEdit,
     zoom,
   ]);
-  const traceAliases = useMemo(() => {
-    const aliases = new Map<string, string>();
-    for (const [node, label] of nodeDisplayLabels) {
-      aliases.set(traceAliasKey(`v(${node})`), `V(${label})`);
-      aliases.set(traceAliasKey(node), `V(${label})`);
-    }
-    for (const probe of page.probes) {
-      const label = probe.label?.trim();
-      if (!label) continue;
-      const node = pinAnnotations.nodes.posToNode.get(
-        `${coordKey(probe.x)},${coordKey(probe.y)}`,
-      );
-      if (!node) continue;
-      aliases.set(traceAliasKey(`v(${node})`), label);
-      aliases.set(traceAliasKey(node), label);
-    }
-    return aliases;
-  }, [nodeDisplayLabels, page.probes, pinAnnotations.nodes.posToNode]);
-  const userTraceNames = useMemo(() => {
-    if (!simResult) return new Set<string>();
-    const probeNodes = page.probes
-      .map((probe) => pinAnnotations.nodes.posToNode.get(`${coordKey(probe.x)},${coordKey(probe.y)}`))
-      .filter((node): node is string => !!node);
-    const labeledNodes = Array.from(nodeDisplayLabels.keys());
-    return new Set([
-      ...traceNamesForNodes(simResult.vectors, probeNodes, simResult.plot),
-      ...traceNamesForNodes(simResult.vectors, labeledNodes, simResult.plot),
-    ]);
-  }, [nodeDisplayLabels, page.probes, pinAnnotations.nodes.posToNode, simResult]);
-  const runLabels = useMemo(() => sweepRunLabelsFromDirectives(doc.directives), [doc.directives]);
+  const { traceAliases, userTraceNames, runLabels, measurementDirectives } = useTraceMetadata({
+    probes: page.probes,
+    nodeDisplayLabels,
+    posToNode: pinAnnotations.nodes.posToNode,
+    simResult,
+    directives: doc.directives,
+  });
   const measurementAxisUnit = axisUnitFromLabel(analysisXAxisLabel(doc.analysis));
-  const measurementDirectives = useMemo(
-    () => measurementDirectivesFromText(doc.directives),
-    [doc.directives],
-  );
 
   // Per-wire signed current samples at playTime (driven by ngspice
   // savecurrents output). We keep both real current and normalized current:
