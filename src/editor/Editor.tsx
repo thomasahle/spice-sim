@@ -1,7 +1,4 @@
 import {
-  Children,
-  cloneElement,
-  isValidElement,
   memo,
   useId,
   useCallback,
@@ -11,7 +8,6 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type CSSProperties,
-  type ReactElement,
 } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type {
@@ -195,12 +191,20 @@ import {
 } from "./presetLibrary";
 import {
   isActiveMultiPinKind,
-  isNeutralStatusMessage,
   isSinglePinSnappingTool,
   isTransientPlot,
   toolDescriptionFor,
   type Tool,
 } from "./toolPredicates";
+import {
+  CoordinateField,
+  formatCoord,
+  IconGlyph,
+  Row,
+  SideNavIcon,
+  StatusBar,
+  ToolIcon,
+} from "./editorChrome";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -9099,99 +9103,6 @@ export function Editor() {
   );
 }
 
-function StatusBar({
-  engineOk,
-  engineName,
-  analysisKind,
-  running,
-  status,
-  autoRunLabel,
-  autoRunTitle,
-  nNodes,
-  nComponents,
-  plot,
-  plotStale,
-  selection,
-}: {
-  engineOk: boolean | null;
-  engineName: string;
-  analysisKind: CircuitDoc["analysis"]["kind"];
-  running: boolean;
-  status: string;
-  autoRunLabel: string;
-  autoRunTitle: string;
-  nNodes: number;
-  nComponents: number;
-  plot: string | null;
-  plotStale: boolean;
-  selection: string | null;
-}) {
-  const isError = status.startsWith("✗");
-  const isStale = status.startsWith("Modified");
-  const showNeutralStatus = isNeutralStatusMessage(status);
-  const dotCls = running
-    ? "warn"
-    : engineOk === false
-      ? "err"
-      : isError
-        ? "err"
-        : isStale
-          ? "warn"
-        : engineOk === true && status.startsWith("✓")
-          ? "ok"
-          : engineOk === true
-            ? "idle"
-            : "idle";
-  return (
-    <div className="statusbar">
-      <div className="group">
-        <span className={`dot ${dotCls}`} />
-        <span>
-          {running
-            ? "Running…"
-            : engineOk === false
-              ? "Engine offline"
-              : isStale
-                ? "Rerun needed"
-                : showNeutralStatus
-                  ? status
-                : "Ready"}
-        </span>
-      </div>
-      <div className="group">
-        <span>Engine</span>
-        <code>{engineName || "probing…"}</code>
-      </div>
-      <div className="group">
-        <span>Analysis</span>
-        <code>{analysisKind.toUpperCase()}</code>
-      </div>
-      {plot && (
-        <div className="group" title={plotStale ? "Previous simulation result; rerun to update." : undefined}>
-          <span>Plot</span>
-          <code>{plotStale ? `${plot} stale` : plot}</code>
-        </div>
-      )}
-      <div className="group" title={autoRunTitle}>
-        <span>Auto</span>
-        <code>{autoRunLabel}</code>
-      </div>
-      {selection && (
-        <div className="group selection" title={`${selection} selected`}>
-          <span>Selection</span>
-          <code>{selection}</code>
-        </div>
-      )}
-      <div className="spacer" />
-      <div className="group" title={status}>
-        <span>Nodes</span>
-        <code>{nNodes}</code>
-        <span style={{ marginLeft: 12 }}>Components</span>
-        <code>{nComponents}</code>
-      </div>
-    </div>
-  );
-}
 
 
 function activeSchematicIsEmpty(doc: CircuitDoc): boolean {
@@ -9249,30 +9160,7 @@ function hasWaveform(r: { vectors: { is_scale: boolean; data: number[] }[] }): b
   return hasPlottableWaveform(r.vectors);
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="row">
-      <div className="row-label">{label}</div>
-      <div className="row-value">{labelDirectControls(children, label)}</div>
-    </div>
-  );
-}
 
-function labelDirectControls(children: React.ReactNode, label: string): React.ReactNode {
-  return Children.map(children, (child) => {
-    if (!isValidElement(child)) return child;
-    const element = child as ReactElement<Record<string, unknown>>;
-    if (
-      typeof element.type === "string" &&
-      ["input", "select", "textarea"].includes(element.type) &&
-      !element.props["aria-label"] &&
-      !element.props["aria-labelledby"]
-    ) {
-      return cloneElement(element, { "aria-label": label });
-    }
-    return child;
-  });
-}
 
 function directTextEditInitialValue(e: KeyboardEvent): string | null {
   if (e.metaKey || e.ctrlKey || e.altKey) return null;
@@ -9285,50 +9173,6 @@ function isEditableComponentValue(component: CircuitComponent): boolean {
   return isEditableCanvasComponentValue(component.kind, component.value);
 }
 
-function CoordinateField({
-  value,
-  step,
-  onCommit,
-}: {
-  value: number;
-  step: number;
-  onCommit: (value: string) => void;
-}) {
-  const formatted = formatCoord(value);
-  const [draft, setDraft] = useState(formatted);
-
-  useEffect(() => {
-    setDraft(formatted);
-  }, [formatted]);
-
-  function commit() {
-    if (draft.trim() === "" || !Number.isFinite(Number(draft))) {
-      setDraft(formatted);
-      return;
-    }
-    onCommit(draft);
-  }
-
-  function onKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter") e.currentTarget.blur();
-    if (e.key === "Escape") {
-      setDraft(formatted);
-      e.currentTarget.blur();
-    }
-  }
-
-  return (
-    <input
-      className="value-input"
-      type="number"
-      step={step}
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={onKeyDown}
-    />
-  );
-}
 
 function detectSubckts(directives: string): { name: string; pins: string[] }[] {
   const out: { name: string; pins: string[] }[] = [];
@@ -9385,9 +9229,6 @@ async function readSystemSchematicClipboard(): Promise<SchematicClipboard | null
 
 
 
-function formatCoord(v: number): string {
-  return Number.isInteger(v) ? String(v) : v.toFixed(1);
-}
 
 function NodeReadingsOverlay({
   page,
@@ -9468,147 +9309,8 @@ function NodeReadingsOverlay({
 }
 
 /** Compact line-art glyphs for the left sidebar nav rows. */
-function SideNavIcon({ kind }: { kind: "new" | "page" | "folder" }) {
-  const props = {
-    width: 16,
-    height: 16,
-    viewBox: "0 0 16 16",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 1.4,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-  };
-  switch (kind) {
-    case "new":
-      // Pencil-on-square — "new chat" style.
-      return (
-        <svg {...props}>
-          <path d="M2.5 11.5v2h2L13 5l-2-2-8.5 8.5z" />
-          <path d="M10 4l2 2" />
-        </svg>
-      );
-    case "page":
-      return (
-        <svg {...props}>
-          <path d="M3.5 1.5h6l3 3v9.5a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1z" />
-          <path d="M9.5 1.5v3h3" />
-        </svg>
-      );
-    case "folder":
-      return (
-        <svg {...props}>
-          <path d="M1.8 4.5h4l1.6 1.4h7v7.6a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1V4.5z" />
-        </svg>
-      );
-    default:
-      return null;
-  }
-}
 
 /** Minimal monochrome glyphs for the toolbar — SF Symbols-flavoured. */
-function IconGlyph({ kind }: { kind: string }) {
-  const props = {
-    width: 16,
-    height: 16,
-    viewBox: "0 0 16 16",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 1.4,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-  };
-  switch (kind) {
-    case "sidebar":
-      // Rectangle with a left-hand divider — universal "toggle sidebar" glyph.
-      return (
-        <svg {...props}>
-          <rect x="1.75" y="2.5" width="12.5" height="11" rx="1.25" />
-          <path d="M5.5 2.5v11" />
-        </svg>
-      );
-    case "new":
-      return (
-        <svg {...props}>
-          <path d="M3.5 1.5h6l3 3v9.5a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1z" />
-          <path d="M9.5 1.5v3h3" />
-          <path d="M8 8.5v3M6.5 10h3" />
-        </svg>
-      );
-    case "open":
-      return (
-        <svg {...props}>
-          <path d="M1.5 4.5h4l1.5 1.5h7v7a1 1 0 0 1-1 1h-11.5a1 1 0 0 1-1-1V4.5z" />
-        </svg>
-      );
-    case "save":
-      return (
-        <svg {...props}>
-          <path d="M2.5 2.5h9l3 3v9a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5z" />
-          <rect x="4.5" y="2.5" width="6" height="4" />
-          <rect x="4.5" y="9.5" width="7" height="5.5" />
-        </svg>
-      );
-    case "undo":
-      return (
-        <svg {...props}>
-          <path d="M3 7.5h7a3.5 3.5 0 0 1 0 7H7" />
-          <path d="M5.5 4.5L2.5 7.5l3 3" />
-        </svg>
-      );
-    case "redo":
-      return (
-        <svg {...props}>
-          <path d="M13 7.5H6a3.5 3.5 0 0 0 0 7h3" />
-          <path d="M10.5 4.5l3 3-3 3" />
-        </svg>
-      );
-    case "play":
-      return (
-        <svg {...props} fill="currentColor" stroke="none">
-          <polygon points="4,2.5 13,8 4,13.5" />
-        </svg>
-      );
-    case "settings":
-      return (
-        <svg {...props}>
-          <circle cx="8" cy="8" r="2" />
-          <path d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.5 3.5l-1.4 1.4M4.9 11.1l-1.4 1.4M12.5 12.5l-1.4-1.4M4.9 4.9L3.5 3.5" />
-        </svg>
-      );
-    case "netlist":
-      return (
-        <svg {...props}>
-          <path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7" />
-        </svg>
-      );
-    case "share":
-      return (
-        <svg {...props}>
-          <circle cx="5" cy="8" r="1.8" />
-          <circle cx="11.5" cy="4" r="1.8" />
-          <circle cx="11.5" cy="12" r="1.8" />
-          <path d="M6.6 7.1l3.3-2.1M6.6 8.9l3.3 2.1" />
-        </svg>
-      );
-    case "export":
-      return (
-        <svg {...props}>
-          <path d="M8 2.5v7" />
-          <path d="M5.5 5l2.5-2.5L10.5 5" />
-          <path d="M3 9.5v3.5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V9.5" />
-        </svg>
-      );
-    case "page":
-      return (
-        <svg {...props}>
-          <path d="M4 2.5h5l3 3v9a.5.5 0 0 1-.5.5h-7.5a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5z" />
-          <path d="M9 2.5v3h3" />
-        </svg>
-      );
-  }
-  return null;
-}
 
 function cleanEngineVersion(raw: string | undefined): string {
   if (!raw) return "?";
@@ -9632,52 +9334,3 @@ function formatVolts(v: number): string {
   return `${(v * 1e9).toFixed(2)} nV`;
 }
 
-function ToolIcon({ tool }: { tool: Tool }) {
-  const common = {
-    viewBox: "0 0 24 24",
-    width: 36,
-    height: 36,
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 1.07,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-  };
-  if (tool === "select") {
-    return (
-      <svg {...common}>
-        <path d="M6 3.5l4.6 14.4 2-5.3 5.3-2z" />
-      </svg>
-    );
-  }
-  if (tool === "wire") {
-    return (
-      <svg {...common}>
-        <circle cx={5} cy={12} r={2.4} />
-        <circle cx={19} cy={12} r={2.4} />
-        <line x1={7.4} y1={12} x2={16.6} y2={12} />
-      </svg>
-    );
-  }
-  if (tool === "probe") {
-    return (
-      <svg {...common}>
-        <circle cx={11} cy={10} r={4.2} />
-        <circle cx={11} cy={10} r={1} fill="currentColor" stroke="none" />
-        <line x1={4.5} y1={19.5} x2={8.2} y2={13.2} />
-        <path d="M16 10h4M18.3 7.5l2.2 2.5-2.2 2.5" />
-      </svg>
-    );
-  }
-  if (tool === "pan") {
-    return (
-      <svg {...common}>
-        <path d="M8.5 12.5V6.5a1.3 1.3 0 0 1 2.6 0v5" />
-        <path d="M11.1 11.5V5a1.3 1.3 0 0 1 2.6 0v6.5" />
-        <path d="M13.7 11.6V6.3a1.3 1.3 0 0 1 2.6 0v5.3" />
-        <path d="M16.3 12.4V8.7a1.3 1.3 0 0 1 2.6 0v5c0 4-2.6 6.5-6 6.5h-1.2c-2.3 0-3.6-1.1-4.9-3.1l-1.5-2.4a1.3 1.3 0 0 1 2.2-1.4l1 1.2" />
-      </svg>
-    );
-  }
-  return null;
-}
