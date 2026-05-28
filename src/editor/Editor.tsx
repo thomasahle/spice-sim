@@ -171,7 +171,6 @@ import { ImportNetlistModal, NetlistModal } from "./NetlistModals";
 import { useEditorSelection } from "./useEditorSelection";
 import {
   addWireWithJunctions,
-  buildWireJunctionDots,
   compactWirePoints,
   normalizeWireList,
   pointTouchesWirePath,
@@ -210,6 +209,7 @@ import { EditorLeftSidebar } from "./EditorLeftSidebar";
 import { useWorkspacePersistence } from "./useWorkspacePersistence";
 import { useTraceMetadata } from "./useTraceMetadata";
 import { useProbeConnectivity } from "./useProbeConnectivity";
+import { usePinAnnotations } from "./usePinAnnotations";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -5677,52 +5677,13 @@ export function Editor() {
     scopeDrag !== null ||
     noteResize !== null ||
     subxResize !== null;
-  const lastPinAnnotationsRef = useRef<ReturnType<typeof buildNetlist> | null>(null);
-  const pinAnnotations = useMemo(() => {
-    if (isDragging && lastPinAnnotationsRef.current) {
-      return lastPinAnnotationsRef.current;
-    }
-    const next = buildNetlist(doc);
-    lastPinAnnotationsRef.current = next;
-    return next;
-  }, [doc, isDragging]);
+  const { pinAnnotations, wireJunctionDots, componentValueLabelOffsets, netLabelLayoutMap } =
+    usePinAnnotations({ doc, page, isDragging, canvasValueFontSize });
   const lastSelectedProbeNode = lastSelectedProbe
     ? pinAnnotations.nodes.posToNode.get(
         `${coordKey(lastSelectedProbe.x)},${coordKey(lastSelectedProbe.y)}`,
       )
     : undefined;
-  // Same drag-gate as pinAnnotations above — these layout helpers walk every
-  // component/wire/label and produce hints (junction dots, value-label
-  // offsets, net-label placement) that don't usefully update mid-drag.
-  // Reuse the last computation while a drag is in flight.
-  const lastWireJunctionDotsRef = useRef<ReturnType<typeof buildWireJunctionDots> | null>(null);
-  const wireJunctionDots = useMemo(() => {
-    if (isDragging && lastWireJunctionDotsRef.current) return lastWireJunctionDotsRef.current;
-    const v = buildWireJunctionDots(page);
-    lastWireJunctionDotsRef.current = v;
-    return v;
-  }, [page, isDragging]);
-  const lastComponentValueLabelOffsetsRef = useRef<ReturnType<typeof valueLabelOffsets> | null>(null);
-  const componentValueLabelOffsets = useMemo(() => {
-    if (isDragging && lastComponentValueLabelOffsetsRef.current) return lastComponentValueLabelOffsetsRef.current;
-    const v = valueLabelOffsets(page, (component) => canvasValueLabel(component.kind, component.value) || null);
-    lastComponentValueLabelOffsetsRef.current = v;
-    return v;
-  }, [page, isDragging]);
-  const lastNetLabelLayoutMapRef = useRef<ReturnType<typeof netLabelLayouts> | null>(null);
-  const netLabelLayoutMap = useMemo(() => {
-    if (isDragging && lastNetLabelLayoutMapRef.current) return lastNetLabelLayoutMapRef.current;
-    const occupied: { x1: number; y1: number; x2: number; y2: number }[] = [];
-    for (const c of page.components) {
-      if (c.kind === "LABEL") continue;
-      const text = canvasValueLabel(c.kind, c.value);
-      const offset = componentValueLabelOffsets.get(c.id);
-      if (text && offset) occupied.push(valueLabelBounds(c, offset, text, canvasValueFontSize));
-    }
-    const v = netLabelLayouts(page, occupied);
-    lastNetLabelLayoutMapRef.current = v;
-    return v;
-  }, [canvasValueFontSize, componentValueLabelOffsets, page, isDragging]);
   const sweepableSources = useMemo(() => {
     const out: string[] = [];
     for (const c of page.components) {
