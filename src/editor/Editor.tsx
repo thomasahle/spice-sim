@@ -194,6 +194,14 @@ import {
   writeDefaultMosfetPresetId,
 } from "./presetLibrary";
 import {
+  isActiveMultiPinKind,
+  isNeutralStatusMessage,
+  isSinglePinSnappingTool,
+  isTransientPlot,
+  toolDescriptionFor,
+  type Tool,
+} from "./toolPredicates";
+import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
   floatingPinSummary,
@@ -325,7 +333,6 @@ function loadAutoLayoutModule() {
 const STARTER_DEMO_IDS = new Set(["divider", "rc_step", "inverting_opamp"]);
 const STARTER_DEMOS = DEMOS.filter((demo) => STARTER_DEMO_IDS.has(demo.id));
 
-type Tool = "select" | "pan" | "wire" | "probe" | ComponentKind;
 type WireGestureMode = "wire-tool" | "quick-wire";
 type CanvasClickEditTarget = {
   id: string;
@@ -9186,20 +9193,6 @@ function StatusBar({
   );
 }
 
-function isNeutralStatusMessage(status: string): boolean {
-  return (
-    status !== "" &&
-    status !== "Idle" &&
-    !status.startsWith("✓") &&
-    !status.startsWith("✗") &&
-    !status.startsWith("Modified")
-  );
-}
-
-function isTransientPlot(plot: string): boolean {
-  const normalized = plot.toLowerCase();
-  return normalized.startsWith("tran") || normalized.includes("transient");
-}
 
 function activeSchematicIsEmpty(doc: CircuitDoc): boolean {
   const page = currentPage(doc);
@@ -9355,43 +9348,6 @@ function detectSubckts(directives: string): { name: string; pins: string[] }[] {
   return out;
 }
 
-function isSinglePinSnappingTool(tool: Tool): boolean {
-  return tool === "GND" || tool === "LABEL";
-}
-
-function isActiveMultiPinKind(kind: ComponentKind): boolean {
-  return (
-    kind === "NPN" ||
-    kind === "PNP" ||
-    kind === "NMOS" ||
-    kind === "PMOS" ||
-    kind === "NMOS4" ||
-    kind === "PMOS4" ||
-    kind === "OPAMP" ||
-    kind === "SUBX"
-  );
-}
-
-function toolDescriptionFor(kind: ComponentKind, fallback?: string): string | undefined {
-  switch (kind) {
-    case "NPN":
-      return "Drag to place and orient. C/B/E pins stay visible on selection and snap strongly while wiring.";
-    case "PNP":
-      return "Drag to place and orient. C/B/E pins stay visible on selection and snap strongly while wiring.";
-    case "NMOS":
-      return "Drag to place and orient. D/G/S pins stay visible on selection and snap strongly while wiring.";
-    case "PMOS":
-      return "Drag to place and orient. D/G/S pins stay visible on selection and snap strongly while wiring.";
-    case "NMOS4":
-      return "Drag to place and orient. D/G/S/B pins stay visible on selection; use this when bulk must not be tied to source.";
-    case "PMOS4":
-      return "Drag to place and orient. D/G/S/B pins stay visible on selection; use this when bulk must not be tied to source.";
-    case "OPAMP":
-      return "Drag to place and orient; wire the +, - and OUT pins. Pins stay visible on selection and snap strongly while wiring.";
-    default:
-      return fallback;
-  }
-}
 
 function paletteItemForTool(tool: Tool): PaletteItem | undefined {
   return PALETTE_ITEMS.find((item) => item.tool === tool);
