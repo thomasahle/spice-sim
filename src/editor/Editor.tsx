@@ -202,6 +202,7 @@ import { usePinAnnotations } from "./usePinAnnotations";
 import { useProbeScopes } from "./useProbeScopes";
 import { useLiveFlowSamples } from "./useLiveFlowSamples";
 import { findTimeIndex } from "./simSampleTime";
+import { useAutoRunSimulation } from "./useAutoRunSimulation";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -5729,26 +5730,14 @@ export function Editor() {
     hasStimulus: autoRunHasStimulus,
   });
 
-  // Auto-run: debounced sim re-run on any doc change.
-  const runRef = useRef<() => void>(() => {});
-  useEffect(() => {
-    runRef.current = () => {
-      void runSimulation();
-    };
+  useAutoRunSimulation({
+    doc,
+    autoRun,
+    tool,
+    canvasInteractionActive,
+    autoRunRunnable: autoRunUi.runnable,
+    runSimulation: () => void runSimulation(),
   });
-  useEffect(() => {
-    if (!autoRun) return;
-    // Do not let auto-run open or resize the waveform pane while the user is
-    // still constructing a schematic. Manual Run remains available in any tool.
-    if (tool !== "select") return;
-    // Preview drags mutate the document while the Select tool is active. Wait
-    // for pointer-up/cancel so ngspice never runs against transient geometry.
-    if (canvasInteractionActive) return;
-    if (!autoRunUi.runnable) return;
-    const t = setTimeout(() => runRef.current(), 400);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, autoRunUi.runnable, tool, canvasInteractionActive]);
 
   // Voltage overlay readings interpolated at playTime when a transient result exists.
   // We intentionally keep showing the previous result during a stale window so the
