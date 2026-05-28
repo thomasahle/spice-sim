@@ -199,7 +199,6 @@ import {
   formatCoord,
   IconGlyph,
   Row,
-  SideNavIcon,
   StatusBar,
 } from "./editorChrome";
 import { EditorCanvasHUD } from "./EditorCanvasHUD";
@@ -207,6 +206,7 @@ import { EditorCanvasNotice } from "./EditorCanvasNotice";
 import { EditorTopRunCluster } from "./EditorTopRunCluster";
 import { WaveformSection } from "./WaveformSection";
 import { EditorToolStrip } from "./EditorToolStrip";
+import { EditorLeftSidebar } from "./EditorLeftSidebar";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -6636,256 +6636,38 @@ export function Editor() {
       {/* Sidebar always rendered so the grid-column transition can animate
          the collapse. When `pagesCollapsed`, the column goes to 0 and the
          aside is clipped via overflow:hidden — see styles.css. */}
-      <aside className="side-nav" aria-hidden={pagesCollapsed}>
-          {/* Sidebar toggle lives in the app titlebar — see App.tsx. */}
-
-          <div className="side-nav-section-head">
-            <span>Projects</span>
-            <button
-              type="button"
-              className="side-nav-add"
-              onClick={createProject}
-              title="New project"
-              aria-label="New project"
-            >
-              +
-            </button>
-          </div>
-
-          <div className="side-nav-projects">
-            {workspace.projects.map((proj) => {
-              const isActive = proj.id === workspace.active;
-              const pages = isActive ? doc.pages : [];
-              return (
-                <div
-                  key={proj.id}
-                  className={`side-proj ${isActive ? "expanded" : ""}`}
-                >
-                  {isActive ? (
-                    <div
-                      className="side-proj-head active"
-                      title={proj.name}
-                      aria-current="true"
-                    >
-                      <SideNavIcon kind="folder" />
-                      <input
-                        className="side-proj-name-input"
-                        value={proj.name}
-                        onChange={(e) => renameProject(proj.id, e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        aria-label="Project name"
-                        spellCheck={false}
-                      />
-                      <button
-                        type="button"
-                        className="side-proj-add"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          createSubcircuitPage();
-                        }}
-                        title="New schematic"
-                        aria-label={`New schematic in ${proj.name}`}
-                      >
-                        +
-                      </button>
-                      {workspace.projects.length > 1 && (
-                        <button
-                          type="button"
-                          className="side-proj-del"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            removeProject(proj.id);
-                          }}
-                          title="Delete this project"
-                          aria-label={`Delete project ${proj.name}`}
-                        >
-                          ×
-                        </button>
-                      )}
-                    </div>
-                  ) : (
-                    <button
-                      className="side-proj-head"
-                      onClick={() => switchProject(proj.id)}
-                      title={`Open project: ${proj.name}`}
-                      aria-label={`Open project ${proj.name}`}
-                    >
-                      <SideNavIcon kind="folder" />
-                      <span className="side-proj-name">{proj.name}</span>
-                    </button>
-                  )}
-                  {pages.map((p, i) => {
-                    const pageActive = p.id === doc.activePageId;
-                    const isMain = i === 0;
-                    return (
-                      <div
-                        key={p.id}
-                        className={`side-page ${pageActive ? "active" : ""}`}
-                        role="button"
-                        tabIndex={0}
-                        aria-current={pageActive ? "page" : undefined}
-                        aria-label={isMain ? "Open main schematic" : `Open subcircuit ${p.name}`}
-                        onClick={() =>
-                          commit((d) => ({ ...d, activePageId: p.id }))
-                        }
-                        onKeyDown={(e) => {
-                          if (e.key !== "Enter" && e.key !== " ") return;
-                          e.preventDefault();
-                          commit((d) => ({ ...d, activePageId: p.id }));
-                        }}
-                        title={
-                          isMain
-                            ? "Root schematic (emits main netlist)"
-                            : `.subckt ${p.name}`
-                        }
-                      >
-                        {pageActive && !isMain ? (
-                          <input
-                            className="side-page-input"
-                            value={p.name}
-                            onChange={(e) => {
-                              const next = e.target.value.replace(
-                                /[^A-Za-z0-9_]/g,
-                                "_",
-                              );
-                              commit((d) => ({
-                                ...d,
-                                pages: d.pages.map((x) =>
-                                  x.id === p.id ? { ...x, name: next } : x,
-                                ),
-                              }));
-                            }}
-                            onClick={(e) => e.stopPropagation()}
-                            onKeyDown={(e) => e.stopPropagation()}
-                            aria-label="Subcircuit name"
-                          />
-                        ) : (
-                          <span className="side-page-name">
-                            {isMain ? "Main schematic" : p.name}
-                          </span>
-                        )}
-                        {i < 9 && (
-                          <span className="side-page-shortcut">⌘{i + 1}</span>
-                        )}
-                        {!isMain && (
-                          <button
-                            type="button"
-                            className="side-page-del"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (!confirm(`Delete subcircuit "${p.name}"?`))
-                                return;
-                              commit((d) => {
-                                const remaining = d.pages.filter(
-                                  (x) => x.id !== p.id,
-                                );
-                                return {
-                                  ...d,
-                                  pages: remaining,
-                                  activePageId:
-                                    d.activePageId === p.id
-                                      ? remaining[0].id
-                                      : d.activePageId,
-                                };
-                              });
-                            }}
-                            title="Delete subcircuit"
-                            aria-label={`Delete subcircuit ${p.name}`}
-                          >
-                            ×
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="side-nav-section-head side-nav-section-head-tight">
-            <span>File</span>
-          </div>
-          <nav className="side-nav-actions side-nav-file-actions" aria-label="File actions">
-            <button
-              type="button"
-              className="side-nav-action"
-              onClick={() => handleMenu("file:new")}
-              title="New circuit (⌘N)"
-              aria-label="New circuit"
-            >
-              <IconGlyph kind="new" />
-              <span>New circuit</span>
-            </button>
-            <button
-              type="button"
-              className="side-nav-action"
-              onClick={() => handleMenu("file:open")}
-              title="Open (⌘O)"
-              aria-label="Open"
-            >
-              <IconGlyph kind="open" />
-              <span>Open</span>
-            </button>
-            <button
-              type="button"
-              className="side-nav-action"
-              onClick={() => handleMenu("file:import_netlist")}
-              title="Import a SPICE netlist as an approximate schematic"
-              aria-label="Import netlist"
-            >
-              <IconGlyph kind="netlist" />
-              <span>Import netlist</span>
-            </button>
-            <button
-              type="button"
-              className="side-nav-action"
-              onClick={() => handleMenu("file:save")}
-              title="Save (⌘S)"
-              aria-label="Save"
-            >
-              <IconGlyph kind="save" />
-              <span>Save</span>
-            </button>
-            <button
-              type="button"
-              className="side-nav-action"
-              onClick={() => void exportSchematicSvg()}
-              title="Export schematic SVG"
-              aria-label="Export schematic SVG"
-            >
-              <IconGlyph kind="export" />
-              <span>Export SVG</span>
-            </button>
-            <button
-              type="button"
-              className="side-nav-action"
-              onClick={() => void copyShareLink()}
-              title="Copy shareable circuit URL"
-              aria-label="Copy shareable circuit URL"
-            >
-              <IconGlyph kind="share" />
-              <span>Share</span>
-            </button>
-          </nav>
-
-          <div className="side-nav-section-head side-nav-section-head-tight side-nav-examples-head">
-            <span>Examples</span>
-          </div>
-          <div className="side-nav-examples">
-            {DEMOS.map((d) => (
-              <button
-                key={d.id}
-                type="button"
-                className="side-nav-example"
-                onClick={() => loadDemo(d.id)}
-                title={d.description}
-              >
-                {d.name}
-              </button>
-            ))}
-          </div>
-      </aside>
+      <EditorLeftSidebar
+        workspace={workspace}
+        pages={doc.pages}
+        activePageId={doc.activePageId}
+        pagesCollapsed={pagesCollapsed}
+        onCreateProject={createProject}
+        onRenameProject={renameProject}
+        onSwitchProject={switchProject}
+        onRemoveProject={removeProject}
+        onCreateSubcircuitPage={createSubcircuitPage}
+        onSwitchPage={(pageId) => commit((d) => ({ ...d, activePageId: pageId }))}
+        onRenameSubPage={(pageId, name) =>
+          commit((d) => ({
+            ...d,
+            pages: d.pages.map((x) => (x.id === pageId ? { ...x, name } : x)),
+          }))
+        }
+        onDeleteSubPage={(pageId) =>
+          commit((d) => {
+            const remaining = d.pages.filter((x) => x.id !== pageId);
+            return {
+              ...d,
+              pages: remaining,
+              activePageId: d.activePageId === pageId ? remaining[0].id : d.activePageId,
+            };
+          })
+        }
+        onMenu={(action) => void handleMenu(action)}
+        onExportSchematicSvg={() => void exportSchematicSvg()}
+        onCopyShareLink={() => void copyShareLink()}
+        onLoadDemo={loadDemo}
+      />
 
       <aside className="right-pane" aria-hidden={inspectorCollapsed}>
         <div className="sidebar-section">
