@@ -115,7 +115,7 @@ import {
   type ModelDiagnostic,
 } from "./netlist";
 import { normalizeDoc } from "./docNormalize";
-import { connectedNetLabelIds, netLabelNearMisses, snapNetLabelDrag } from "./netLabelConnections";
+import { snapNetLabelDrag } from "./netLabelConnections";
 import { SvgInlineMathText } from "./mathTextSvg";
 import { estimateInlineMathTextWidth } from "./mathText.ts";
 import {
@@ -209,6 +209,7 @@ import { EditorToolStrip } from "./EditorToolStrip";
 import { EditorLeftSidebar } from "./EditorLeftSidebar";
 import { useWorkspacePersistence } from "./useWorkspacePersistence";
 import { useTraceMetadata } from "./useTraceMetadata";
+import { useProbeConnectivity } from "./useProbeConnectivity";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -6396,20 +6397,12 @@ export function Editor() {
     [runFloatingPins],
   );
 
-  const disconnectedProbeIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const probe of page.probes) {
-      const node = pinAnnotations.nodes.posToNode.get(`${coordKey(probe.x)},${coordKey(probe.y)}`);
-      if (!node) ids.add(probe.id);
-    }
-    return ids;
-  }, [page.probes, pinAnnotations.nodes.posToNode]);
-  const connectedLabelIds = useMemo(() => connectedNetLabelIds(page), [page]);
-  const labelNearMisses = useMemo(() => netLabelNearMisses(page), [page]);
-  const nearMissLabelIds = useMemo(
-    () => new Set(labelNearMisses.map((nearMiss) => nearMiss.labelId)),
-    [labelNearMisses],
-  );
+  const {
+    disconnectedProbeIds,
+    connectedLabelIds,
+    labelNearMisses,
+    nearMissLabelIds,
+  } = useProbeConnectivity(page, page.probes, pinAnnotations.nodes.posToNode);
   const firstFloatingPinLabel = runFloatingPins[0]
     ? floatingPinSummary(runFloatingPins[0])
     : null;
