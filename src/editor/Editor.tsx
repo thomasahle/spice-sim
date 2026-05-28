@@ -205,6 +205,12 @@ import { findTimeIndex } from "./simSampleTime";
 import { useAutoRunSimulation } from "./useAutoRunSimulation";
 import { useDocHistory } from "./useDocHistory";
 import {
+  FloatingPinMarkers,
+  MarqueeOverlay,
+  NetLabelNearMissMarkers,
+  SelectionBoundsOverlay,
+} from "./canvasOverlays";
+import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
   floatingPinSummary,
@@ -7802,43 +7808,8 @@ export function Editor() {
               );
             })}
 
-            {floatingPinMarkers.map(({ componentId, pinIdx, pinLabel, refdes, node, position }) => (
-              <g
-                key={`${componentId}-${pinIdx}-${node}`}
-                className="floating-pin-marker"
-                pointerEvents="none"
-              >
-                <title>{`${refdes} ${pinLabel ? `${pinLabel} pin` : `pin ${pinIdx + 1}`} is floating (${node})`}</title>
-                <circle cx={position.x} cy={position.y} r={0.42} className="floating-pin-ring" />
-                <circle cx={position.x} cy={position.y} r={0.16} className="floating-pin-dot" />
-                <text x={position.x + 0.34} y={position.y - 0.34} className="floating-pin-text">
-                  !
-                </text>
-              </g>
-            ))}
-
-            {labelNearMisses.map((nearMiss) => (
-              <g
-                key={nearMiss.labelId}
-                className="net-label-near-miss-marker"
-                pointerEvents="none"
-              >
-                <title>{`Net label "${nearMiss.label}" is close to a connection point but not attached`}</title>
-                <line
-                  x1={nearMiss.anchor.x}
-                  y1={nearMiss.anchor.y}
-                  x2={nearMiss.target.position.x}
-                  y2={nearMiss.target.position.y}
-                  className="near-miss-guide"
-                />
-                <circle
-                  cx={nearMiss.target.position.x}
-                  cy={nearMiss.target.position.y}
-                  r={0.28}
-                  className="near-miss-target"
-                />
-              </g>
-            ))}
+            <FloatingPinMarkers markers={floatingPinMarkers} />
+            <NetLabelNearMissMarkers nearMisses={labelNearMisses} />
 
             {liveReadings && doc.analysis.kind === "op" && simResult?.plot.startsWith("op") && (
               <NodeReadingsOverlay
@@ -7908,31 +7879,8 @@ export function Editor() {
               );
             })}
 
-            {selectionBounds && (
-              <g className="group-selection-frame" pointerEvents="none">
-                <rect
-                  x={selectionBounds.x1}
-                  y={selectionBounds.y1}
-                  width={selectionBounds.x2 - selectionBounds.x1}
-                  height={selectionBounds.y2 - selectionBounds.y1}
-                  rx={0.24}
-                />
-              </g>
-            )}
-
-            {marquee && (
-              <rect
-                x={Math.min(marquee.sx, marquee.ex) - 0.2}
-                y={Math.min(marquee.sy, marquee.ey) - 0.2}
-                width={Math.abs(marquee.ex - marquee.sx) + 0.4}
-                height={Math.abs(marquee.ey - marquee.sy) + 0.4}
-                fill="var(--accent)"
-                fillOpacity={0.08}
-                stroke="var(--accent)"
-                strokeWidth={0.05}
-                strokeDasharray="0.3 0.2"
-              />
-            )}
+            <SelectionBoundsOverlay bounds={selectionBounds} />
+            <MarqueeOverlay marquee={marquee} />
           </g>
         </svg>
         {textEdit && textEditOverlay && (
