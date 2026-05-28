@@ -208,6 +208,7 @@ import {
 import { EditorCanvasHUD } from "./EditorCanvasHUD";
 import { EditorCanvasNotice } from "./EditorCanvasNotice";
 import { EditorTopRunCluster } from "./EditorTopRunCluster";
+import { WaveformSection } from "./WaveformSection";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -235,7 +236,6 @@ import {
   deleteProject,
   type Workspace,
 } from "./projects";
-import { WaveformViewer } from "./WaveformViewer";
 import { traceAliasKey, traceDisplayName } from "./traceNames";
 import { PlayBar } from "./PlayBar";
 import { MiniScope } from "./MiniScope";
@@ -257,7 +257,6 @@ import { inlineProbeScopeLabel, shouldRenderInlineProbeScope } from "./probeDisp
 import { formatSimulationErrorLog, summarizeSimulationError } from "./simulationErrors";
 import { defaultVisibleTraceNames, traceNamesForNodes } from "./traceVisibility";
 import { analysisXAxisLabel, axisUnitFromLabel } from "./waveformAxis";
-import { hasPlottableWaveform, waveformPaneEmptyState } from "./waveformEmptyState";
 import {
   decodeSchematicClipboard,
   encodeSchematicClipboard,
@@ -8853,64 +8852,22 @@ export function Editor() {
           />
         )}
 
-        {simResult && hasWaveform(simResult) && waveformVisible && (
-          <WaveformViewer
-            plot={simResult.plot}
-            vectors={simResult.vectors}
-            selectedTraces={selectedTraces}
-            userTraceNames={userTraceNames}
-            traceAliases={traceAliases}
-            runLabels={runLabels}
-            xAxisLabel={analysisXAxisLabel(doc.analysis)}
-            directives={doc.directives}
-            measurements={simResult.measurements}
-            runWarnings={runWarnings}
-            stale={simulationStale && !autoRun}
-            onToggleTrace={(name) => {
-              const next = new Set(selectedTraces);
-              if (next.has(name)) next.delete(name);
-              else next.add(name);
-              setSelectedTraces(next);
-            }}
-            onSetVisibleTraces={setSelectedTraces}
-            onShowAllTraces={() => setSelectedTraces(new Set())}
-            onClose={() => setWaveformVisible(false)}
-          />
-        )}
-
-        {simResult && hasWaveform(simResult) && !waveformVisible && (
-          <div className="wf-collapsed">
-            <div>
-              <strong>{simulationStale ? "Previous waveform hidden" : "Waveform hidden"}</strong>
-              <span>{simulationStale ? `${simResult.plot} · stale` : simResult.plot}</span>
-            </div>
-            <button onClick={() => setWaveformVisible(true)}>Show waveform</button>
-          </div>
-        )}
-
-        {simResult && !hasWaveform(simResult) && waveformVisible && (
-          <div className="wf-collapsed wf-empty-result" role="status">
-            <div className="wf-empty-copy">
-              <strong>
-                {simulationStale
-                  ? `Previous ${waveformPaneEmptyState(simResult.plot, simResult.vectors).title.toLowerCase()}`
-                  : waveformPaneEmptyState(simResult.plot, simResult.vectors).title}
-              </strong>
-              <span>
-                {simulationStale
-                  ? "The schematic has changed since this run. Press Run to update the result."
-                  : waveformPaneEmptyState(simResult.plot, simResult.vectors).detail}
-              </span>
-            </div>
-            <button onClick={() => setWaveformVisible(false)}>Hide</button>
-          </div>
-        )}
-
-        {log && !simResult && (
-          <div className="log-pane">
-            <pre>{log}</pre>
-          </div>
-        )}
+        <WaveformSection
+          simResult={simResult}
+          waveformVisible={waveformVisible}
+          onSetWaveformVisible={setWaveformVisible}
+          selectedTraces={selectedTraces}
+          onSetSelectedTraces={setSelectedTraces}
+          userTraceNames={userTraceNames}
+          traceAliases={traceAliases}
+          runLabels={runLabels}
+          xAxisLabel={analysisXAxisLabel(doc.analysis)}
+          directives={doc.directives}
+          runWarnings={runWarnings}
+          viewerStale={simulationStale && !autoRun}
+          simulationStale={simulationStale}
+          log={log}
+        />
       </main>
 
       {contextMenu && (
@@ -9020,9 +8977,6 @@ function safeExportName(name: string): string {
   return cleaned || "schematic";
 }
 
-function hasWaveform(r: { vectors: { is_scale: boolean; data: number[] }[] }): boolean {
-  return hasPlottableWaveform(r.vectors);
-}
 
 
 
