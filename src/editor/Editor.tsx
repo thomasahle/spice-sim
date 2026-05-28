@@ -207,6 +207,7 @@ import {
 } from "./editorChrome";
 import { EditorCanvasHUD } from "./EditorCanvasHUD";
 import { EditorCanvasNotice } from "./EditorCanvasNotice";
+import { EditorTopRunCluster } from "./EditorTopRunCluster";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -7782,75 +7783,15 @@ export function Editor() {
         <div className="canvas-wrap" tabIndex={-1}>
         {/* Floating Run + analysis-type cluster — sits over the canvas at the
            top so it's always reachable without dedicating toolbar space. */}
-        <div className="canvas-actions" role="group" aria-label="Run controls">
-          <div className="tb-group tb-analyses" role="group" aria-label="Analysis type">
-            <Tooltip.Provider delayDuration={260} skipDelayDuration={120}>
-              {(
-                [
-                  {
-                    kind: "tran",
-                    label: "Tran",
-                    name: "Transient",
-                    desc: "Solve voltages and currents over time. Use for step responses, ringing, oscillation — any time-domain behavior.",
-                  },
-                  {
-                    kind: "ac",
-                    label: "AC",
-                    name: "AC sweep",
-                    desc: "Small-signal frequency response. Plots gain and phase versus frequency for filters, amplifiers, and impedance.",
-                  },
-                  {
-                    kind: "dc",
-                    label: "DC",
-                    name: "DC sweep",
-                    desc: "Vary a source value and plot the steady-state response. Useful for IV curves and transfer characteristics.",
-                  },
-                  {
-                    kind: "op",
-                    label: "OP",
-                    name: "Operating point",
-                    desc: "Single steady-state DC solution. Shows node voltages and branch currents with no time variation.",
-                  },
-                ] as const
-              ).map((a) => (
-                <Tooltip.Root key={a.kind}>
-                  <Tooltip.Trigger asChild>
-                    <button
-                      className={`tb-pill ${doc.analysis.kind === a.kind ? "active" : ""}`}
-                      onClick={() => switchAnalysis(a.kind)}
-                      aria-label={`${a.name} analysis`}
-                      aria-pressed={doc.analysis.kind === a.kind}
-                    >
-                      {a.label}
-                    </button>
-                  </Tooltip.Trigger>
-                  <Tooltip.Portal>
-                    <Tooltip.Content className="tool-tip tool-tip-pill" side="bottom" align="center" sideOffset={10}>
-                      <span className="tool-tip-head">
-                        <span className="tool-tip-name">{a.name}</span>
-                      </span>
-                      <span className="tool-tip-desc">{a.desc}</span>
-                    </Tooltip.Content>
-                  </Tooltip.Portal>
-                </Tooltip.Root>
-              ))}
-            </Tooltip.Provider>
-          </div>
-          <button
-            className={`tb-run ${runningVisible ? "running" : ""}`}
-            onClick={runSimulation}
-            disabled={runDisabled}
-            title={runTitle}
-            aria-label={engineOk === false ? "Simulation engine unavailable" : runningVisible ? "Running simulation" : "Run simulation"}
-          >
-            {runningVisible ? (
-              <span className="tb-run-spinner" />
-            ) : (
-              <IconGlyph kind="play" />
-            )}
-            <span>{engineOk === false ? "Unavailable" : runningVisible ? "Running…" : "Run"}</span>
-          </button>
-        </div>
+        <EditorTopRunCluster
+          analysisKind={doc.analysis.kind}
+          onSwitchAnalysis={switchAnalysis}
+          running={runningVisible}
+          runDisabled={runDisabled}
+          runTitle={runTitle}
+          engineOk={engineOk}
+          onRun={runSimulation}
+        />
         <EditorCanvasNotice
           canvasNotice={canvasNotice}
           disconnectedProbeIds={disconnectedProbeIds}
