@@ -144,11 +144,9 @@ import {
 import {
   applyMosfetPreset,
   BUILTIN_MODEL_DEFINITIONS,
-  BUILTIN_MOSFET_MODELS,
   BUILTIN_MOSFET_PRESETS,
   componentMatchesMosfetPreset,
   defaultModelParams,
-  modelDefinitionLine,
   modelTypesForKind,
   mosfetPresetKindForComponentKind,
   mosfetPresetFromComponent,
@@ -185,6 +183,16 @@ import {
   splitWiresAtPoint,
 } from "./wireGeometry";
 import { collectPageBounds, pinHintsFor } from "./selectionBounds";
+import {
+  defaultMosfetPresetId,
+  ensureBuiltinModelDirective,
+  loadCustomMosfetPresets,
+  mergeMosfetPresets,
+  modelOptionsForKind,
+  mosfetPresetById,
+  saveCustomMosfetPresets,
+  writeDefaultMosfetPresetId,
+} from "./presetLibrary";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -368,8 +376,6 @@ const PROBE_COLORS = [
   "#ff375f",
 ];
 
-const CUSTOM_MOSFET_PRESETS_KEY = "spicesim.mosfetPresets";
-const DEFAULT_MOSFET_PRESET_PREFIX = "spicesim.defaultMosfetPreset.";
 
 interface PaletteItem {
   tool: Tool;
@@ -5183,11 +5189,7 @@ export function Editor() {
   function setDefaultMosfetPreset(kind: "NMOS" | "PMOS", presetId: string) {
     const preset = mosfetPresetById(mosfetPresets, presetId, kind);
     if (!preset) return;
-    try {
-      localStorage.setItem(`${DEFAULT_MOSFET_PRESET_PREFIX}${kind}`, preset.id);
-    } catch {
-      // Ignore persistence failures; the current session still updates.
-    }
+    writeDefaultMosfetPresetId(kind, preset.id);
     setSelectedMosfetPresetId((prev) => ({ ...prev, [kind]: preset.id }));
     setStatus(`Default ${kind} preset: ${preset.name}`);
   }
@@ -9395,102 +9397,6 @@ function paletteItemForTool(tool: Tool): PaletteItem | undefined {
   return PALETTE_ITEMS.find((item) => item.tool === tool);
 }
 
-function loadCustomMosfetPresets(): MosfetPreset[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CUSTOM_MOSFET_PRESETS_KEY) ?? "[]");
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isMosfetPreset);
-  } catch {
-    return [];
-  }
-}
-
-function saveCustomMosfetPresets(presets: MosfetPreset[]) {
-  try {
-    localStorage.setItem(CUSTOM_MOSFET_PRESETS_KEY, JSON.stringify(presets.filter((p) => p.custom)));
-  } catch {
-    // Local persistence is a convenience only.
-  }
-}
-
-function defaultMosfetPresetId(kind: "NMOS" | "PMOS"): string {
-  try {
-    const stored = localStorage.getItem(`${DEFAULT_MOSFET_PRESET_PREFIX}${kind}`);
-    if (stored) return stored;
-  } catch {
-    // Ignore storage failures and fall back to built-ins.
-  }
-  return kind === "NMOS" ? "nmos-default" : "pmos-default";
-}
-
-function mergeMosfetPresets(...groups: MosfetPreset[][]): MosfetPreset[] {
-  const out = new Map<string, MosfetPreset>();
-  for (const group of groups) {
-    for (const preset of group) {
-      if (isMosfetPreset(preset)) out.set(preset.id, preset);
-    }
-  }
-  return Array.from(out.values());
-}
-
-function mosfetPresetById(
-  presets: MosfetPreset[],
-  presetId: string,
-  kind: "NMOS" | "PMOS",
-): MosfetPreset | null {
-  return (
-    presets.find((preset) => preset.kind === kind && preset.id === presetId) ??
-    presets.find((preset) => preset.kind === kind && preset.id === defaultMosfetPresetId(kind)) ??
-    BUILTIN_MOSFET_PRESETS.find((preset) => preset.kind === kind) ??
-    null
-  );
-}
-
-function modelOptionsForKind(
-  models: ModelDefinition[],
-  kind: ComponentKind,
-  current: string,
-): ModelDefinition[] {
-  const allowed = new Set(modelTypesForKind(kind));
-  const filtered = models.filter((model) => allowed.has(model.type));
-  if (current.trim() && !filtered.some((model) => model.name === current.trim())) {
-    const fallbackType = allowed.values().next().value as ModelDefinition["type"] | undefined;
-    if (fallbackType) {
-      return [{ name: current.trim(), type: fallbackType, params: "" }, ...filtered];
-    }
-  }
-  return filtered;
-}
-
-function ensureBuiltinModelDirective(doc: CircuitDoc, modelName: string): CircuitDoc {
-  if (modelName === "NCH" || modelName === "PCH") return doc;
-  const model = BUILTIN_MOSFET_MODELS.find((candidate) => candidate.name === modelName);
-  if (!model) return doc;
-  const existing = parseModelDefinitions(doc.directives).some(
-    (candidate) => candidate.name === model.name && candidate.type === model.type,
-  );
-  if (existing) return doc;
-  const line = modelDefinitionLine(model);
-  return {
-    ...doc,
-    directives: doc.directives.trim()
-      ? `${doc.directives.replace(/\s+$/u, "")}\n${line}`
-      : line,
-  };
-}
-
-function isMosfetPreset(value: unknown): value is MosfetPreset {
-  if (!value || typeof value !== "object") return false;
-  const preset = value as Partial<MosfetPreset>;
-  return (
-    (preset.kind === "NMOS" || preset.kind === "PMOS") &&
-    typeof preset.id === "string" &&
-    typeof preset.name === "string" &&
-    typeof preset.model === "string" &&
-    typeof preset.W === "string" &&
-    typeof preset.L === "string"
-  );
-}
 
 function electricalComponentCount(page: SchematicPage): number {
   return page.components.filter((c) => c.kind !== "GND" && c.kind !== "LABEL" && c.kind !== "NOTE").length;
