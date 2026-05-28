@@ -9,7 +9,6 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type CSSProperties,
 } from "react";
-import * as Tooltip from "@radix-ui/react-tooltip";
 import type {
   CircuitDoc,
   CircuitComponent,
@@ -45,7 +44,7 @@ import {
   updatePageMeta,
   updateCurrentPage,
 } from "./model";
-import { ComponentGlyph, PaletteGlyph } from "./symbols";
+import { ComponentGlyph } from "./symbols";
 import {
   canStartCanvasValueEditFromTyping,
   canvasValueLabel,
@@ -193,7 +192,6 @@ import {
   isActiveMultiPinKind,
   isSinglePinSnappingTool,
   isTransientPlot,
-  toolDescriptionFor,
   type Tool,
 } from "./toolPredicates";
 import {
@@ -203,12 +201,12 @@ import {
   Row,
   SideNavIcon,
   StatusBar,
-  ToolIcon,
 } from "./editorChrome";
 import { EditorCanvasHUD } from "./EditorCanvasHUD";
 import { EditorCanvasNotice } from "./EditorCanvasNotice";
 import { EditorTopRunCluster } from "./EditorTopRunCluster";
 import { WaveformSection } from "./WaveformSection";
+import { EditorToolStrip } from "./EditorToolStrip";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -7823,226 +7821,29 @@ export function Editor() {
             </div>
           </div>
         )}
-        <aside className="tool-strip" role="toolbar" aria-label="Drawing tools">
-          <Tooltip.Provider delayDuration={260} skipDelayDuration={120}>
-          {DIRECT_TOOL_ITEMS.map((item) => {
-            const itemKind = item.kind;
-            return (
-              <Tooltip.Root key={item.tool}>
-                <Tooltip.Trigger asChild>
-                  <button
-                    className={`tool-icon ${tool === item.tool ? "active" : ""}`}
-                    onClick={() => selectTool(item.tool)}
-                    onMouseEnter={() => setActiveToolGroupId(null)}
-                    onFocus={() => setActiveToolGroupId(null)}
-                    aria-label={item.name}
-                    aria-pressed={tool === item.tool}
-                    aria-keyshortcuts={item.hint}
-                  >
-                    {itemKind ? <PaletteGlyph kind={itemKind} /> : <ToolIcon tool={item.tool} />}
-                    {item.hint && <span className="tool-hint">{item.hint}</span>}
-                  </button>
-                </Tooltip.Trigger>
-                <Tooltip.Portal>
-                  <Tooltip.Content className="tool-tip" side="right" align="center" sideOffset={10}>
-                    <span className="tool-tip-head">
-                      <span className="tool-tip-name">{item.name}</span>
-                      {item.hint && <kbd className="tool-tip-key">{item.hint}</kbd>}
-                    </span>
-                    {item.desc && (
-                      <span className="tool-tip-desc">
-                        {itemKind ? toolDescriptionFor(itemKind, item.desc) : item.desc}
-                      </span>
-                    )}
-                  </Tooltip.Content>
-                </Tooltip.Portal>
-              </Tooltip.Root>
-            );
-          })}
-          </Tooltip.Provider>
-          <div className="tool-sep" />
-          {TOOL_GROUPS.map((group) => {
-            const groupActive = group.tools.includes(tool);
-            const displayTool = groupActive ? tool : group.primary;
-            const displayItem = paletteItemForTool(displayTool) ?? paletteItemForTool(group.primary);
-            const displayKind = displayItem?.kind ?? group.primary;
-            return (
-              <button
-                key={group.id}
-                type="button"
-                className={`tool-icon tool-group-icon ${groupActive ? "active" : ""} ${activeToolGroupId === group.id ? "open" : ""}`}
-                onClick={() => selectTool(displayTool)}
-                onMouseEnter={(e) => openToolGroupMenu(group.id, Math.max(0, e.currentTarget.offsetTop - 11))}
-                onMouseLeave={scheduleToolGroupClose}
-                onFocus={(e) => openToolGroupMenu(group.id, Math.max(0, e.currentTarget.offsetTop - 11))}
-                onBlur={scheduleToolGroupClose}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  openToolGroupMenu(group.id, Math.max(0, e.currentTarget.offsetTop - 11));
-                }}
-                aria-label={group.label}
-                aria-pressed={groupActive}
-                aria-haspopup="dialog"
-                aria-expanded={activeToolGroupId === group.id}
-              >
-                <PaletteGlyph kind={displayKind as ComponentKind} />
-                <span className="tool-group-corner" />
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            className={`tool-icon tool-group-icon ${tool === "SUBX" ? "active" : ""} ${subcircuitMenuOpen ? "open" : ""}`}
-            onClick={(e) => {
-              if (selectedSubcircuitPage) selectSubcircuitTool(selectedSubcircuitPage.id);
-              else openToolGroupMenu("subcircuits", Math.max(0, e.currentTarget.offsetTop - 11));
-            }}
-            onMouseEnter={(e) => openToolGroupMenu("subcircuits", Math.max(0, e.currentTarget.offsetTop - 11))}
-            onMouseLeave={scheduleToolGroupClose}
-            onFocus={(e) => openToolGroupMenu("subcircuits", Math.max(0, e.currentTarget.offsetTop - 11))}
-            onBlur={scheduleToolGroupClose}
-            aria-label="Subcircuits"
-            aria-pressed={tool === "SUBX"}
-            aria-haspopup="dialog"
-            aria-expanded={subcircuitMenuOpen}
-          >
-            <PaletteGlyph kind="SUBX" />
-            <span className="tool-group-corner" />
-          </button>
-        </aside>
-        {(openToolGroup || subcircuitMenuOpen) && (
-          <div
-            className="tool-popover"
-            role="dialog"
-            aria-label={openToolGroup ? `${openToolGroup.label} tools` : "Subcircuit tools"}
-            style={{ top: activeToolGroupTop + 14 }}
-            onMouseEnter={clearToolGroupCloseTimer}
-            onMouseLeave={scheduleToolGroupClose}
-          >
-            {openToolGroup ? (
-              <>
-                <div className="tool-popover-current">
-                  <div className="tool-popover-current-head">
-                    <span className="tool-popover-name">{openToolGroup.label}</span>
-                  </div>
-                  <div className="tool-popover-desc">{openToolGroup.summary}</div>
-                </div>
-                {openToolGroup.id === "mosfets" ? (
-                  <div className="tool-popover-list">
-                    {mosfetPresets.map((preset) => {
-                      const active =
-                        tool === preset.kind &&
-                        selectedMosfetPresetId[preset.kind] === preset.id;
-                      const defaultId = defaultMosfetPresetId(preset.kind);
-                      return (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          className={`tool-popover-row ${active ? "active" : ""}`}
-                          onClick={() => {
-                            setSelectedMosfetPresetId((prev) => ({
-                              ...prev,
-                              [preset.kind]: preset.id,
-                            }));
-                            selectTool(preset.kind);
-                          }}
-                          aria-pressed={active}
-                        >
-                          <span className="tool-popover-icon">
-                            <PaletteGlyph kind={preset.kind} />
-                          </span>
-                          <span className="tool-popover-copy">
-                            <span className="tool-popover-name">{preset.name}</span>
-                            <span className="tool-popover-desc">
-                              {preset.description} Model {preset.model}; W={preset.W}, L={preset.L}
-                            </span>
-                          </span>
-                          <span className="preset-row-meta">
-                            {preset.id === defaultId && <span className="preset-default-chip">Default</span>}
-                            <kbd>{preset.kind === "NMOS" ? "M" : "⇧M"}</kbd>
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : openToolItems.length > 0 && (
-                  <div className="tool-popover-list">
-                    {openToolItems.map((item) => {
-                      const itemKind = item.kind;
-                      const active = item.tool === tool;
-                      return (
-                        <button
-                          key={item.tool}
-                          type="button"
-                          className={`tool-popover-row ${active ? "active" : ""}`}
-                          onClick={() => selectTool(item.tool)}
-                          aria-pressed={active}
-                        >
-                          <span className="tool-popover-icon">
-                            {itemKind ? <PaletteGlyph kind={itemKind} /> : <ToolIcon tool={item.tool} />}
-                          </span>
-                          <span className="tool-popover-copy">
-                            <span className="tool-popover-name">{item.name}</span>
-                            <span className="tool-popover-desc">{itemKind ? toolDescriptionFor(itemKind, item.desc) : item.desc}</span>
-                          </span>
-                          {item.hint && <kbd>{item.hint}</kbd>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </>
-            ) : (
-              <>
-                <div className="tool-popover-current">
-                  <div className="tool-popover-current-head">
-                    <span className="tool-popover-name">Subcircuits</span>
-                  </div>
-                  <div className="tool-popover-desc">
-                    Place schematic pages as reusable blocks.
-                  </div>
-                </div>
-                <div className="tool-popover-list">
-                  {subcircuitPages.length === 0 ? (
-                    <div className="tool-popover-empty">No subcircuit schematics yet.</div>
-                  ) : (
-                    subcircuitPages.map((subPage) => {
-                      const pins = subcircuitPinsForPage(subPage);
-                      const hasPorts = pins.length > 0;
-                      const active = tool === "SUBX" && selectedSubcircuitPageId === subPage.id;
-                      return (
-                        <button
-                          key={subPage.id}
-                          type="button"
-                          className={`tool-popover-row ${active ? "active" : ""}`}
-                          onClick={() => selectSubcircuitTool(subPage.id)}
-                          aria-pressed={active}
-                          disabled={!hasPorts}
-                          title={hasPorts ? undefined : "Add port labels in this schematic to expose subcircuit pins"}
-                        >
-                          <span className="tool-popover-icon">
-                            <PaletteGlyph kind="SUBX" />
-                          </span>
-                          <span className="tool-popover-copy">
-                            <span className="tool-popover-name">{subPage.name}</span>
-                            <span className="tool-popover-desc">
-                              {subPage.description?.trim() || (
-                                hasPorts
-                                  ? `${pins.length} pin${pins.length === 1 ? "" : "s"} from net labels`
-                                  : "No exposed pins. Mark net labels as ports to place this schematic."
-                              )}
-                            </span>
-                          </span>
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
+        <EditorToolStrip
+          tool={tool}
+          directItems={DIRECT_TOOL_ITEMS}
+          toolGroups={TOOL_GROUPS}
+          activeToolGroupId={activeToolGroupId}
+          activeToolGroupTop={activeToolGroupTop}
+          subcircuitMenuOpen={subcircuitMenuOpen}
+          openToolGroup={openToolGroup}
+          openToolItems={openToolItems}
+          subcircuitPages={subcircuitPages}
+          selectedSubcircuitPage={selectedSubcircuitPage}
+          selectedSubcircuitPageId={selectedSubcircuitPageId}
+          mosfetPresets={mosfetPresets}
+          selectedMosfetPresetId={selectedMosfetPresetId}
+          onSelectTool={selectTool}
+          onSelectSubcircuitTool={selectSubcircuitTool}
+          onSetSelectedMosfetPresetId={setSelectedMosfetPresetId}
+          onClearActiveToolGroup={() => setActiveToolGroupId(null)}
+          onOpenToolGroupMenu={openToolGroupMenu}
+          onScheduleToolGroupClose={scheduleToolGroupClose}
+          onClearToolGroupCloseTimer={clearToolGroupCloseTimer}
+          lookupPaletteItem={paletteItemForTool}
+        />
         <svg
           ref={svgRef}
           className={`canvas ${
@@ -8929,10 +8730,6 @@ export function Editor() {
 function activeSchematicIsEmpty(doc: CircuitDoc): boolean {
   const page = currentPage(doc);
   return page.components.length === 0 && page.wires.length === 0;
-}
-
-function subcircuitPinsForPage(page: SchematicPage): string[] {
-  return subcircuitPortLabels(page);
 }
 
 function findTimeIndex(xs: number[], t: number): number {
