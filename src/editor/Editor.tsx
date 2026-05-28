@@ -203,6 +203,7 @@ import { useProbeScopes } from "./useProbeScopes";
 import { useLiveFlowSamples } from "./useLiveFlowSamples";
 import { findTimeIndex } from "./simSampleTime";
 import { useAutoRunSimulation } from "./useAutoRunSimulation";
+import { useDocHistory } from "./useDocHistory";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -254,8 +255,6 @@ import {
 import { collectSelectedTopology } from "./selectionTopology";
 import {
   makeHistorySnapshot,
-  popLatestHistorySnapshot,
-  pushBoundedHistory,
   selectedIdsFromSnapshot,
   type HistorySnapshot,
 } from "./editorHistory";
@@ -1227,6 +1226,11 @@ const ProbeNode = memo(function ProbeNode({
   );
 });
 
+// Undo history is bounded to avoid unbounded memory growth on long editing
+// sessions. 100 steps comfortably exceeds a session's worth of edits while
+// keeping memory in the tens of KB even for large schematics.
+const UNDO_LIMIT = 100;
+
 export function Editor() {
   // Workspace: tracks multiple projects, each holding its own CircuitDoc in
   // localStorage. Loaded lazily on first render; if empty, we bootstrap with
@@ -1253,14 +1257,27 @@ export function Editor() {
     saveProject(id, emptyDoc);
     return fresh;
   });
-  const [doc, setDoc] = useState<CircuitDoc>(() => {
-    const w = loadWorkspace();
-    if (w.active) {
-      const loaded = loadProject(w.active);
-      if (loaded) return normalizeDoc(loaded);
-    }
-    return emptyDoc;
-  });
+  const {
+    doc,
+    setDoc,
+    setPast,
+    setFuture,
+    pushPast,
+    popLatestPast,
+    docRef,
+    pastRef,
+    futureRef,
+  } = useDocHistory(
+    (() => {
+      const w = loadWorkspace();
+      if (w.active) {
+        const loaded = loadProject(w.active);
+        if (loaded) return normalizeDoc(loaded);
+      }
+      return emptyDoc;
+    })(),
+    UNDO_LIMIT,
+  );
   const [showStartupEmptyCard, setShowStartupEmptyCard] = useState(() => {
     const shared = currentSharedDoc();
     if (shared) return activeSchematicIsEmpty(normalizeDoc(shared));
@@ -1271,8 +1288,6 @@ export function Editor() {
     }
     return true;
   });
-  const [past, setPast] = useState<HistorySnapshot[]>([]);
-  const [future, setFuture] = useState<HistorySnapshot[]>([]);
   const [tool, setTool] = useState<Tool>("select");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [wireDraft, setWireDraft] = useState<[number, number][] | null>(null);
@@ -1582,8 +1597,7 @@ export function Editor() {
     };
   }, [page.components, page.probes, activeTextEditId, activeTextEditKind, textEdit?.pinIndex, applyCanvasTextEditFocusSelection]);
   // Always-current refs to dodge stale closures inside global listeners.
-  const docRef = useRef(doc);
-  docRef.current = doc;
+  // (docRef is provided by useDocHistory above.)
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace;
   const handledShareHashRef = useRef(
@@ -1844,10 +1858,7 @@ export function Editor() {
   }
   const selRef = useRef(selectedIds);
   selRef.current = selectedIds;
-  const pastRef = useRef(past);
-  pastRef.current = past;
-  const futureRef = useRef(future);
-  futureRef.current = future;
+  // pastRef / futureRef / docRef are provided by useDocHistory.
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
   const clipboardRef = useRef(clipboard);
@@ -1903,20 +1914,12 @@ export function Editor() {
   const editGenerationRef = useRef(0);
   const latestRunIdRef = useRef(0);
 
-  // Undo history is bounded to avoid unbounded memory growth on long
-  // editing sessions. 100 steps comfortably exceeds a session's worth of
-  // edits while keeping memory in the tens of KB even for large schematics.
-  const UNDO_LIMIT = 100;
   function historySnapshot(): HistorySnapshot {
     return makeHistorySnapshot(docRef.current, selRef.current);
   }
   function restoreHistorySnapshot(snapshot: HistorySnapshot) {
     setDoc(snapshot.doc);
     setSelectedIds(selectedIdsFromSnapshot(snapshot));
-  }
-  function pushPast(snapshot: HistorySnapshot) {
-    const cur = pastRef.current;
-    setPast(pushBoundedHistory(cur, snapshot, UNDO_LIMIT));
   }
   function commit(updater: (d: CircuitDoc) => CircuitDoc) {
     pushPast(historySnapshot());
@@ -2032,11 +2035,10 @@ export function Editor() {
         activeSubxResize?.committed,
     );
     if (hasCommittedPreview) {
-      const popped = popLatestHistorySnapshot(pastRef.current);
-      if (popped.snapshot) {
-        setPast(popped.history);
+      const snapshot = popLatestPast();
+      if (snapshot) {
         setFuture([]);
-        restoreHistorySnapshot(popped.snapshot);
+        restoreHistorySnapshot(snapshot);
         invalidateSimulationState();
       }
     }
