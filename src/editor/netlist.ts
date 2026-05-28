@@ -2,9 +2,10 @@
 //
 // Nodes are derived from grid coordinates: any pin or wire vertex at the same
 // (x,y) is the same node; wire polylines union all of their vertices; probes
-// component pins, probes, and other wire endpoints that sit along a wire
-// segment are also mapped onto that node; any node containing a GND pin
-// becomes node "0" (SPICE ground).
+// and net labels that sit along a wire segment are also mapped onto that node.
+// Component pins intentionally connect only to explicit wire vertices/junctions,
+// not arbitrary segment pass-throughs; any node containing a GND pin becomes
+// node "0" (SPICE ground).
 //
 // Models for D / NPN / PNP / NMOS / PMOS are auto-emitted with sane defaults
 // when the user hasn't supplied a custom model name in the component value.
@@ -288,11 +289,13 @@ export function buildNetlist(doc: CircuitDoc): NetlistResult {
   if (optionParts.length > 0) settingsLines.push(`.options ${optionParts.join(" ")}`);
   // UIC is a suffix on the .tran command and applied at analysis-emission
   // time on the Rust side, not as a directive. Skipped here.
+  const saveLine = liveFlowSaveDirective(root.components, rootBuild.refdes);
 
   const body =
     rootBuild.bodyLines.join("\n") +
     (modelLines.length ? "\n" + modelLines.join("\n") : "") +
     (subLines.length ? "\n\n" + subLines.join("\n") : "") +
+    (saveLine ? "\n" + saveLine : "") +
     (settingsLines.length ? "\n" + settingsLines.join("\n") : "") +
     (userDirectives ? "\n" + userDirectives : "") +
     "\n";
@@ -306,6 +309,71 @@ export function buildNetlist(doc: CircuitDoc): NetlistResult {
     floatingPins,
     modelDiagnostics,
   };
+}
+
+function liveFlowSaveDirective(
+  components: CircuitComponent[],
+  refdes: Map<string, string>,
+): string {
+  const tokens = new Set<string>();
+  for (const component of components) {
+    const ref = refdes.get(component.id);
+    if (!ref) continue;
+    for (const token of liveFlowSaveTokens(component, ref)) tokens.add(token);
+  }
+  return tokens.size > 0 ? `.save all ${[...tokens].join(" ")}` : "";
+}
+
+function liveFlowSaveTokens(component: CircuitComponent, refdes: string): string[] {
+  switch (component.kind) {
+    case "V":
+    case "B":
+      return [`@${refdes}[i]`];
+    case "I":
+      return [`@${refdes}[current]`];
+    case "R":
+    case "C":
+    case "L":
+      return [`@${refdes}[i]`];
+    case "D":
+      return [`@${refdes}[id]`];
+    case "NPN":
+    case "PNP":
+      return [`@${refdes}[ic]`, `@${refdes}[ie]`, `@${refdes}[ib]`];
+    case "NMOS":
+    case "PMOS":
+      return [`@${refdes}[id]`, `@${refdes}[ig]`, `@${refdes}[is]`];
+    case "NMOS4":
+    case "PMOS4":
+      return [`@${refdes}[id]`, `@${refdes}[ig]`, `@${refdes}[is]`, `@${refdes}[ib]`];
+    case "OPAMP":
+    case "SUBX":
+      return getPinLayout(component).map((_, pinIndex) => `@${liveFlowSubcircuitPinSenseRef(refdes, pinIndex)}[i]`);
+    default:
+      return [];
+  }
+}
+
+export function liveFlowSubcircuitPinSenseRef(refdes: string, pinIndex: number): string {
+  const safeRef = refdes.replace(/[^A-Za-z0-9]/g, "");
+  return `VLF${safeRef || "X"}P${pinIndex + 1}`;
+}
+
+function liveFlowSubcircuitInternalNode(refdes: string, pinIndex: number): string {
+  return `lf_${sanitizeNodeName(refdes)}_p${pinIndex + 1}`;
+}
+
+function liveFlowSensedSubcircuitNodes(
+  refdes: string,
+  nodes: string[],
+  lines: string[],
+): string[] {
+  return nodes.map((node, pinIndex) => {
+    const internalNode = liveFlowSubcircuitInternalNode(refdes, pinIndex);
+    const senseRef = liveFlowSubcircuitPinSenseRef(refdes, pinIndex);
+    lines.push(`${senseRef} ${node} ${internalNode} 0`);
+    return internalNode;
+  });
 }
 
 function subcircuitCycleErrors(doc: CircuitDoc): string[] {
@@ -391,14 +459,14 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
   const modelDiagnostics: ModelDiagnostic[] = [];
   const isSubckt = opts.isSubckt;
 
-  const compPinKeys: { compId: string; pinIdx: number; posKey: string }[] = [];
+  const compPinKeys: { compId: string; pinIdx: number; posKey: string; kind: ComponentKind }[] = [];
   for (const c of page.components) {
     const pins = getPinLayout(c);
     for (let i = 0; i < pins.length; i++) {
       const wp = pinWorldPos(c, i);
       const k = key(wp.x, wp.y);
       dsu.ensure(k);
-      compPinKeys.push({ compId: c.id, pinIdx: i, posKey: k });
+      compPinKeys.push({ compId: c.id, pinIdx: i, posKey: k, kind: c.kind });
     }
   }
 
@@ -414,6 +482,7 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
   }
   unionWirePointsOnWireSegments(page.wires, dsu);
 
+  const wirePassThroughPins: Array<{ compId: string; pinIdx: number; wireId: string }> = [];
   for (const cp of compPinKeys) {
     const [px, py] = parseCoordKey(cp.posKey);
     for (const w of page.wires) {
@@ -421,6 +490,10 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
         const [x1, y1] = w.points[idx];
         const [x2, y2] = w.points[idx + 1];
         if (!pointOnSegment(px, py, x1, y1, x2, y2)) continue;
+        if (!wireHasPoint(w, px, py) && cp.kind !== "LABEL") {
+          wirePassThroughPins.push({ compId: cp.compId, pinIdx: cp.pinIdx, wireId: w.id });
+          continue;
+        }
         dsu.union(cp.posKey, key(x1, y1));
         dsu.union(cp.posKey, key(x2, y2));
       }
@@ -651,14 +724,20 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
       case "OPAMP": {
         const model = v || DEFAULT_MODEL_NAMES["OPAMP"]!;
         if (model === DEFAULT_MODEL_NAMES["OPAMP"]) opts.usedModels.add("OPAMP");
+        const sensedNodes = isSubckt ? n : liveFlowSensedSubcircuitNodes(name, n, lines);
         // n[0]=V+, n[1]=V-, n[2]=OUT
-        lines.push(`${name} ${n[0]} ${n[1]} ${n[2]} ${model}`);
+        lines.push(`${name} ${sensedNodes[0]} ${sensedNodes[1]} ${sensedNodes[2]} ${model}`);
         break;
       }
       case "SUBX": {
         // Subcircuit instance: pin nodes in order, then subckt name as model.
         const model = v.trim() || "UNDEFINED";
-        lines.push(`${name} ${n.join(" ")} ${model}`);
+        if (isSubckt) {
+          lines.push(`${name} ${n.join(" ")} ${model}`);
+          break;
+        }
+        const sensedNodes = liveFlowSensedSubcircuitNodes(name, n, lines);
+        lines.push(`${name} ${sensedNodes.join(" ")} ${model}`);
         break;
       }
     }
@@ -704,8 +783,54 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
     }
   }
 
+  // Electrically-dangling nets: a node reached by only ONE *device*
+  // terminal has no return path, so it floats. The pin-count check above
+  // misses this whenever a net label pads the count to ≥2 — which is the
+  // norm for imported netlists, where every node becomes a label. Count
+  // real device terminals (labels/GND/notes are annotations, not paths).
+  const deviceTerminalCountByNode = new Map<string, number>();
+  const firstDeviceOnNode = new Map<string, { compId: string; pinIdx: number; kind: ComponentKind }>();
+  for (const cp of compPinKeys) {
+    if (cp.kind === "LABEL" || cp.kind === "GND" || cp.kind === "NOTE") continue;
+    const node = pinToNode.get(pinKey(cp.compId, cp.pinIdx));
+    if (!node || node === "0") continue;
+    deviceTerminalCountByNode.set(node, (deviceTerminalCountByNode.get(node) ?? 0) + 1);
+    if (!firstDeviceOnNode.has(node)) firstDeviceOnNode.set(node, cp);
+  }
+  const alreadyFloatingNodes = new Set(floatingPins.map((fp) => fp.node));
+  for (const [node, count] of deviceTerminalCountByNode) {
+    if (count >= 2) continue;
+    if (alreadyFloatingNodes.has(node)) continue; // bare pin already reported above
+    if (isSubckt && externalPinNames.has(node)) continue; // subcircuit port
+    const cp = firstDeviceOnNode.get(node);
+    if (!cp) continue;
+    // A node held by a single voltage-defining source (V, or a behavioral
+    // source — typically V=…) is *not* floating: the source pins its
+    // potential, so ngspice solves it fine. Common for sense/test points
+    // (e.g. a source whose output is only read by a B-source expression).
+    // Flagging those is a false positive that also suppresses Live Flow.
+    if (cp.kind === "V" || cp.kind === "B") continue;
+    const ref = refdes.get(cp.compId) ?? cp.compId;
+    const label = pinLabelForKind(cp.kind, cp.pinIdx);
+    const displayPin = label ? `${label} pin` : `pin ${cp.pinIdx + 1}`;
+    warnings.push(
+      `Node ${node} connects to only one terminal (${ref} ${displayPin}) — it has no return path, so it floats.`,
+    );
+    floatingPins.push({
+      componentId: cp.compId,
+      pinIdx: cp.pinIdx,
+      pinLabel: label ?? undefined,
+      refdes: ref,
+      node,
+    });
+  }
+
   for (const nearMiss of netLabelNearMisses(page)) {
     warnings.push(formatNetLabelNearMissWarning(nearMiss, refdes, page));
+  }
+
+  for (const passThrough of dedupeWirePassThroughPins(wirePassThroughPins)) {
+    warnings.push(formatWirePassThroughPinWarning(passThrough, refdes, page));
   }
 
   return {
@@ -720,6 +845,36 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
   };
 }
 
+function wireHasPoint(wire: Wire, x: number, y: number): boolean {
+  return wire.points.some(([px, py]) => key(px, py) === key(x, y));
+}
+
+function dedupeWirePassThroughPins(
+  pins: Array<{ compId: string; pinIdx: number; wireId: string }>,
+): Array<{ compId: string; pinIdx: number; wireId: string }> {
+  const seen = new Set<string>();
+  const out: Array<{ compId: string; pinIdx: number; wireId: string }> = [];
+  for (const pin of pins) {
+    const k = `${pin.compId}:${pin.pinIdx}:${pin.wireId}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(pin);
+  }
+  return out;
+}
+
+function formatWirePassThroughPinWarning(
+  pin: { compId: string; pinIdx: number; wireId: string },
+  refdes: Map<string, string>,
+  page: SchematicPage,
+): string {
+  const component = page.components.find((c) => c.id === pin.compId);
+  const ref = refdes.get(pin.compId) ?? pin.compId;
+  const pinLabel = component ? pinLabelForKind(component.kind, pin.pinIdx) : null;
+  const displayPin = pinLabel ? `${pinLabel} pin` : `pin ${pin.pinIdx + 1}`;
+  return `${ref} ${displayPin} lies on wire ${pin.wireId}, but there is no explicit junction there; it is not connected. Add a wire endpoint or junction at the pin to connect it.`;
+}
+
 function formatLayoutAnnotation(refdes: string, component: CircuitComponent): string {
   const fields = [
     `x=${formatLayoutNumber(component.x)}`,
@@ -730,8 +885,10 @@ function formatLayoutAnnotation(refdes: string, component: CircuitComponent): st
   if (component.kind === "SUBX") {
     const w = layoutToken(component.params?.w);
     const h = layoutToken(component.params?.h);
+    const pinSides = layoutToken(component.params?.pinSides);
     if (w) fields.push(`w=${w}`);
     if (h) fields.push(`h=${h}`);
+    if (pinSides && /^[LRTB]+$/i.test(pinSides)) fields.push(`pinSides=${pinSides.toUpperCase()}`);
   }
   return `* spice-sim-layout: ${refdes} ${fields.join(" ")}`;
 }

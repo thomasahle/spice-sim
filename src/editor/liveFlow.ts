@@ -1,5 +1,3 @@
-import { parseSpiceUnitStrict } from "./valueExpressions.ts";
-
 export const LIVE_FLOW_MIN_MAGNITUDE = 0.015;
 export const LIVE_FLOW_MIN_ABSOLUTE_CURRENT = 1e-8;
 export const LIVE_FLOW_FULL_ABSOLUTE_CURRENT = 1e-3;
@@ -20,10 +18,57 @@ export interface LiveFlowVisual {
 export interface LiveFlowSample {
   signedCurrent: number;
   normalizedCurrent: number;
-  source?: LiveFlowSampleSource;
+  source: LiveFlowSampleSource;
 }
 
-export type LiveFlowSampleSource = "ngspice" | "estimated";
+export const LIVE_FLOW_SAMPLE_SOURCES = ["ngspice"] as const;
+export type LiveFlowSampleSource = typeof LIVE_FLOW_SAMPLE_SOURCES[number];
+
+export function isLiveFlowSampleSource(source: unknown): source is LiveFlowSampleSource {
+  return source === "ngspice";
+}
+
+export interface LiveFlowRawSample {
+  current: unknown;
+  source?: unknown;
+}
+
+export function normalizeLiveFlowSamples<T extends string>(
+  raw: Iterable<[T, LiveFlowRawSample]>,
+  scaleCurrents: Iterable<number> = [],
+): Map<T, LiveFlowSample> {
+  const entries = Array.from(raw).filter((entry): entry is [T, { current: number; source: LiveFlowSampleSource }] => {
+    const current = entry[1]?.current;
+    return typeof current === "number" && Number.isFinite(current) && isLiveFlowSampleSource(entry[1]?.source);
+  });
+  let maxI = 1e-15;
+  for (const [, sample] of entries) {
+    if (Math.abs(sample.current) > maxI) maxI = Math.abs(sample.current);
+  }
+  for (const current of scaleCurrents) {
+    if (Number.isFinite(current) && Math.abs(current) > maxI) {
+      maxI = Math.abs(current);
+    }
+  }
+  const out = new Map<T, LiveFlowSample>();
+  for (const [id, sample] of entries) {
+    out.set(id, {
+      signedCurrent: sample.current,
+      normalizedCurrent: sample.current / maxI,
+      source: sample.source,
+    });
+  }
+  return out;
+}
+
+export interface LiveFlowAnimationStyle {
+  opacity: number;
+  "--flow-duration": string;
+  "--flow-cycle": string;
+  "--flow-dash": string;
+  "--flow-gap": string;
+  "--flow-offset": string;
+}
 
 export function liveFlowVisual(
   magnitude: number | undefined,
@@ -90,7 +135,19 @@ export function liveFlowVisualFromSignedCurrent(
 }
 
 export function liveFlowVisualFromSample(sample: LiveFlowSample | undefined): LiveFlowVisual {
+  if (sample?.source !== "ngspice") return liveFlowVisualFromSignedCurrent(undefined);
   return liveFlowVisualFromSignedCurrent(sample?.normalizedCurrent, sample?.signedCurrent);
+}
+
+export function liveFlowAnimationStyle(flow: LiveFlowVisual, phase: number): LiveFlowAnimationStyle {
+  return {
+    opacity: flow.opacity,
+    "--flow-duration": `${flow.durationSeconds}s`,
+    "--flow-cycle": `${flow.dash + flow.gap}`,
+    "--flow-dash": `${flow.dash}`,
+    "--flow-gap": `${flow.gap}`,
+    "--flow-offset": `${phase}`,
+  };
 }
 
 export function liveFlowPhaseForId(id: string): number {
@@ -127,41 +184,37 @@ export interface LiveFlowReadoutText {
 
 export function liveFlowReadoutSourceClass(
   sample: Pick<LiveFlowSample, "source"> | undefined,
-): "measured" | "estimated" | "missing" {
-  if (sample?.source === "estimated") return "estimated";
-  if (sample?.source === "ngspice") return "measured";
-  return "missing";
+): "ngspice" | "unsampled" {
+  if (sample?.source === "ngspice") return "ngspice";
+  return "unsampled";
 }
 
 export function liveFlowReadoutText(
   sample: LiveFlowSample | undefined,
   active: boolean,
 ): LiveFlowReadoutText {
-  if (!sample) {
+  if (sample?.source !== "ngspice") {
     return {
-      label: "Not sampled",
+      label: "No ngspice sample",
       detail: null,
-      title: "No branch-current or passive-estimate sample is available for this wire at the selected transient time.",
+      title: "No ngspice current-vector sample is available for this wire at the selected transient time.",
       showArrow: false,
     };
   }
   const currentLabel = formatLiveFlowCurrent(sample.signedCurrent);
-  const sourceTitle =
-    sample.source === "estimated"
-      ? "estimated from node voltages"
-      : "measured from simulated branch current";
+  const sourceTitle = "from ngspice current vectors";
   if (!active) {
     return {
       label: currentLabel,
-      detail: "below range",
-      title: `Live Flow is below the ${formatLiveFlowCurrent(LIVE_FLOW_MIN_ABSOLUTE_CURRENT)} display threshold here: ${currentLabel}, ${sourceTitle}.`,
+      detail: "ngspice · low",
+      title: `Live Flow is below the ${formatLiveFlowCurrent(LIVE_FLOW_MIN_ABSOLUTE_CURRENT)} display threshold here: ${currentLabel}, sampled ${sourceTitle}.`,
       showArrow: false,
     };
   }
   return {
     label: currentLabel,
-    detail: null,
-    title: `Live Flow: ${currentLabel} ${sourceTitle}.`,
+    detail: "ngspice",
+    title: `Live Flow: ${currentLabel}, sampled ${sourceTitle}.`,
     showArrow: true,
   };
 }
@@ -209,7 +262,15 @@ export function wireFlowSignedCurrentAlongPolyline(
   attachedPinIndex: number,
   pinCount: number,
   attachedAtStart: boolean,
+  currentKind: "branch" | "terminal" = "branch",
 ): number | null {
+  if (currentKind === "terminal") {
+    if (!Number.isFinite(componentCurrent)) return null;
+    // Ngspice terminal currents are positive into that device terminal. If the
+    // wire polyline starts at the pin, visible flow is opposite the polyline;
+    // if the pin is at the end, visible flow is along the polyline.
+    return attachedAtStart ? -componentCurrent : componentCurrent;
+  }
   const currentFromAttachment = wireFlowSignedCurrent(
     componentCurrent,
     attachedPinIndex,
@@ -222,64 +283,77 @@ export function wireFlowSignedCurrentAlongPolyline(
 export function liveFlowCurrentTraceCandidates(kind: string, refdes: string): string[] {
   const rd = refdes.trim().toLowerCase();
   if (!rd) return [];
-  const base = [`@${rd}[i]`, `${rd}#branch`, `i(${rd})`];
+  const deviceCurrent = (name: string) => [`i(@${rd}[${name}])`, `@${rd}[${name}]`];
+  const base = [...deviceCurrent("i"), `${rd}#branch`, `i(${rd})`];
   switch (kind) {
+    case "I":
+      return [...deviceCurrent("current"), ...base];
     case "D":
     case "LED":
     case "ZENER":
-      return [`@${rd}[id]`, ...base];
+      return [...deviceCurrent("id"), ...base];
     case "BJT":
     case "NPN":
     case "PNP":
-      return [`@${rd}[ic]`, `@${rd}[ie]`, `@${rd}[ib]`, ...base];
+      return [...deviceCurrent("ic"), ...deviceCurrent("ie"), ...deviceCurrent("ib"), ...base];
     case "NMOS":
     case "PMOS":
     case "NMOS4":
     case "PMOS4":
-      return [`@${rd}[id]`, `@${rd}[is]`, ...base];
+      return [...deviceCurrent("id"), ...deviceCurrent("is"), ...base];
     default:
       return base;
   }
 }
 
-export interface PassiveLiveFlowCurrentInput {
-  kind: string;
-  value: string;
-  pin0Voltage: number;
-  pin1Voltage: number;
-  previousPin0Voltage?: number;
-  previousPin1Voltage?: number;
-  deltaTime?: number;
+export function liveFlowTerminalCurrentTraceCandidates(
+  kind: string,
+  refdes: string,
+  pinIndex: number,
+): string[] {
+  const rd = refdes.trim().toLowerCase();
+  if (!rd) return [];
+  const deviceCurrent = (name: string) => [`i(@${rd}[${name}])`, `@${rd}[${name}]`];
+  switch (kind) {
+    case "BJT":
+    case "NPN":
+    case "PNP":
+      return [
+        deviceCurrent("ic"),
+        deviceCurrent("ib"),
+        deviceCurrent("ie"),
+      ][pinIndex] ?? [];
+    case "NMOS":
+    case "PMOS":
+      return [
+        deviceCurrent("id"),
+        deviceCurrent("ig"),
+        deviceCurrent("is"),
+      ][pinIndex] ?? [];
+    case "NMOS4":
+    case "PMOS4":
+      return [
+        deviceCurrent("id"),
+        deviceCurrent("ig"),
+        deviceCurrent("is"),
+        deviceCurrent("ib"),
+      ][pinIndex] ?? [];
+    default:
+      return [];
+  }
 }
 
-export function estimatePassiveLiveFlowCurrent({
-  kind,
-  value,
-  pin0Voltage,
-  pin1Voltage,
-  previousPin0Voltage,
-  previousPin1Voltage,
-  deltaTime,
-}: PassiveLiveFlowCurrentInput): number | null {
-  if (!Number.isFinite(pin0Voltage) || !Number.isFinite(pin1Voltage)) return null;
-  const componentValue = parseSpiceUnitStrict(value.trim().split(/\s+/)[0] ?? "");
-  if (componentValue === null || componentValue <= 0) return null;
-  const voltage = pin0Voltage - pin1Voltage;
-  if (kind === "R") return voltage / componentValue;
-  if (kind !== "C") return null;
-  if (
-    typeof previousPin0Voltage !== "number" ||
-    typeof previousPin1Voltage !== "number" ||
-    typeof deltaTime !== "number" ||
-    !Number.isFinite(previousPin0Voltage) ||
-    !Number.isFinite(previousPin1Voltage) ||
-    !Number.isFinite(deltaTime) ||
-    deltaTime <= 0
-  ) {
-    return null;
-  }
-  const previousVoltage = previousPin0Voltage - previousPin1Voltage;
-  return componentValue * ((voltage - previousVoltage) / deltaTime);
+export function liveFlowRequiresTerminalCurrent(kind: string): boolean {
+  return (
+    kind === "BJT" ||
+    kind === "NPN" ||
+    kind === "PNP" ||
+    kind === "NMOS" ||
+    kind === "PMOS" ||
+    kind === "NMOS4" ||
+    kind === "PMOS4" ||
+    kind === "OPAMP"
+  );
 }
 
 export interface WireFlowAttachment {
@@ -295,6 +369,7 @@ export interface WireFlowCandidate {
   pinCount: number;
   attachedAtStart: boolean;
   distance: number;
+  currentKind?: "branch" | "terminal";
 }
 
 export interface WireFlowCandidateSample {
@@ -314,6 +389,7 @@ export function wireFlowSampleFromCandidates(
       candidate.attachedPinIndex,
       candidate.pinCount,
       candidate.attachedAtStart,
+      candidate.currentKind,
     );
     if (signedCurrent === null) continue;
     const sample = {
@@ -329,13 +405,6 @@ export function wireFlowSampleFromCandidates(
     if (distanceDelta < -tieTolerance) {
       best = sample;
       continue;
-    }
-    if (
-      Math.abs(distanceDelta) <= tieTolerance &&
-      best.source === "estimated" &&
-      sample.source === "ngspice"
-    ) {
-      best = sample;
     }
   }
   return best;
@@ -608,7 +677,7 @@ export interface LiveFlowStatus {
   label: string;
   title: string;
   tone: LiveFlowStatusTone;
-  source: "none" | "measured" | "estimated" | "mixed";
+  source: "none" | "ngspice";
 }
 
 export interface LiveFlowStatusInput {
@@ -621,10 +690,7 @@ export interface LiveFlowStatusInput {
   visibleWireCount?: number;
   activeWireCount: number;
   sampledWireCount: number;
-  sampledMeasuredWireCount?: number;
-  sampledEstimatedWireCount?: number;
-  measuredWireCount?: number;
-  estimatedWireCount?: number;
+  ngspiceWireCount?: number;
   strongestCurrent?: number;
 }
 
@@ -684,7 +750,8 @@ export function liveFlowStatus(input: LiveFlowStatusInput): LiveFlowStatus {
       source: "none",
     };
   }
-  if (liveFlowVisibleWireCount(input) === 0) {
+  const counts = liveFlowStatusCounts(input);
+  if (counts.visible === 0) {
     return {
       show: true,
       label: "No wires",
@@ -693,44 +760,53 @@ export function liveFlowStatus(input: LiveFlowStatusInput): LiveFlowStatus {
       source: "none",
     };
   }
-  if (input.sampledWireCount === 0) {
+  if (counts.sampled === 0) {
     const coverageTitle = liveFlowWireCoverageTitle(input);
     return {
       show: true,
-      label: "No samples",
+      label: "No ngspice",
       title: coverageTitle
-        ? `No wire-current samples were found for the visible wires. ${coverageTitle}`
-        : "No wire-current samples were found for the visible wires.",
+        ? `No ngspice current-vector samples were found for the visible wires. ${coverageTitle} Live Flow only animates wires with ngspice current vectors.`
+        : "No ngspice current-vector samples were found for the visible wires. Live Flow only animates wires with ngspice current vectors.",
       tone: "warning",
       source: "none",
     };
   }
-  if (input.activeWireCount === 0) {
+  if (counts.sampledNgspice === 0) {
+    return {
+      show: true,
+      label: "No ngspice",
+      title: `${liveFlowWireCoverageTitle(input)} No ngspice current-vector coverage is available. Live Flow only animates wires with ngspice current vectors.`,
+      tone: "warning",
+      source: "none",
+    };
+  }
+  if (counts.activeNgspice === 0) {
     const thresholdLabel = formatLiveFlowCurrent(LIVE_FLOW_MIN_ABSOLUTE_CURRENT);
     const currentContext = currentLabel
       ? `Strongest sampled wire current: ${currentLabel}.`
       : `Strongest sampled wire current is below ${formatLiveFlowCurrent(LIVE_FLOW_STATUS_CURRENT_FLOOR)}.`;
     const wireCoverageTitle = liveFlowWireCoverageTitle(input);
-    const sourceCoverageTitle = liveFlowSampledSourceCoverageTitle(input);
+    const sourceCoverageTitle = liveFlowSampledSourceTitle(input);
     return {
       show: true,
       label: currentLabel ? `Below range · ${currentLabel}` : "No flow now",
-      title: input.sampledWireCount > 0
+      title: counts.sampledNgspice > 0
         ? `Current is below the ${thresholdLabel} display threshold at this playback time. ${currentContext} ${wireCoverageTitle} ${sourceCoverageTitle}`
         : `Current is below the ${thresholdLabel} display threshold at this playback time.`,
       tone: "muted",
-      source: liveFlowSampledSource(input),
+      source: counts.sampledNgspice > 0 ? "ngspice" : "none",
     };
   }
   const coverage = liveFlowCoverageSummary(input);
-  const visibleWireCount = liveFlowVisibleWireCount(input);
+  const visibleWireCount = counts.visible;
   const activeWireLabel =
-    visibleWireCount > input.activeWireCount
-      ? `${input.activeWireCount}/${visibleWireCount}`
-      : `${input.activeWireCount}`;
+    visibleWireCount > counts.activeNgspice
+      ? `${counts.activeNgspice}/${visibleWireCount}`
+      : `${counts.activeNgspice}`;
   return {
     show: true,
-    label: `${activeWireLabel} ${visibleWireCount === 1 ? "wire" : "wires"}${currentLabel ? ` · ${currentLabel}` : ""}`,
+    label: `${activeWireLabel} ngspice${currentLabel ? ` · ${currentLabel}` : ""}`,
     title: `${liveFlowWireCoverageTitle(input)} Strongest sampled wire current: ${currentLabel ?? "unknown current"}. ${coverage.title}`,
     tone: "ready",
     source: coverage.source,
@@ -747,87 +823,34 @@ function liveFlowCoverageSummary(input: LiveFlowStatusInput): {
   title: string;
   source: LiveFlowStatus["source"];
 } {
-  const activeEstimated = Math.max(0, input.estimatedWireCount ?? 0);
-  const activeMeasured = Math.max(
-    0,
-    input.measuredWireCount ?? Math.max(0, input.activeWireCount - activeEstimated),
-  );
-  const sampledEstimated = Math.max(
-    0,
-    input.sampledEstimatedWireCount ?? activeEstimated,
-  );
-  const sampledMeasured = Math.max(
-    0,
-    input.sampledMeasuredWireCount ?? Math.max(0, input.sampledWireCount - sampledEstimated),
-  );
-  const activeSourceTotal = activeMeasured + activeEstimated;
-  if (activeSourceTotal === 0) {
+  const { activeNgspice, sampledNgspice } = liveFlowStatusCounts(input);
+  if (activeNgspice === 0) {
     return {
-      title: liveFlowSampledSourceTitle(sampledMeasured, sampledEstimated),
-      source: liveFlowSourceFromCounts(sampledMeasured, sampledEstimated),
+      title: liveFlowSampledSourceTitle(input),
+      source: sampledNgspice > 0 ? "ngspice" : "none",
     };
   }
 
-  const activeSourceText = `${activeMeasured} measured, ${activeEstimated} estimated`;
-  const sampledSourceText = liveFlowSampledSourceTitle(sampledMeasured, sampledEstimated);
+  const activeSourceText = liveFlowNgspiceVectorLabel(activeNgspice);
+  const sampledSourceText = liveFlowSampledSourceTitle(input);
   const sourceTitle =
-    sampledMeasured === activeMeasured && sampledEstimated === activeEstimated
+    sampledNgspice === activeNgspice
       ? `Animating streams: ${activeSourceText}.`
       : `Animating streams: ${activeSourceText}. ${sampledSourceText}`;
-  if (activeEstimated === 0) {
-    return {
-      title: `${sourceTitle} Blue streams are simulated branch-current vectors.`,
-      source: "measured",
-    };
-  }
-  if (activeMeasured === 0) {
-    return {
-      title: `${sourceTitle} Amber streams are passive estimates from node voltages.`,
-      source: "estimated",
-    };
-  }
   return {
-    title: `${sourceTitle} Blue streams are simulated branch-current vectors; amber streams are passive estimates from node voltages.`,
-    source: "mixed",
+    title: `${sourceTitle} Live Flow only animates wires with ngspice current vectors.`,
+    source: "ngspice",
   };
 }
 
-function liveFlowSampledSource(input: LiveFlowStatusInput): LiveFlowStatus["source"] {
-  const { measured, estimated } = liveFlowSampledSourceCounts(input);
-  return liveFlowSourceFromCounts(measured, estimated);
+function liveFlowSampledSourceTitle(input: LiveFlowStatusInput): string {
+  const ngspice = liveFlowStatusCounts(input).sampledNgspice;
+  if (ngspice === 0) return "No ngspice current-vector coverage is available.";
+  return `Sampled wires: ${liveFlowNgspiceVectorLabel(ngspice)}.`;
 }
 
-function liveFlowSampledSourceCoverageTitle(input: LiveFlowStatusInput): string {
-  const { measured, estimated } = liveFlowSampledSourceCounts(input);
-  return liveFlowSampledSourceTitle(measured, estimated);
-}
-
-function liveFlowSampledSourceCounts(input: LiveFlowStatusInput): {
-  measured: number;
-  estimated: number;
-} {
-  const estimated = Math.max(0, input.sampledEstimatedWireCount ?? 0);
-  const measured = Math.max(
-    0,
-    input.sampledMeasuredWireCount ?? Math.max(0, input.sampledWireCount - estimated),
-  );
-  return { measured, estimated };
-}
-
-function liveFlowSourceFromCounts(
-  measured: number,
-  estimated: number,
-): LiveFlowStatus["source"] {
-  if (measured > 0 && estimated > 0) return "mixed";
-  if (estimated > 0) return "estimated";
-  if (measured > 0) return "measured";
-  return "none";
-}
-
-function liveFlowSampledSourceTitle(measured: number, estimated: number): string {
-  const total = measured + estimated;
-  if (total === 0) return "No wire-current source coverage is available.";
-  return `Sampled wires: ${measured} measured, ${estimated} estimated.`;
+function liveFlowNgspiceVectorLabel(count: number): string {
+  return `${count} ngspice current ${count === 1 ? "vector" : "vectors"}`;
 }
 
 function liveFlowVisibleWireCount(input: LiveFlowStatusInput): number {
@@ -839,11 +862,12 @@ function liveFlowVisibleWireCount(input: LiveFlowStatusInput): number {
 }
 
 function liveFlowWireCoverageTitle(input: LiveFlowStatusInput): string {
-  const visible = liveFlowVisibleWireCount(input);
+  const counts = liveFlowStatusCounts(input);
+  const visible = counts.visible;
   if (visible === 0) return "";
 
-  const active = Math.max(0, Math.min(input.activeWireCount, visible));
-  const sampled = Math.max(0, Math.min(input.sampledWireCount, visible));
+  const active = Math.max(0, Math.min(counts.activeNgspice, visible));
+  const sampled = Math.max(0, Math.min(counts.sampledNgspice, visible));
   const unsampled = Math.max(0, visible - sampled);
   const inactiveSampled = Math.max(0, sampled - active);
   const parts: string[] = [];
@@ -854,10 +878,26 @@ function liveFlowWireCoverageTitle(input: LiveFlowStatusInput): string {
     parts.push(`${active} of ${visible} visible ${visible === 1 ? "wire is" : "wires are"} animating`);
   }
   if (unsampled > 0) {
-    parts.push(`${unsampled} visible ${unsampled === 1 ? "wire has" : "wires have"} no usable current sample`);
+    parts.push(`${unsampled} visible ${unsampled === 1 ? "wire has" : "wires have"} no ngspice current-vector sample`);
   }
   if (inactiveSampled > 0) {
     parts.push(`${inactiveSampled} sampled ${inactiveSampled === 1 ? "wire is" : "wires are"} below the display threshold at this playback time`);
   }
   return `${parts.join(". ")}.`;
+}
+
+function liveFlowStatusCounts(input: LiveFlowStatusInput): {
+  visible: number;
+  sampled: number;
+  sampledNgspice: number;
+  activeNgspice: number;
+} {
+  const visible = liveFlowVisibleWireCount(input);
+  const sampled = Math.max(0, input.sampledWireCount);
+  // Runtime Live Flow samples are produced only from ngspice current vectors.
+  // Keep the status model aligned with that invariant so the UI cannot drift
+  // back into representing estimated/fallback coverage.
+  const sampledNgspice = Math.max(0, Math.min(sampled, visible));
+  const activeNgspice = Math.max(0, Math.min(input.ngspiceWireCount ?? input.activeWireCount, sampledNgspice, visible));
+  return { visible, sampled, sampledNgspice, activeNgspice };
 }

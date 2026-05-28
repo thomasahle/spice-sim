@@ -61,6 +61,17 @@ test("value label bounds include side-placed source labels", () => {
   assert.ok(bounds.y2 > 0.25);
 });
 
+test("rendered source labels keep hit boxes close to the visible text", () => {
+  const source: CircuitComponent = { id: "v1", kind: "V", x: 0, y: 0, rotation: 0, value: "PULSE(0 5)" };
+  const offset = valueLabelOffset(source, page([source]), "5V step");
+
+  const bounds = valueLabelBounds(source, offset, "5V step", 0.56);
+
+  assert.equal(offset.anchor, "start");
+  assert.ok(bounds.x2 - bounds.x1 < 2.2);
+  assert.ok(bounds.x2 - bounds.x1 > 1.6);
+});
+
 test("passive labels keep the familiar below-part placement when clear", () => {
   const resistor: CircuitComponent = { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" };
 
@@ -155,6 +166,35 @@ test("component value labels avoid labels already placed on nearby components", 
   assert.notDeepEqual(offsets.get(first.id), offsets.get(second.id));
 });
 
+test("component value labels avoid the component user label click target", () => {
+  const resistor: CircuitComponent = {
+    id: "r1",
+    kind: "R",
+    x: 0,
+    y: 0,
+    rotation: 0,
+    value: "2k",
+    label: "bias leg",
+  };
+  const schematic = pageWithWires(
+    [
+      resistor,
+      { id: "label1", kind: "LABEL", x: 3, y: 0, rotation: 0, value: "V_{OUT}" },
+      { id: "x1", kind: "SUBX", x: 6, y: 2, rotation: 0, value: "relu_cell", params: { npins: "2", w: "5", h: "3" } },
+    ],
+    [
+      { id: "w-label", points: [[2, 0], [3, 0]] },
+      { id: "w-probe", points: [[6, 0.5], [7, 0.5]] },
+    ],
+  );
+
+  const offset = valueLabelOffset(resistor, schematic, "2kΩ");
+
+  assert.notDeepEqual(offset, { x: 0, y: -1.15, anchor: "middle" });
+  assert.equal(offset.anchor, "middle");
+  assert.ok(offset.y >= 1.45);
+});
+
 test("component value labels avoid probe label chips", () => {
   const resistor: CircuitComponent = { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" };
   const schematic = pageWithProbes([resistor], [
@@ -173,7 +213,10 @@ test("component value labels avoid routed net-label chip positions", () => {
   const schematic = page([resistor, label, blocker]);
   const routedLabel = netLabelLayout(label, schematic, "out");
 
-  assert.deepEqual(routedLabel.bounds, { x1: -0.7919999999999998, y1: 1.01, x2: 1.08, y2: 1.8900000000000001 });
+  assert.equal(routedLabel.bounds.y1, 1.01);
+  assert.equal(routedLabel.bounds.y2, 1.8900000000000001);
+  assert.ok(routedLabel.bounds.x1 < -0.9);
+  assert.equal(routedLabel.bounds.x2, 1.08);
 
   const offset = valueLabelOffset(resistor, schematic, "1kΩ");
   const bounds = valueLabelBounds(resistor, offset, "1kΩ");
@@ -218,6 +261,21 @@ test("net labels with TeX scripts get enough chip height for KaTeX glyphs", () =
 
   const layout = netLabelLayout(label, schematic, "W_+");
 
+  assert.ok(layout.chipW >= 2);
   assert.ok(layout.chipH > 1.1);
+  assert.ok(layout.chipH <= 1.6);
   assert.equal(layout.bounds.y2 - layout.bounds.y1, layout.chipH);
+  assert.equal(layout.textX, layout.chipX + layout.chipW / 2);
+  assert.equal(layout.textY, layout.chipY + layout.chipH / 2);
+});
+
+test("net labels reserve enough width for word-like KaTeX labels", () => {
+  const label: CircuitComponent = { id: "lbl", kind: "LABEL", x: 0, y: 0, rotation: 0, value: "bias+" };
+  const schematic = page([label]);
+
+  const layout = netLabelLayout(label, schematic, "bias+");
+
+  assert.ok(layout.chipW >= 3.35);
+  assert.equal(layout.textX, layout.chipX + layout.chipW / 2);
+  assert.equal(layout.textY, layout.chipY + layout.chipH / 2);
 });

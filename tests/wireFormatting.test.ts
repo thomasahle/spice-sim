@@ -93,6 +93,37 @@ test("autoFormatWireAvoiding preserves probes on wire bodies", () => {
   assert.ok(autoFormatWireAvoiding(page.wires[0], page).points.some(([x, y]) => x === 4 && y === 2));
 });
 
+test("autoFormatWireAvoiding does not promote component pin pass-throughs into junctions", () => {
+  const page: SchematicPage = {
+    id: "page",
+    name: "main",
+    description: "",
+    components: [
+      { id: "r1", kind: "R", x: 0, y: 2, rotation: 0, value: "1k" },
+    ],
+    wires: [
+      {
+        id: "w1",
+        points: [
+          [-4, 2],
+          [-4, 4],
+          [4, 4],
+          [4, 2],
+        ],
+      },
+    ],
+    probes: [],
+  };
+
+  assert.deepEqual(autoFormatWireStops(page.wires[0], page), [
+    [-4, 2],
+    [4, 2],
+  ]);
+  const formatted = autoFormatWireAvoiding(page.wires[0], page);
+  assert.equal(formatted.points.some(([x, y]) => x === -2 && y === 2), false);
+  assert.equal(formatted.points.some(([x, y]) => x === 2 && y === 2), false);
+});
+
 test("autoFormatWireAvoiding reroutes simplified wires around component bodies", () => {
   const blocker = {
     id: "note",

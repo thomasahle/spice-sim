@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canvasValueLabel, formatSourceLabel, formatValueForKind } from "../src/editor/labelFormatting.ts";
+import {
+  canStartCanvasValueEditFromTyping,
+  canvasValueLabel,
+  formatSourceLabel,
+  formatValueForKind,
+  isCanvasModelKind,
+  isEditableCanvasComponentValue,
+} from "../src/editor/labelFormatting.ts";
 
 test("passive value labels append units without duplicating existing units", () => {
   assert.equal(formatValueForKind("R", "1k"), "1kΩ");
@@ -46,4 +53,39 @@ test("canvas labels hide model-backed values and empty labels", () => {
   assert.equal(canvasValueLabel("SUBX", "child"), null);
   assert.equal(canvasValueLabel("R", "   "), null);
   assert.equal(canvasValueLabel("R", "1k"), "1kΩ");
+});
+
+test("on-canvas value editability includes hidden model-backed values", () => {
+  assert.equal(isCanvasModelKind("NMOS"), true);
+  assert.equal(isCanvasModelKind("D"), true);
+  assert.equal(isCanvasModelKind("R"), false);
+
+  assert.equal(isEditableCanvasComponentValue("NMOS", "NCH"), true);
+  assert.equal(isEditableCanvasComponentValue("D", "D1N4148"), true);
+  assert.equal(isEditableCanvasComponentValue("OPAMP", "LM741"), true);
+  assert.equal(isEditableCanvasComponentValue("SUBX", "relu_cell"), true);
+  assert.equal(isEditableCanvasComponentValue("B", "V=max(0,V(in))"), true);
+  assert.equal(isEditableCanvasComponentValue("R", "1k"), true);
+  assert.equal(isEditableCanvasComponentValue("R", "   "), false);
+  assert.equal(isEditableCanvasComponentValue("LABEL", "out"), false);
+  assert.equal(isEditableCanvasComponentValue("NOTE", "text"), false);
+});
+
+test("direct typing can start realistic on-canvas value edits", () => {
+  assert.equal(canStartCanvasValueEditFromTyping("R", "1k", "2"), true);
+  assert.equal(canStartCanvasValueEditFromTyping("R", "1k", "k"), true);
+  assert.equal(canStartCanvasValueEditFromTyping("R", "1k", "M"), true);
+  assert.equal(canStartCanvasValueEditFromTyping("C", "100n", "u"), true);
+  assert.equal(canStartCanvasValueEditFromTyping("L", "10m", "H"), true);
+  assert.equal(canStartCanvasValueEditFromTyping("R", "1k", "w"), false);
+
+  assert.equal(canStartCanvasValueEditFromTyping("V", "DC 5", "P"), true);
+  assert.equal(canStartCanvasValueEditFromTyping("I", "SIN(0 1m 1k)", "S"), true);
+  assert.equal(canStartCanvasValueEditFromTyping("B", "V=V(in)", "v"), true);
+  assert.equal(canStartCanvasValueEditFromTyping("NMOS", "NCH", "N"), true);
+  assert.equal(canStartCanvasValueEditFromTyping("SUBX", "relu_cell", "r"), true);
+
+  assert.equal(canStartCanvasValueEditFromTyping("R", "   ", "1"), false);
+  assert.equal(canStartCanvasValueEditFromTyping("LABEL", "out", "x"), false);
+  assert.equal(canStartCanvasValueEditFromTyping("R", "1k", "ab"), false);
 });

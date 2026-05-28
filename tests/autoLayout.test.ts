@@ -123,7 +123,7 @@ test("autoArrangePage selection keeps stationary endpoints in place", async () =
   assert.deepEqual(outputWire.points[outputWire.points.length - 1], [4, 0]);
 });
 
-test("autoArrangePage reconnects selected pins that touched wire interiors", async () => {
+test("autoArrangePage reconnects selected pins that touched explicit wire junctions", async () => {
   const page: SchematicPage = {
     id: "page",
     name: "main",
@@ -140,6 +140,7 @@ test("autoArrangePage reconnects selected pins that touched wire interiors", asy
           [-8, -2],
           [-4, -2],
           [-4, 0],
+          [-2, 0],
           [0, 0],
         ],
       },

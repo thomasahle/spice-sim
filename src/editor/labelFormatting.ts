@@ -16,6 +16,23 @@ export function canvasValueLabel(kind: ComponentKind, value: string): string | n
   return formatValueForKind(kind, trimmed);
 }
 
+export function isEditableCanvasComponentValue(kind: ComponentKind, value: string): boolean {
+  return kind === "SUBX" || isCanvasModelKind(kind) || Boolean(canvasValueLabel(kind, value));
+}
+
+export function canStartCanvasValueEditFromTyping(
+  kind: ComponentKind,
+  value: string,
+  initialValue: string,
+): boolean {
+  if (!isEditableCanvasComponentValue(kind, value)) return false;
+  if (initialValue.length !== 1) return false;
+  if (kind === "R" || kind === "C" || kind === "L") {
+    return /^[0-9.+\-eEfpnumkKMGTµμuΩohfFaAhH]$/.test(initialValue);
+  }
+  return true;
+}
+
 // Short, friendly label for V/I sources on the schematic. The inspector can
 // show full SPICE syntax; the canvas should show only the useful gist.
 export function formatSourceLabel(raw: string, kind: "V" | "I"): string {
@@ -166,7 +183,7 @@ function hasScaleSuffix(value: string): boolean {
   return /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?[fpnumkKMGT]$/i.test(value.trim());
 }
 
-function isCanvasModelKind(kind: ComponentKind): boolean {
+export function isCanvasModelKind(kind: ComponentKind): boolean {
   return (
     kind === "D" ||
     kind === "NPN" ||

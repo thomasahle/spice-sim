@@ -29,7 +29,7 @@ async function readValueInput(page) {
     const select = row.querySelector(".value-with-unit-select");
     return {
       magnitude: input ? input.value : null,
-      prefix: select ? select.value : null,
+      prefix: select ? (select.getAttribute("data-value") ?? select.value) : null,
       hasUnitSelect: !!select,
     };
   });
@@ -45,6 +45,32 @@ async function valueInputBox(page) {
     const b = i.getBoundingClientRect();
     return { x: b.x + 10, y: b.y + b.height / 2 };
   });
+}
+
+async function chooseUnitPrefix(page, label) {
+  const triggerBox = await page.evaluate(() => {
+    const row = [...document.querySelectorAll(".inspector .row")].find(
+      (r) => r.querySelector(".row-label")?.textContent?.trim() === "Value",
+    );
+    const trigger = row?.querySelector(".value-with-unit-select");
+    if (!trigger) return null;
+    const b = trigger.getBoundingClientRect();
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  });
+  if (!triggerBox) throw new Error("unit selector not found");
+  await page.mouse.click(triggerBox.x, triggerBox.y);
+  await page.waitForSelector(".radix-select-content", { timeout: 5000 });
+  const optionBox = await page.evaluate((wanted) => {
+    const item = [...document.querySelectorAll(".radix-select-item")].find(
+      (el) => el.textContent?.trim() === wanted,
+    );
+    if (!item) return null;
+    const b = item.getBoundingClientRect();
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  }, label);
+  if (!optionBox) throw new Error(`unit option ${label} not found`);
+  await page.mouse.click(optionBox.x, optionBox.y);
+  await waitFor(300);
 }
 
 test("typing '2.2k' in a resistor Value snaps to magnitude=2.2 + prefix=k on blur", async () => {
@@ -87,17 +113,7 @@ test("changing the unit dropdown rewrites only the prefix", async () => {
     assert.ok(before, "Value row should be present");
     const originalMagnitude = before.magnitude;
 
-    await page.evaluate(() => {
-      const row = [...document.querySelectorAll(".inspector .row")].find(
-        (r) => r.querySelector(".row-label")?.textContent?.trim() === "Value",
-      );
-      const sel = row?.querySelector(".value-with-unit-select");
-      if (sel) {
-        sel.value = "Meg";
-        sel.dispatchEvent(new Event("change", { bubbles: true }));
-      }
-    });
-    await waitFor(300);
+    await chooseUnitPrefix(page, "MΩ");
 
     const after = await readValueInput(page);
     assert.equal(after.prefix, "Meg", "prefix should switch to Meg");

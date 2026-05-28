@@ -8,6 +8,9 @@ test("trace units classify voltage and current vectors", () => {
   assert.equal(traceValueUnit("dc2.v(drain)"), "V");
   assert.equal(traceValueUnit("n3"), "V");
   assert.equal(traceValueUnit("v1#branch"), "A");
+  assert.equal(traceValueUnit("i(v1)"), "A");
+  assert.equal(traceValueUnit("i(@r1[i])"), "A");
+  assert.equal(traceValueUnit("i(@c1[i])"), "A");
   assert.equal(traceValueUnit("tran4.v2#branch"), "A");
   assert.equal(traceValueUnit("@m1[i]"), "A");
   assert.equal(traceValueUnit("@m1[id]"), "A");

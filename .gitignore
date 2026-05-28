@@ -14,6 +14,9 @@ dist-ssr
 src-tauri/target
 *.local
 
+# Playwright MCP browser artifacts (snapshots, console logs, screenshots)
+.playwright-mcp/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

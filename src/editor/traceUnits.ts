@@ -1,6 +1,8 @@
+import { matchDeviceQuantity, stripRunPrefix } from "./traceNames.ts";
+
 export function traceValueUnit(name: string): string {
   const lower = stripRunPrefix(name.trim().toLowerCase());
-  const deviceQuantity = lower.match(/^@[^\][\s]+\[([a-z][a-z0-9_]*)\]$/)?.[1];
+  const deviceQuantity = matchDeviceQuantity(lower)?.quantity;
   if (deviceQuantity) return deviceQuantityUnit(deviceQuantity);
   if (
     lower.includes("#branch") ||
@@ -24,10 +26,6 @@ export function traceValueUnit(name: string): string {
 export function traceAxisLabel(displayName: string, rawName: string): string {
   const unit = traceValueUnit(rawName);
   return unit ? `${displayName} (${unit})` : displayName;
-}
-
-function stripRunPrefix(name: string): string {
-  return name.replace(/^(op|tran|dc|ac|noise)\d+\./i, "");
 }
 
 function deviceQuantityUnit(quantity: string): string {

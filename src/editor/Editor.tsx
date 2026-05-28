@@ -2,14 +2,18 @@ import {
   Children,
   cloneElement,
   isValidElement,
+  memo,
+  useId,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type CSSProperties,
   type ReactElement,
 } from "react";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import type {
   CircuitDoc,
   CircuitComponent,
@@ -22,30 +26,42 @@ import {
   COMPONENT_LABELS,
   currentPage,
   defaultValue,
+  effectiveSubcircuitPinSidesForInstance,
   emptyDoc,
   getPinLayout,
   makeId,
   makePage,
+  flipRotation,
   parsePortOrder,
   pinLabelForKind,
   pinWorldPos,
   rotateNext,
+  rotationForKindSwap,
+  SWAPPABLE_PASSIVE_KINDS,
+  rotatePoint,
   subcircuitBodyHeight,
   subcircuitBodyWidth,
+  subcircuitInstanceParamsForPage,
   subcircuitPinLabelsForInstance,
   subcircuitPortCount,
+  subcircuitPortComponents,
   subcircuitPortLabels,
   subcircuitPageForInstance,
   updatePageMeta,
   updateCurrentPage,
 } from "./model";
 import { ComponentGlyph, PaletteGlyph } from "./symbols";
-import { canvasValueLabel } from "./labelFormatting";
+import {
+  canStartCanvasValueEditFromTyping,
+  canvasValueLabel,
+  isCanvasModelKind as isModelKind,
+  isEditableCanvasComponentValue,
+} from "./labelFormatting";
 import { ValueWithUnit } from "./ValueWithUnit";
 import { componentValueUnitFamily } from "./valueUnitFamilies";
 import { isComplexValue } from "./valueUnits";
 import {
-  estimatePassiveLiveFlowCurrent,
+  liveFlowAnimationStyle,
   liveFlowCurrentTraceCandidates,
   liveFlowPhaseForId,
   liveFlowReadoutArrow,
@@ -54,14 +70,25 @@ import {
   liveFlowReadoutSourceClass,
   liveFlowReadoutText,
   liveFlowReadoutWidth,
+  liveFlowRequiresTerminalCurrent,
   liveFlowStatus,
+  liveFlowTerminalCurrentTraceCandidates,
   liveFlowVisualFromSample,
   liveFlowWireHasVisibleLength,
+  liveFlowWireObstacleBounds,
+  normalizeLiveFlowSamples,
   wireFlowAttachmentForPoint,
   wireFlowSampleFromCandidates,
 } from "./liveFlow";
-import type { LiveFlowSampleSource } from "./liveFlow";
+import { SOURCE_BODY_FLOW_CLIP_RADIUS, componentLiveFlowPaths } from "./componentLiveFlowPaths";
+import type {
+  LiveFlowReadoutPosition,
+  LiveFlowSample,
+  LiveFlowSampleSource,
+  WireFlowCandidate,
+} from "./liveFlow";
 import {
+  componentUserLabelBounds,
   netLabelLayout,
   netLabelLayouts,
   valueLabelBounds,
@@ -74,6 +101,8 @@ import {
   noteComponentHeight,
   noteComponentWidth,
   noteHeight,
+  NOTE_RENDER_ROW_STEP,
+  noteRenderItems,
   noteTextLines,
   noteWidth,
   normalizeCoord,
@@ -86,11 +115,28 @@ import {
   sameTuple,
   wireIntersectsRect,
 } from "./geometry";
-import { buildNetlist, coordKey, type FloatingPinDiagnostic, type ModelDiagnostic } from "./netlist";
+import {
+  buildNetlist,
+  coordKey,
+  liveFlowSubcircuitPinSenseRef,
+  type FloatingPinDiagnostic,
+  type ModelDiagnostic,
+} from "./netlist";
 import { normalizeDoc } from "./docNormalize";
 import { connectedNetLabelIds, netLabelNearMisses, snapNetLabelDrag } from "./netLabelConnections";
 import { SvgInlineMathText } from "./mathTextSvg";
 import { estimateInlineMathTextWidth } from "./mathText.ts";
+import {
+  canvasTextEditRequiresNonEmptyCommit,
+  canvasTextEditSelection,
+  defaultCanvasTextEditFocusMode,
+  isEditingCanvasText,
+  normalizeCanvasTextEditCommitValue,
+  shouldRestoreCanvasTextSelectionBeforeInput,
+  shouldRenderCanvasText,
+  type CanvasTextEditFocusMode,
+  type CanvasTextEditKind,
+} from "./canvasTextEditing";
 import {
   NOTE_COLOR_PRESETS,
   noteColor,
@@ -129,6 +175,10 @@ import { AnalysisDialog } from "./AnalysisDialog";
 import { DirectivesPanel } from "./DirectivesPanel";
 import { SourceEditor } from "./SourceEditor";
 import { SimSettingsPanel } from "./SimSettingsPanel";
+import { CheckboxField, SelectField } from "./RadixControls";
+import { readStoredBoolean, writeStoredBoolean } from "./storage";
+import { ImportNetlistModal, NetlistModal } from "./NetlistModals";
+import { useEditorSelection } from "./useEditorSelection";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -161,7 +211,7 @@ import { sweepRunLabelsFromDirectives } from "./sweepRunLabels";
 import { findNamedTrace, findNodeTrace, latestNodeVoltages, traceNodeName } from "./simVectorLookup";
 import { inlineProbeScopeLabel, probeHasDisplayLabel, shouldRenderInlineProbeScope } from "./probeDisplay";
 import { formatSimulationErrorLog, summarizeSimulationError } from "./simulationErrors";
-import { defaultVisibleTraceNames } from "./traceVisibility";
+import { defaultVisibleTraceNames, traceNamesForNodes } from "./traceVisibility";
 import { analysisXAxisLabel, axisUnitFromLabel } from "./waveformAxis";
 import { hasPlottableWaveform, waveformPaneEmptyState } from "./waveformEmptyState";
 import {
@@ -225,6 +275,9 @@ import {
   canvasDragDeltaAfterThreshold,
   hasActiveCanvasInteraction,
   movedBeyondThreshold,
+  placementCanInsertInline,
+  placementShouldBeginTextEdit,
+  placementShouldSnapToConnections,
   pinTargetTone,
   pointerSelectionHit,
   selectPointerIntent,
@@ -255,12 +308,26 @@ const STARTER_DEMOS = DEMOS.filter((demo) => STARTER_DEMO_IDS.has(demo.id));
 
 type Tool = "select" | "pan" | "wire" | "probe" | ComponentKind;
 type WireGestureMode = "wire-tool" | "quick-wire";
+type CanvasClickEditTarget = {
+  id: string;
+  kind: CanvasTextEditKind;
+  pinIndex?: number;
+};
 
 const CELL = 20;
 const SCOPE_OFFSET_X = 0.9;
 const SCOPE_OFFSET_Y = -3.05;
 const SCOPE_WIDTH = 4.6;
 const SCOPE_HEIGHT = 1.75;
+
+function canvasValueEditorWidthUnits(renderedWidth: number, rawValue: string): number {
+  const raw = rawValue.trim();
+  if (!raw) return Math.max(1.5, renderedWidth);
+  const mathEstimate = estimateInlineMathTextWidth(raw) * 0.42 + 0.95;
+  const plainTextEstimate = raw.length * 0.34 + 1.05;
+  return Math.max(1.5, Math.min(13, Math.max(renderedWidth, mathEstimate, plainTextEstimate)));
+}
+
 const SCOPE_LAYOUT = {
   defaultDx: SCOPE_OFFSET_X,
   defaultDy: SCOPE_OFFSET_Y,
@@ -465,6 +532,13 @@ const ESSENTIAL_TOOL_ITEMS = ["GND", "LABEL", "NOTE"]
   .map((tool) => PALETTE_ITEMS.find((item) => item.tool === tool))
   .filter((item): item is PaletteItem => Boolean(item));
 const DIRECT_TOOL_ITEMS = [...BASIC_TOOL_ITEMS, ...ESSENTIAL_TOOL_ITEMS];
+const MODEL_TYPE_OPTIONS: Array<{ value: ModelDeviceType; label: ModelDeviceType }> = [
+  { value: "NMOS", label: "NMOS" },
+  { value: "PMOS", label: "PMOS" },
+  { value: "D", label: "D" },
+  { value: "NPN", label: "NPN" },
+  { value: "PNP", label: "PNP" },
+];
 
 interface ToolGroup {
   id: string;
@@ -519,6 +593,13 @@ const TOOL_GROUPS: ToolGroup[] = [
   },
 ];
 
+const SUBX_PIN_SIDE_OPTIONS = [
+  { id: "L", label: "L", title: "Left side" },
+  { id: "R", label: "R", title: "Right side" },
+  { id: "T", label: "T", title: "Top side" },
+  { id: "B", label: "B", title: "Bottom side" },
+] as const;
+
 // Default to the RC step demo so the scope is alive on first launch
 // (transient with an exponential charge curve), instead of the divider OP
 // which only renders a flat-line 5V scope.
@@ -534,6 +615,598 @@ function isNarrowViewport(): boolean {
     (window.innerHeight <= 540 && window.innerWidth <= 1024)
   );
 }
+
+// Per-item memo'd render nodes. Big imported circuits (100+ components,
+// 500+ wires) used to re-jsxDEV the whole canvas on every drag frame —
+// `Editor` body ~6 s in a drag profile, dominated by inline `.map(...)`
+// JSX construction. Hoisting each list item to a memo'd component lets
+// React skip 99 % of the work: only the dragged element's props change,
+// every other child gets reference-equality and skips reconcile.
+
+type RegularComponentNodeProps = {
+  c: CircuitComponent;
+  selected: boolean;
+  hovered: boolean;
+  floating: boolean;
+  liveActive: boolean;
+  flowSample: LiveFlowSample | undefined;
+  tool: Tool;
+  activeConnectionGesture: boolean;
+  showSubxResizeHandle: boolean;
+  editingComponentValue: boolean;
+  editingComponentLabel: boolean;
+  valueLabelOffset: { x: number; y: number; anchor: "start" | "middle" | "end" } | undefined;
+  valueLabelText: string | null;
+  selectedStroke: number;
+  defaultStroke: number;
+  valueFontSize: number;
+  subxBodyWidth: number;
+  subxPinLabels: string[] | undefined;
+  subxPinSides: ReturnType<typeof effectiveSubcircuitPinSidesForInstance> | undefined;
+  subxPinLabelEditingIndex: number | null;
+  scheduleCanvasDoubleAction: (target: EventTarget | null) => boolean;
+};
+
+const RegularComponentNode = memo(function RegularComponentNode({
+  c,
+  selected: sel,
+  hovered,
+  floating,
+  liveActive,
+  flowSample,
+  tool,
+  activeConnectionGesture,
+  showSubxResizeHandle,
+  editingComponentValue,
+  editingComponentLabel,
+  valueLabelOffset,
+  valueLabelText,
+  selectedStroke,
+  defaultStroke,
+  valueFontSize,
+  subxBodyWidth,
+  subxPinLabels,
+  subxPinSides,
+  subxPinLabelEditingIndex,
+  scheduleCanvasDoubleAction,
+}: RegularComponentNodeProps) {
+  const bounds = componentVisualBoundsFor(c, 0.16);
+  const connectionToolActive = tool === "wire" || tool === "probe";
+  const activeDevice = isActiveMultiPinKind(c.kind);
+  const componentLabel = c.label?.trim() ?? "";
+  const terminalTone =
+    c.kind === "GND"
+      ? "hidden"
+      : pinTargetTone({
+          connectionGestureActive: activeConnectionGesture,
+          connectionToolActive,
+          hovered,
+          selected: sel,
+          selectToolActive: tool === "select",
+        });
+  const showPinTargets = terminalTone !== "hidden";
+  const componentFlow = liveActive ? liveFlowVisualFromSample(flowSample) : null;
+  const componentFlowActive = Boolean(componentFlow?.active);
+  // Show D/G/S (and other named) pin labels whenever an active multi-pin
+  // device is hovered, so users can identify terminals without starting a
+  // wire — and also while a connection gesture targets a selected device.
+  const pinHints =
+    activeDevice && (hovered || (activeConnectionGesture && sel)) ? pinHintsFor(c) : [];
+  const onDouble = (event: React.MouseEvent) => {
+    if (event.detail >= 2 && scheduleCanvasDoubleAction(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+  const onDoubleClick = (event: React.MouseEvent) => {
+    if (scheduleCanvasDoubleAction(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+  return (
+    <g
+      data-component-id={c.id}
+      className={`component-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""} ${floating ? "floating" : ""} ${editingComponentValue ? "text-editing" : ""}`}
+      onClick={onDouble}
+      onMouseDown={onDouble}
+      onDoubleClick={onDoubleClick}
+    >
+      <rect
+        x={bounds.x1}
+        y={bounds.y1}
+        width={bounds.x2 - bounds.x1}
+        height={bounds.y2 - bounds.y1}
+        rx={0.35}
+        className="component-hit-target"
+      />
+      {floating && (
+        <rect
+          x={bounds.x1}
+          y={bounds.y1}
+          width={bounds.x2 - bounds.x1}
+          height={bounds.y2 - bounds.y1}
+          rx={0.35}
+          className="component-floating"
+        />
+      )}
+      <g transform={`translate(${c.x} ${c.y}) rotate(${c.rotation})`}>
+        <ComponentGlyph
+          kind={c.kind}
+          selected={sel}
+          strokeWidth={sel ? selectedStroke : defaultStroke}
+          mirrored={c.mirrored}
+          subxPins={c.kind === "SUBX" ? getPinLayout(c) : undefined}
+          subxLabel={c.kind === "SUBX" ? (c.value || "X") : undefined}
+          subxPinSides={c.kind === "SUBX" ? subxPinSides : undefined}
+          subxPinLabels={
+            c.kind === "SUBX" && subxPinLabels
+              ? subxPinLabels.map((label, pinIndex) =>
+                  subxPinLabelEditingIndex === pinIndex ? "" : label,
+                )
+              : undefined
+          }
+        />
+        {componentFlowActive && componentFlow && (
+          <ComponentLiveFlowGlyph
+            component={c}
+            flow={componentFlow}
+            sample={flowSample}
+            strokeWidth={defaultStroke}
+          />
+        )}
+        {c.kind === "SUBX" && (() => {
+          const w = Math.max(1.1, Math.min(subxBodyWidth - 0.5, estimateInlineMathTextWidth(c.value || "X") * 0.42 + 0.85));
+          return (
+            <rect
+              x={-w / 2}
+              y={-0.36}
+              width={w}
+              height={0.72}
+              rx={0.18}
+              className="subx-body-label-hit"
+              data-subx-label-edit-id={c.id}
+            />
+          );
+        })()}
+        {c.kind === "SUBX" && getPinLayout(c).map((p, pinIndex) => {
+          const side = subxPinSides?.[pinIndex] ?? (p.x < 0 ? "L" : "R");
+          const bodyHalfW = subxBodyWidth / 2;
+          const bodyHalfH = subcircuitBodyHeight(c) / 2;
+          const labelCenter =
+            side === "T"
+              ? { x: p.x, y: -bodyHalfH + 0.42, w: 1.6, h: 0.72 }
+              : side === "B"
+                ? { x: p.x, y: bodyHalfH - 0.18, w: 1.6, h: 0.72 }
+                : side === "L"
+                  ? { x: -bodyHalfW + 0.95, y: p.y + 0.11, w: 1.35, h: 0.72 }
+                  : { x: bodyHalfW - 0.95, y: p.y + 0.11, w: 1.35, h: 0.72 };
+          return (
+            <rect
+              key={`subx-pin-label-hit-${pinIndex}`}
+              x={labelCenter.x - labelCenter.w / 2}
+              y={labelCenter.y - labelCenter.h / 2}
+              width={labelCenter.w}
+              height={labelCenter.h}
+              rx={0.16}
+              className="subx-pin-label-click-target"
+              data-subx-pin-label-index={pinIndex}
+            />
+          );
+        })}
+        {getPinLayout(c).map((p, i) => (
+          <g key={i}>
+            <circle
+              cx={p.x}
+              cy={p.y}
+              r={0.42}
+              className="component-pin-hit"
+              data-connection-handle="true"
+            />
+            {showPinTargets && (
+              <circle
+                cx={p.x}
+                cy={p.y}
+                r={0.36}
+                className={`pin-target-ring ${terminalTone}`}
+                data-connection-handle="true"
+              />
+            )}
+            <circle
+              cx={p.x}
+              cy={p.y}
+              r={showPinTargets ? 0.2 : 0.14}
+              className={`component-pin ${sel ? "selected" : ""} ${showPinTargets ? terminalTone : "idle"}`}
+              data-connection-handle="true"
+            />
+          </g>
+        ))}
+      </g>
+      {pinHints.map(({ label, position, anchor, dx, dy }) => {
+        const x = position.x + dx;
+        const y = position.y + dy;
+        return (
+          <g key={`${c.id}-${label}-${position.x}-${position.y}`} className="pin-hint" pointerEvents="none">
+            <text
+              x={x}
+              y={y + 0.13}
+              textAnchor={anchor}
+              className="pin-hint-text"
+            >
+              {label}
+            </text>
+          </g>
+        );
+      })}
+      {valueLabelText && (() => {
+        const off = valueLabelOffset ?? { x: 0, y: 1.45, anchor: "middle" as const };
+        const labelBounds = valueLabelBounds(c, off, valueLabelText, valueFontSize);
+        const labelBoxHeight = labelBounds.y2 - labelBounds.y1;
+        const labelCenterY = (labelBounds.y1 + labelBounds.y2) / 2;
+        const inlinePad = 0.18;
+        const labelBoxWidth = labelBounds.x2 - labelBounds.x1;
+        const labelX =
+          off.anchor === "start"
+            ? labelBounds.x1 + inlinePad
+            : off.anchor === "end"
+              ? labelBounds.x2 - inlinePad
+              : c.x + off.x;
+        const labelMaxWidth =
+          off.anchor === "middle"
+            ? labelBoxWidth
+            : Math.max(0.1, labelBoxWidth - inlinePad * 2);
+        return (
+          <g className="component-value-label" pointerEvents="all">
+            <rect
+              x={labelBounds.x1 - 0.14}
+              y={labelBounds.y1 - 0.08}
+              width={labelBounds.x2 - labelBounds.x1 + 0.28}
+              height={labelBounds.y2 - labelBounds.y1 + 0.16}
+              rx={0.14}
+              className="component-value-hit-target"
+            />
+            {!editingComponentValue && (
+              <SvgInlineMathText
+                x={labelX}
+                y={labelCenterY}
+                textAnchor={off.anchor}
+                className="component-value-text"
+                fontSize={valueFontSize}
+                text={valueLabelText}
+                maxWidth={labelMaxWidth}
+                boxHeight={labelBoxHeight}
+                verticalAnchor="middle"
+              />
+            )}
+          </g>
+        );
+      })()}
+      {componentLabel && (() => {
+        const labelBounds = componentUserLabelBounds(c, componentLabel);
+        const labelX = (labelBounds.x1 + labelBounds.x2) / 2;
+        const labelBoxHeight = labelBounds.y2 - labelBounds.y1;
+        const labelCenterY = (labelBounds.y1 + labelBounds.y2) / 2;
+        return (
+          <g
+            className={`component-user-label ${editingComponentLabel ? "editing" : ""}`}
+            data-component-label-edit-id={c.id}
+            pointerEvents="all"
+          >
+            <rect
+              x={labelBounds.x1}
+              y={labelBounds.y1}
+              width={labelBounds.x2 - labelBounds.x1}
+              height={labelBounds.y2 - labelBounds.y1}
+              rx={0.18}
+              className="component-user-label-chip"
+            />
+            {!editingComponentLabel && (
+              <SvgInlineMathText
+                x={labelX}
+                y={labelCenterY}
+                textAnchor="middle"
+                className="component-user-label-text"
+                fontSize={0.38}
+                text={componentLabel}
+                maxWidth={labelBounds.x2 - labelBounds.x1 - 0.2}
+                boxHeight={labelBoxHeight}
+                verticalAnchor="middle"
+              />
+            )}
+          </g>
+        );
+      })()}
+      {showSubxResizeHandle && (
+        <rect
+          x={bounds.x2 - 0.34}
+          y={bounds.y2 - 0.34}
+          width={0.46}
+          height={0.46}
+          rx={0.11}
+          className="note-resize-handle subx-resize-handle"
+          data-subx-resize-id={c.id}
+        />
+      )}
+    </g>
+  );
+});
+
+function ComponentLiveFlowGlyph({
+  component,
+  flow,
+  sample,
+  strokeWidth,
+}: {
+  component: CircuitComponent;
+  flow: ReturnType<typeof liveFlowVisualFromSample>;
+  sample: LiveFlowSample | undefined;
+  strokeWidth: number;
+}) {
+  const reactClipId = useId();
+  if (!flow.active || sample?.source !== "ngspice") return null;
+  const paths = componentLiveFlowPaths(component);
+  if (paths.length === 0) return null;
+  const phase = liveFlowPhaseForId(`component:${component.id}`);
+  const flowStyle = liveFlowAnimationStyle(flow, phase) as CSSProperties;
+  const flowDirection = component.kind === "V" || component.kind === "GND" ? 1 : flow.direction;
+  // Source-body flow is drawn as internal down-streams. Clip source streams to
+  // the source circle so the dash caps/glow never read as flow outside the body.
+  const clipSourceFlow = component.kind === "V" || component.kind === "I" || component.kind === "B";
+  const clipId = clipSourceFlow ? `source-flow-${reactClipId.replaceAll(":", "")}` : undefined;
+  return (
+    <g
+      className="component-live-group"
+      transform={component.mirrored ? "scale(-1 1)" : undefined}
+      pointerEvents="none"
+      data-component-flow-id={component.id}
+      data-component-flow-kind={component.kind}
+    >
+      {clipId && (
+        <clipPath id={clipId} clipPathUnits="userSpaceOnUse">
+          <circle cx={0} cy={0} r={SOURCE_BODY_FLOW_CLIP_RADIUS} />
+        </clipPath>
+      )}
+      {paths.map((path, index) => (
+        <path
+          key={`casing-${index}`}
+          d={path}
+          fill="none"
+          strokeWidth={strokeWidth * (flow.strokeMultiplier + 0.72)}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`component-live-casing ${clipSourceFlow ? "source-body" : ""}`}
+          data-component-flow-id={component.id}
+          data-component-flow-segment={index}
+          clipPath={clipId ? `url(#${clipId})` : undefined}
+        />
+      ))}
+      {paths.map((path, index) => (
+        <path
+          key={`flow-${index}`}
+          d={path}
+          fill="none"
+          strokeWidth={strokeWidth * flow.strokeMultiplier}
+          strokeDasharray={`${flow.dash} ${flow.gap}`}
+          strokeDashoffset={phase}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`component-live component-live-overlay ngspice ${clipSourceFlow ? "source-body" : ""} ${flowDirection === -1 ? "reverse" : ""}`}
+          data-component-flow-id={component.id}
+          data-component-flow-segment={index}
+          data-component-flow-kind={component.kind}
+          data-live-flow-source="ngspice"
+          data-live-flow-current={sample.signedCurrent}
+          data-live-flow-direction={flowDirection}
+          style={flowStyle}
+          clipPath={clipId ? `url(#${clipId})` : undefined}
+        />
+      ))}
+    </g>
+  );
+}
+
+type WireNodeProps = {
+  w: Wire;
+  selected: boolean;
+  hovered: boolean;
+  liveActive: boolean;
+  flowSample: LiveFlowSample | undefined;
+  flowReadout: LiveFlowReadoutPosition | null;
+  flowReadoutWidth: number;
+  selectedStroke: number;
+  hoveredStroke: number;
+  defaultStroke: number;
+};
+
+const WireNode = memo(function WireNode({
+  w,
+  selected: sel,
+  hovered,
+  liveActive,
+  flowSample,
+  flowReadout,
+  flowReadoutWidth,
+  selectedStroke,
+  hoveredStroke,
+  defaultStroke,
+}: WireNodeProps) {
+  const flow = liveActive ? liveFlowVisualFromSample(flowSample) : null;
+  const wireFlowActive = Boolean(flow?.active);
+  const flowPhase = liveFlowPhaseForId(w.id);
+  const flowStyle: React.CSSProperties | undefined = wireFlowActive && flow
+    ? (liveFlowAnimationStyle(flow, flowPhase) as React.CSSProperties)
+    : undefined;
+  const flowReadoutText = liveActive
+    ? liveFlowReadoutText(flowSample, wireFlowActive)
+    : null;
+  const wireTitle = flowReadoutText?.title;
+  const flowReadoutArrow =
+    flowReadout && flow && flowReadoutText?.showArrow
+      ? liveFlowReadoutArrow(flowReadout, flow.direction)
+      : "";
+  const polyPoints = w.points.map((p) => p.join(",")).join(" ");
+  return (
+    <g className={`wire-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}>
+      {wireTitle && <title>{wireTitle}</title>}
+      <polyline
+        points={polyPoints}
+        fill="none"
+        stroke="var(--ink)"
+        opacity={0.001}
+        strokeWidth={0.72}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        pointerEvents="all"
+        className="wire-hit-target"
+        data-wire-id={w.id}
+      />
+      <polyline
+        points={polyPoints}
+        fill="none"
+        stroke={sel || hovered ? "var(--accent)" : "var(--ink)"}
+        strokeWidth={sel ? selectedStroke : hovered ? hoveredStroke : defaultStroke}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        data-wire-id={w.id}
+      />
+      {wireFlowActive && (
+        <>
+          <polyline
+            points={polyPoints}
+            fill="none"
+            strokeWidth={defaultStroke * ((flow?.strokeMultiplier ?? 1.25) + 0.56)}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            pointerEvents="none"
+            className="wire-live-casing"
+            data-wire-id={w.id}
+          />
+          <polyline
+            points={polyPoints}
+            fill="none"
+            strokeWidth={defaultStroke * (flow?.strokeMultiplier ?? 1.25)}
+            strokeDasharray={flow ? `${flow.dash} ${flow.gap}` : undefined}
+            strokeDashoffset={flow ? flowPhase : undefined}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            pointerEvents="none"
+            className={`wire-live wire-live-overlay ngspice ${flow?.direction === -1 ? "reverse" : ""}`}
+            data-wire-id={w.id}
+            data-live-flow-source="ngspice"
+            data-live-flow-current={flowSample?.signedCurrent}
+            data-live-flow-direction={flow?.direction}
+            style={flowStyle}
+          />
+        </>
+      )}
+      {flowReadout && flowReadoutText && (
+        <foreignObject
+          x={flowReadout.x - flowReadoutWidth / 2}
+          y={flowReadout.y - 0.32}
+          width={flowReadoutWidth}
+          height={0.64}
+          className="live-flow-readout-object"
+          pointerEvents="none"
+        >
+          <div
+            className={`live-flow-readout ${liveFlowReadoutSourceClass(flowSample)} ${wireFlowActive ? "active" : "inactive"}`}
+            aria-label={flowReadoutText.title}
+          >
+            {flowSample && <span className="live-flow-readout-dot" aria-hidden="true" />}
+            {flowReadoutText.showArrow && <strong aria-hidden="true">{flowReadoutArrow}</strong>}
+            <span className="live-flow-readout-label">{flowReadoutText.label}</span>
+            {flowReadoutText.detail && <small className="live-flow-readout-detail">{flowReadoutText.detail}</small>}
+          </div>
+        </foreignObject>
+      )}
+    </g>
+  );
+});
+
+type ProbeNodeProps = {
+  p: Probe;
+  node: string | undefined;
+  selected: boolean;
+  hovered: boolean;
+  showBadge: boolean;
+  editing: boolean;
+};
+
+const ProbeNode = memo(function ProbeNode({
+  p,
+  node,
+  selected: sel,
+  hovered: hov,
+  showBadge,
+  editing,
+}: ProbeNodeProps) {
+  const disconnected = !node;
+  const label = p.label?.trim() ?? "";
+  const badgeW = Math.max(2.6, estimateInlineMathTextWidth(label) * 0.42 + 0.7);
+  const badgeH = 0.7;
+  const badgeX = p.x + 0.45;
+  const badgeY = p.y - 0.92;
+  return (
+    <g
+      className={`probe-marker ${sel ? "selected" : ""} ${hov ? "hovered" : ""} ${disconnected ? "disconnected" : ""}`}
+      data-probe-id={p.id}
+    >
+      <title>{node ? `Probe: ${node}` : "Probe"}</title>
+      {(sel || hov || disconnected) && (
+        <circle
+          cx={p.x}
+          cy={p.y}
+          r={sel ? 0.42 : 0.38}
+          fill="none"
+          stroke={disconnected ? "var(--danger)" : "var(--accent)"}
+          strokeWidth={sel ? 0.045 : 0.035}
+          strokeDasharray={disconnected ? "0.16 0.1" : undefined}
+        />
+      )}
+      <circle
+        cx={p.x}
+        cy={p.y}
+        r={0.24}
+        fill={p.color}
+        fillOpacity={0.08}
+        stroke={disconnected ? "var(--danger)" : p.color}
+        strokeWidth={0.06}
+      />
+      <circle cx={p.x} cy={p.y} r={0.09} fill={disconnected ? "var(--danger)" : p.color} />
+      {showBadge && !editing && (
+        <>
+          <rect
+            x={badgeX}
+            y={badgeY}
+            width={badgeW}
+            height={badgeH}
+            rx={0.18}
+            className="probe-badge-chip"
+            fill="var(--bg-window)"
+            stroke={p.color}
+            strokeWidth={0.05}
+          />
+          <SvgInlineMathText
+            x={badgeX + badgeW / 2}
+            y={badgeY + badgeH / 2}
+            fontSize={0.42}
+            text={label}
+            textAnchor="middle"
+            className="probe-badge-text"
+            maxWidth={Math.max(0.1, badgeW - 0.36)}
+            boxHeight={badgeH}
+            verticalAnchor="middle"
+            overflow="hidden"
+            style={{
+              fill: p.color,
+              fontWeight: 600,
+            }}
+          />
+        </>
+      )}
+    </g>
+  );
+});
 
 export function Editor() {
   // Workspace: tracks multiple projects, each holding its own CircuitDoc in
@@ -646,6 +1319,7 @@ export function Editor() {
     startWorld: { x: number; y: number };
     delta: { x: number; y: number };
     committed: boolean;
+    clickEditTarget?: CanvasClickEditTarget;
   }>(null);
   const [wireDrag, setWireDrag] = useState<null | {
     wireId: string;
@@ -681,8 +1355,10 @@ export function Editor() {
   }>(null);
   const [textEdit, setTextEdit] = useState<null | {
     componentId: string;
-    kind: "LABEL" | "NOTE";
+    kind: CanvasTextEditKind;
     value: string;
+    focusMode?: CanvasTextEditFocusMode;
+    pinIndex?: number;
   }>(null);
   const [marquee, setMarquee] = useState<null | {
     sx: number;
@@ -714,34 +1390,10 @@ export function Editor() {
   const [playTime, setPlayTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [playSpeed, setPlaySpeed] = useState(1);
-  const [liveFlow, setLiveFlow] = useState(() => {
-    try {
-      return localStorage.getItem("spicesim.liveFlow") !== "0";
-    } catch {
-      return true;
-    }
-  });
-  const [autoRun, setAutoRun] = useState(() => {
-    try {
-      return localStorage.getItem("spicesim.autoRun") !== "0";
-    } catch {
-      return true;
-    }
-  });
-  const [snapToGrid, setSnapToGrid] = useState(() => {
-    try {
-      return localStorage.getItem("spicesim.snapToGrid") !== "0";
-    } catch {
-      return true;
-    }
-  });
-  const [gridVisible, setGridVisible] = useState(() => {
-    try {
-      return localStorage.getItem("spicesim.gridVisible") !== "0";
-    } catch {
-      return true;
-    }
-  });
+  const [liveFlow, setLiveFlow] = useState(() => readStoredBoolean("spicesim.liveFlow", true));
+  const [autoRun, setAutoRun] = useState(() => readStoredBoolean("spicesim.autoRun", true));
+  const [snapToGrid, setSnapToGrid] = useState(() => readStoredBoolean("spicesim.snapToGrid", true));
+  const [gridVisible, setGridVisible] = useState(() => readStoredBoolean("spicesim.gridVisible", true));
   const [netlistOpen, setNetlistOpen] = useState(false);
   const [importNetlistOpen, setImportNetlistOpen] = useState(false);
   const [engineOk, setEngineOk] = useState<boolean | null>(null);
@@ -754,33 +1406,17 @@ export function Editor() {
   }));
   const [customMosfetPresets, setCustomMosfetPresets] = useState<MosfetPreset[]>(loadCustomMosfetPresets);
   const toolGroupCloseTimerRef = useRef<number | null>(null);
-  const [pagesCollapsed, setPagesCollapsed] = useState<boolean>(() => {
-    try {
-      const stored = localStorage.getItem("spicesim.pagesCollapsed");
-      if (stored != null) return stored === "1";
-      // Default to collapsed on narrow viewports so the canvas is visible
-      // when a first-time visitor opens the site on a phone. Match the
-      // breakpoint in styles.css that turns the panel into an overlay.
-      return isNarrowViewport();
-    } catch {
-      return false;
-    }
-  });
-  const [inspectorCollapsed, setInspectorCollapsed] = useState<boolean>(() => {
-    try {
-      const stored = localStorage.getItem("spicesim.inspectorCollapsed");
-      if (stored != null) return stored === "1";
-      return isNarrowViewport();
-    } catch {
-      return false;
-    }
-  });
+  // Default to collapsed on narrow viewports so the canvas is visible when a
+  // first-time visitor opens the site on a phone. Matches the breakpoint in
+  // styles.css that turns the panels into overlays.
+  const [pagesCollapsed, setPagesCollapsed] = useState<boolean>(() =>
+    readStoredBoolean("spicesim.pagesCollapsed", isNarrowViewport()),
+  );
+  const [inspectorCollapsed, setInspectorCollapsed] = useState<boolean>(() =>
+    readStoredBoolean("spicesim.inspectorCollapsed", isNarrowViewport()),
+  );
   useEffect(() => {
-    try {
-      localStorage.setItem("spicesim.pagesCollapsed", pagesCollapsed ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
+    writeStoredBoolean("spicesim.pagesCollapsed", pagesCollapsed);
     window.dispatchEvent(
       new CustomEvent("spicesim:sidebar-state", {
         detail: { collapsed: pagesCollapsed },
@@ -789,14 +1425,7 @@ export function Editor() {
   }, [pagesCollapsed]);
   useEffect(() => () => clearToolGroupCloseTimer(), []);
   useEffect(() => {
-    try {
-      localStorage.setItem(
-        "spicesim.inspectorCollapsed",
-        inspectorCollapsed ? "1" : "0",
-      );
-    } catch {
-      /* ignore */
-    }
+    writeStoredBoolean("spicesim.inspectorCollapsed", inspectorCollapsed);
     window.dispatchEvent(
       new CustomEvent("spicesim:inspector-state", {
         detail: { collapsed: inspectorCollapsed },
@@ -821,37 +1450,24 @@ export function Editor() {
     };
   }, []);
   useEffect(() => {
-    try {
-      localStorage.setItem("spicesim.snapToGrid", snapToGrid ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
+    writeStoredBoolean("spicesim.snapToGrid", snapToGrid);
   }, [snapToGrid]);
   useEffect(() => {
-    try {
-      localStorage.setItem("spicesim.gridVisible", gridVisible ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
+    writeStoredBoolean("spicesim.gridVisible", gridVisible);
   }, [gridVisible]);
   useEffect(() => {
-    try {
-      localStorage.setItem("spicesim.autoRun", autoRun ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
+    writeStoredBoolean("spicesim.autoRun", autoRun);
   }, [autoRun]);
   useEffect(() => {
-    try {
-      localStorage.setItem("spicesim.liveFlow", liveFlow ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
+    writeStoredBoolean("spicesim.liveFlow", liveFlow);
   }, [liveFlow]);
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const textEditRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const textEditCancelBlurRef = useRef(false);
+  const textEditOpenedAtRef = useRef(0);
+  const preferredTextEditTargetRef = useRef<CanvasClickEditTarget | null>(null);
+  const pendingCanvasDoubleActionRef = useRef<number | null>(null);
   const spacePanRef = useRef(false);
   // Multi-touch gesture tracking. Touch pointers go into `activeTouches`
   // keyed by pointerId; when two touches are active simultaneously we enter
@@ -867,6 +1483,32 @@ export function Editor() {
   const page = currentPage(doc);
   const activeTextEditId = textEdit?.componentId ?? null;
   const activeTextEditKind = textEdit?.kind ?? null;
+  const applyCanvasTextEditFocusSelection = useCallback(
+    (editor: HTMLInputElement | HTMLTextAreaElement) => {
+      if (!activeTextEditKind) return;
+      if (textEditOpenedAtRef.current <= 0) return;
+      editor.focus();
+      const focusMode = textEdit?.focusMode ?? defaultCanvasTextEditFocusMode(activeTextEditKind);
+      const selection = canvasTextEditSelection(editor.value, activeTextEditKind, focusMode);
+      editor.setSelectionRange(selection.start, selection.end);
+      editor.scrollTop = selection.scroll === "end" ? editor.scrollHeight : 0;
+      editor.scrollLeft = selection.scrollX === "end" ? editor.scrollWidth : 0;
+    },
+    [activeTextEditKind, textEdit?.focusMode],
+  );
+  const setCanvasTextEditRef = useCallback(
+    (node: HTMLInputElement | HTMLTextAreaElement | null) => {
+      textEditRef.current = node;
+      if (!node) return;
+      window.requestAnimationFrame(() => {
+        if (textEditRef.current === node) applyCanvasTextEditFocusSelection(node);
+      });
+      window.setTimeout(() => {
+        if (textEditRef.current === node) applyCanvasTextEditFocusSelection(node);
+      }, 0);
+    },
+    [applyCanvasTextEditFocusSelection],
+  );
   useEffect(() => {
     if (showStartupEmptyCard && !activeSchematicIsEmpty(doc)) {
       setShowStartupEmptyCard(false);
@@ -875,16 +1517,51 @@ export function Editor() {
   useEffect(() => {
     if (!activeTextEditId || !activeTextEditKind) return;
     const component = page.components.find((c) => c.id === activeTextEditId);
-    if (!component || component.kind !== activeTextEditKind) {
+    const probe = page.probes.find((p) => p.id === activeTextEditId);
+    const subxTargetPage = component?.kind === "SUBX" ? subcircuitPageForInstance(docRef.current, component) : null;
+    const subxPinPort =
+      subxTargetPage && textEdit?.pinIndex !== undefined
+        ? subcircuitPortComponents(subxTargetPage)[textEdit.pinIndex]
+        : undefined;
+    if (
+      activeTextEditKind === "SUBX_PIN"
+        ? !subxPinPort
+        : activeTextEditKind === "PROBE"
+        ? !probe
+        : !component ||
+          (activeTextEditKind !== "VALUE" &&
+            activeTextEditKind !== "COMPONENT_LABEL" &&
+            component.kind !== activeTextEditKind) ||
+          (activeTextEditKind === "VALUE" && !isEditableComponentValue(component))
+    ) {
       setTextEdit(null);
       return;
     }
+    let followupFrame: number | null = null;
+    const followupTimeouts: number[] = [];
+    const applyFocusSelection = () => {
+      const editor = textEditRef.current;
+      if (!editor) return;
+      applyCanvasTextEditFocusSelection(editor);
+    };
     const frame = window.requestAnimationFrame(() => {
-      textEditRef.current?.focus();
-      textEditRef.current?.select();
+      applyFocusSelection();
+      followupFrame = window.requestAnimationFrame(applyFocusSelection);
+      followupTimeouts.push(window.setTimeout(applyFocusSelection, 0));
+      followupTimeouts.push(window.setTimeout(applyFocusSelection, 90));
+      followupTimeouts.push(window.setTimeout(applyFocusSelection, 180));
+      followupTimeouts.push(window.setTimeout(applyFocusSelection, 240));
+      followupTimeouts.push(window.setTimeout(applyFocusSelection, 300));
+      followupTimeouts.push(window.setTimeout(applyFocusSelection, 360));
+      followupTimeouts.push(window.setTimeout(applyFocusSelection, 420));
+      followupTimeouts.push(window.setTimeout(applyFocusSelection, 900));
     });
-    return () => window.cancelAnimationFrame(frame);
-  }, [page.components, activeTextEditId, activeTextEditKind]);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (followupFrame !== null) window.cancelAnimationFrame(followupFrame);
+      for (const timeout of followupTimeouts) window.clearTimeout(timeout);
+    };
+  }, [page.components, page.probes, activeTextEditId, activeTextEditKind, textEdit?.pinIndex, applyCanvasTextEditFocusSelection]);
   // Always-current refs to dodge stale closures inside global listeners.
   const docRef = useRef(doc);
   docRef.current = doc;
@@ -1058,6 +1735,7 @@ export function Editor() {
 
   function updateWireGesture(next: null | {
     start: [number, number];
+    pointerStart: [number, number];
     moved: boolean;
     mode: WireGestureMode;
     fallbackSelectionId?: string;
@@ -1076,6 +1754,7 @@ export function Editor() {
       next
         ? {
             start: next[next.length - 1],
+            pointerStart: activeGesture?.pointerStart ?? next[next.length - 1],
             moved: false,
             mode: activeGesture?.mode ?? "wire-tool",
             fallbackSelectionId: activeGesture?.fallbackSelectionId,
@@ -1114,7 +1793,8 @@ export function Editor() {
     if (hadResult || wasRunning) {
       setLog("");
       // Auto-run already has a re-run on the way, so the "rerun simulation"
-      // nudge just flashes through and gets immediately overwritten.
+      // nudge just flashes through and gets immediately overwritten by the
+      // next "✓ tran1". Skip it in that case.
       if (!autoRun) setStatus("Modified — rerun simulation");
     }
   }
@@ -1280,14 +1960,18 @@ export function Editor() {
     setDoc(updater(docRef.current));
     invalidateSimulationState();
   }
-  /** Parse a SPICE netlist string and replace the current doc. Accepts an
-   *  AbortSignal for cancelling the (potentially slow) ELK auto-layout and
-   *  a `mode` to force the faster label-only fallback up front. */
+  /** Parse a SPICE-style netlist string and replace the current doc with it.
+   *  Used by the paste-import modal. Accepts an `AbortSignal` for cancelling
+   *  the (potentially slow) ELK auto-layout, and a `mode` to force the
+   *  faster label-only fallback up front. */
   async function importNetlistFromText(
     text: string,
     opts: {
       signal?: AbortSignal;
       mode?: "auto" | "labels";
+      /** Called as the import advances through phases — used by the
+       *  paste-import modal to keep the spinner copy informative when
+       *  the work bounces between the worker and the main thread. */
       onPhase?: (
         phase: "parsing" | "layout" | "routing" | "rendering",
         detail?: { current?: number; total?: number },
@@ -1301,6 +1985,7 @@ export function Editor() {
     const imported = await importNetlist(text, {
       signal: opts.signal,
       mode: opts.mode,
+      // Forward routing/layout progress straight through.
       onPhase: (phase, detail) => opts.onPhase?.(phase, detail),
     });
     // Rendering 100+ fresh component subtrees in one React commit blocks
@@ -1736,6 +2421,16 @@ export function Editor() {
         duplicateSelection();
         return;
       }
+      if (!meta && (e.key === "Enter" || e.key === "F2") && selRef.current.size === 1) {
+        if (beginSelectedTextEdit()) {
+          e.preventDefault();
+          return;
+        }
+      }
+      if (!meta && selRef.current.size === 1 && beginSelectedTextEditFromTyping(e)) {
+        e.preventDefault();
+        return;
+      }
       if (!meta && e.key.startsWith("Arrow") && selRef.current.size > 0) {
         e.preventDefault();
         const step = (snapToGridRef.current ? 1 : 0.1) * (e.shiftKey ? 10 : 1);
@@ -1960,6 +2655,16 @@ export function Editor() {
     return target.closest("[data-probe-scope-id]")?.getAttribute("data-probe-scope-id") ?? null;
   }
 
+  function probeLabelEditIdFromTarget(target: EventTarget | null): string | null {
+    if (!(target instanceof Element)) return null;
+    return target.closest("[data-probe-label-edit-id]")?.getAttribute("data-probe-label-edit-id") ?? null;
+  }
+
+  function probeIdFromTarget(target: EventTarget | null): string | null {
+    if (!(target instanceof Element)) return null;
+    return target.closest("[data-probe-id]")?.getAttribute("data-probe-id") ?? null;
+  }
+
   function wireIdFromTarget(target: EventTarget | null): string | null {
     if (!(target instanceof Element)) return null;
     return target.closest("[data-wire-id]")?.getAttribute("data-wire-id") ?? null;
@@ -1968,6 +2673,73 @@ export function Editor() {
   function componentIdFromTarget(target: EventTarget | null): string | null {
     if (!(target instanceof Element)) return null;
     return target.closest("[data-component-id]")?.getAttribute("data-component-id") ?? null;
+  }
+
+  function subxLabelEditIdFromTarget(target: EventTarget | null): string | null {
+    if (!(target instanceof Element)) return null;
+    return target.closest("[data-subx-label-edit-id]")?.getAttribute("data-subx-label-edit-id") ?? null;
+  }
+
+  function componentLabelEditIdFromTarget(target: EventTarget | null): string | null {
+    if (!(target instanceof Element)) return null;
+    return target.closest("[data-component-label-edit-id]")?.getAttribute("data-component-label-edit-id") ?? null;
+  }
+
+  function subxPinLabelIndexFromTarget(target: EventTarget | null): number | null {
+    if (!(target instanceof Element)) return null;
+    const raw = target.closest("[data-subx-pin-label-index]")?.getAttribute("data-subx-pin-label-index");
+    if (raw == null) return null;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  function targetInClass(target: EventTarget | null, className: string): boolean {
+    return target instanceof Element && target.closest(`.${className}`) !== null;
+  }
+
+  function textEditTargetFromPointerTarget(
+    target: EventTarget | null,
+    targetComponent: CircuitComponent | null,
+    targetProbe: Probe | null,
+  ): CanvasClickEditTarget | undefined {
+    if (targetProbe && (probeLabelEditIdFromTarget(target) || probeIdFromTarget(target))) {
+      return { id: targetProbe.id, kind: "PROBE" };
+    }
+    if (!targetComponent) return undefined;
+    const targetSubxPinLabelIndex = subxPinLabelIndexFromTarget(target);
+    if (targetComponent.kind === "SUBX" && targetSubxPinLabelIndex !== null) {
+      return {
+        id: targetComponent.id,
+        kind: "SUBX_PIN",
+        pinIndex: targetSubxPinLabelIndex,
+      };
+    }
+    if (componentLabelEditIdFromTarget(target) && targetComponent.kind !== "LABEL" && targetComponent.kind !== "NOTE") {
+      return { id: targetComponent.id, kind: "COMPONENT_LABEL" };
+    }
+    if (targetComponent.kind === "LABEL" || targetComponent.kind === "NOTE") {
+      return { id: targetComponent.id, kind: targetComponent.kind };
+    }
+    const clickedValueText =
+      targetInClass(target, "component-value-label") ||
+      targetInClass(target, "subx-body-label") ||
+      Boolean(subxLabelEditIdFromTarget(target));
+    if (clickedValueText && isEditableComponentValue(targetComponent)) {
+      return { id: targetComponent.id, kind: "VALUE" };
+    }
+    return undefined;
+  }
+
+  function clickEditTargetForSelectionClick(
+    target: EventTarget | null,
+    hit: CircuitComponent | Wire | Probe | null,
+    targetComponent: CircuitComponent | null,
+    targetProbe: Probe | null,
+    additive: boolean,
+  ): CanvasClickEditTarget | undefined {
+    if (additive || !hit || !selectedIds.has(hit.id)) return undefined;
+    const editTarget = textEditTargetFromPointerTarget(target, targetComponent, targetProbe);
+    return editTarget?.id === hit.id ? editTarget : undefined;
   }
 
   function isWireVertexHandleTarget(target: EventTarget | null): boolean {
@@ -2338,13 +3110,13 @@ export function Editor() {
       draft.kind === "SUBX"
         ? docRef.current.pages.find((p) => p.id === selectedSubcircuitPageId && p.id !== docRef.current.activePageId)
         : null;
-    const subcircuitPinCount = subcircuitPage ? subcircuitPortCount(subcircuitPage) : 0;
+    const subcircuitParams = subcircuitPage ? subcircuitInstanceParamsForPage(subcircuitPage) : undefined;
     const base = componentFromDrag(
       draft.kind,
       draft.start,
       draft.end,
       id,
-      subcircuitPage ? { npins: String(subcircuitPinCount) } : undefined,
+      subcircuitParams,
     );
     const noteCount = currentPage(docRef.current).components.filter((component) => component.kind === "NOTE").length;
     const withNoteDefaults = withDefaultNoteColor(base, noteCount);
@@ -2352,7 +3124,7 @@ export function Editor() {
       ? {
           ...withNoteDefaults,
           value: subcircuitPage.name,
-          params: { ...withNoteDefaults.params, npins: String(subcircuitPinCount) },
+          params: { ...withNoteDefaults.params, ...subcircuitParams },
         }
       : withNoteDefaults;
     const placementPresetKind = mosfetPresetKindForComponentKind(draft.kind);
@@ -2399,6 +3171,29 @@ export function Editor() {
         ...addWireWithJunctions(p, { id: makeId("w"), points: route }),
       })),
     );
+  }
+
+  function traceNameForWire(wireId: string): string | null {
+    if (!simResultRef.current) return null;
+    const wire = page.wires.find((candidate) => candidate.id === wireId);
+    if (!wire) return null;
+    for (const [x, y] of wire.points) {
+      const node = pinAnnotations.nodes.posToNode.get(`${coordKey(x)},${coordKey(y)}`);
+      if (!node || node === "0") continue;
+      const trace = findNodeTrace(simResultRef.current.vectors, node, simResultRef.current.plot);
+      if (trace) return trace.name;
+    }
+    return null;
+  }
+
+  function addWireTraceToScope(wireId: string) {
+    const traceName = traceNameForWire(wireId);
+    if (!traceName) return;
+    setSelectedTraces((previous) => {
+      const next = new Set(previous.size > 0 ? previous : userTraceNames);
+      next.add(traceName);
+      return next;
+    });
   }
 
   function onCanvasPointerDown(e: React.PointerEvent<SVGSVGElement>) {
@@ -2451,6 +3246,11 @@ export function Editor() {
       }
     }
     if (e.button !== 0) return;
+    if (tool === "select" && e.detail >= 2 && scheduleCanvasDoubleAction(e.target)) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     capturePointer(e);
     const g = screenToGrid(e.clientX, e.clientY);
     const raw = screenToWorld(e.clientX, e.clientY);
@@ -2502,7 +3302,11 @@ export function Editor() {
       if (probe) {
         const nextSelected = nextSelectionForHit(probe.id, e.shiftKey);
         setSelectedIds(nextSelected);
-        if (!selectionClickStartsDrag(e.shiftKey) || nextSelected.size === 0) {
+        if (
+          probeLabelEditIdFromTarget(e.target) ||
+          !selectionClickStartsDrag(e.shiftKey) ||
+          nextSelected.size === 0
+        ) {
           setScopeDrag(null);
           setHoverId(null);
           return;
@@ -2604,8 +3408,12 @@ export function Editor() {
       const targetComponent = targetComponentId
         ? page.components.find((component) => component.id === targetComponentId) ?? null
         : null;
+      const targetProbeId = probeIdFromTarget(e.target);
+      const targetProbe = targetProbeId
+        ? page.probes.find((probe) => probe.id === targetProbeId) ?? null
+        : null;
       const geometricHit = hitSelectable(raw.x, raw.y, targetWireId);
-      const hit = pointerSelectionHit(geometricHit, targetComponent);
+      const hit = pointerSelectionHit(geometricHit, targetComponent ?? targetProbe);
       const intent = selectPointerIntent({
         additive: e.shiftKey,
         hitKind: hitKindForItem(hit),
@@ -2648,6 +3456,12 @@ export function Editor() {
         return;
       }
       if (intent === "object-selection" && hit) {
+        if (hitKindForItem(hit) === "wire") {
+          addWireTraceToScope(hit.id);
+        }
+        const pointerTextTarget = textEditTargetFromPointerTarget(e.target, targetComponent, targetProbe);
+        preferredTextEditTargetRef.current =
+          !e.shiftKey && pointerTextTarget?.id === hit.id ? pointerTextTarget : null;
         const nextSelected = nextSelectionForHit(hit.id, e.shiftKey);
         setSelectedIds(nextSelected);
         if (!selectionClickStartsDrag(e.shiftKey) || nextSelected.size === 0) {
@@ -2678,9 +3492,17 @@ export function Editor() {
           startWorld: raw,
           delta: { x: 0, y: 0 },
           committed: false,
+          clickEditTarget: clickEditTargetForSelectionClick(
+            e.target,
+            hit,
+            targetComponent,
+            targetProbe,
+            e.shiftKey,
+          ),
         });
       } else {
         // Begin marquee
+        preferredTextEditTargetRef.current = null;
         if (!e.shiftKey) setSelectedIds(new Set());
         setMarquee({ sx: raw.x, sy: raw.y, ex: raw.x, ey: raw.y, additive: e.shiftKey });
       }
@@ -2701,10 +3523,10 @@ export function Editor() {
       showCanvasNotice(`Add port labels to "${subcircuitPage.name}" before placing it as a subcircuit.`);
       return;
     }
-    const start =
-      getPinLayout({ id: "__draft", kind: kindTool, x: 0, y: 0, rotation: 0, value: "" }).length > 0
-        ? pointerConnectionPoint(e.clientX, e.clientY, 1.0, WIRING_SNAP)
-        : g;
+    const pinCount = getPinLayout({ id: "__draft", kind: kindTool, x: 0, y: 0, rotation: 0, value: "" }).length;
+    const start = placementShouldSnapToConnections(pinCount)
+      ? pointerConnectionPoint(e.clientX, e.clientY, 1.0, WIRING_SNAP)
+      : g;
     setPlacementDraft({ kind: kindTool, start, end: start });
     setSelectedIds(new Set());
     setHoverId(null);
@@ -2773,7 +3595,7 @@ export function Editor() {
     }
 
     if (placementDraft) {
-      const hasPins =
+      const pinCount =
         getPinLayout({
           id: "__draft",
           kind: placementDraft.kind,
@@ -2781,8 +3603,10 @@ export function Editor() {
           y: 0,
           rotation: 0,
           value: "",
-        }).length > 0;
-      const snap = hasPins ? nearestConnection(raw.x, raw.y, 1.0, WIRING_SNAP) : null;
+        }).length;
+      const snap = placementShouldSnapToConnections(pinCount)
+        ? nearestConnection(raw.x, raw.y, 1.0, WIRING_SNAP)
+        : null;
       setSnapTarget(snap ? { x: snap.x, y: snap.y } : null);
       setPlacementDraft({ ...placementDraft, end: normalizePoint(snap ?? g) });
       setHoverId(null);
@@ -3051,6 +3875,8 @@ export function Editor() {
             ).page,
           ),
         );
+      } else if (activeDrag.clickEditTarget) {
+        beginCanvasClickEditTarget(activeDrag.clickEditTarget);
       }
       setSnapTarget(null);
     }
@@ -3131,7 +3957,7 @@ export function Editor() {
       commit((d) => {
         const nextDoc = updateCurrentPage(d, (p) => {
           const pinCount = getPinLayout(c).length;
-          const canInsertInline = pinCount === 2 && placementLength(placementDraft) >= 0.35;
+          const canInsertInline = placementCanInsertInline(pinCount, placementLength(placementDraft));
           const cutSpan = canInsertInline
             ? placementWireCutSpan(c, placementDraft.start, placementDraft.end)
             : null;
@@ -3185,6 +4011,9 @@ export function Editor() {
       setPlacementDraft(null);
       setSnapTarget(null);
       setTool("select");
+      if (placementShouldBeginTextEdit(c.kind)) {
+        beginTextEdit(c);
+      }
       return;
     }
     if (marquee) {
@@ -3244,7 +4073,8 @@ export function Editor() {
       const autoFormatCount = wireIdsForAutoFormat(page, working).size;
       if (hasSelectedComponents) {
         items.push({ label: "Rotate", shortcut: "⇧R", onSelect: () => rotateSelected() });
-        items.push({ label: "Mirror", onSelect: () => mirrorSelected() });
+        items.push({ label: "Mirror ↔ (horizontal)", onSelect: () => mirrorSelected() });
+        items.push({ label: "Flip ↕ (vertical)", onSelect: () => flipVerticalSelected() });
       }
       items.push(
         { label: "Fit Selection", shortcut: "⇧2", onSelect: () => fitSelectionToContent() },
@@ -3313,29 +4143,124 @@ export function Editor() {
     setContextMenu({ x: e.clientX, y: e.clientY, items });
   }
 
-  function onCanvasDoubleClick(e: React.MouseEvent<SVGSVGElement>) {
-    const targetComponentId = componentIdFromTarget(e.target);
+  function hasCanvasDoubleAction(target: EventTarget | null): boolean {
+    const targetComponentLabelEditId = componentLabelEditIdFromTarget(target);
+    if (
+      targetComponentLabelEditId &&
+      page.components.some((c) => c.id === targetComponentLabelEditId && c.kind !== "LABEL" && c.kind !== "NOTE")
+    ) {
+      return true;
+    }
+    const targetSubxLabelEditId = subxLabelEditIdFromTarget(target);
+    if (targetSubxLabelEditId && page.components.some((c) => c.id === targetSubxLabelEditId && c.kind === "SUBX")) {
+      return true;
+    }
+    const targetSubxPinLabelIndex = subxPinLabelIndexFromTarget(target);
+    const targetComponentId = componentIdFromTarget(target);
     if (targetComponentId) {
       const component = page.components.find((c) => c.id === targetComponentId);
+      if (component?.kind === "SUBX" && targetSubxPinLabelIndex !== null) {
+        const targetPage = subcircuitPageForInstance(docRef.current, component);
+        if (targetPage && subcircuitPortComponents(targetPage).length > targetSubxPinLabelIndex) return true;
+      }
+      if (component?.kind === "LABEL" || component?.kind === "NOTE" || component?.kind === "SUBX") return true;
+      if (component && isEditableComponentValue(component)) return true;
+    }
+    const targetProbeId = probeLabelEditIdFromTarget(target) ?? probeIdFromTarget(target) ?? scopeProbeIdFromTarget(target);
+    return Boolean(targetProbeId && page.probes.some((p) => p.id === targetProbeId));
+  }
+
+  function scheduleCanvasDoubleAction(target: EventTarget | null): boolean {
+    if (!hasCanvasDoubleAction(target)) return false;
+    if (pendingCanvasDoubleActionRef.current !== null) {
+      window.clearTimeout(pendingCanvasDoubleActionRef.current);
+    }
+    pendingCanvasDoubleActionRef.current = window.setTimeout(() => {
+      pendingCanvasDoubleActionRef.current = null;
+      handleCanvasDoubleAction(target);
+    }, 80);
+    return true;
+  }
+  // Stable reference for memoised children: each Editor render re-creates
+  // `scheduleCanvasDoubleAction`, which would defeat React.memo. Routing
+  // through a ref keeps the prop reference identical across renders while
+  // the body still sees the latest closure.
+  const scheduleCanvasDoubleActionRef = useRef(scheduleCanvasDoubleAction);
+  scheduleCanvasDoubleActionRef.current = scheduleCanvasDoubleAction;
+  const scheduleCanvasDoubleActionStable = useCallback(
+    (target: EventTarget | null) => scheduleCanvasDoubleActionRef.current(target),
+    [],
+  );
+
+  function handleCanvasDoubleAction(target: EventTarget | null): boolean {
+    if (pendingCanvasDoubleActionRef.current !== null) {
+      window.clearTimeout(pendingCanvasDoubleActionRef.current);
+      pendingCanvasDoubleActionRef.current = null;
+    }
+    const targetComponentLabelEditId = componentLabelEditIdFromTarget(target);
+    if (targetComponentLabelEditId) {
+      const component = page.components.find((c) => c.id === targetComponentLabelEditId && c.kind !== "LABEL" && c.kind !== "NOTE");
+      if (component) {
+        beginComponentLabelEdit(component);
+        return true;
+      }
+    }
+    const targetSubxLabelEditId = subxLabelEditIdFromTarget(target);
+    if (targetSubxLabelEditId) {
+      const component = page.components.find((c) => c.id === targetSubxLabelEditId && c.kind === "SUBX");
+      if (component) {
+        beginValueEdit(component);
+        return true;
+      }
+    }
+    const targetComponentId = componentIdFromTarget(target);
+    if (targetComponentId) {
+      const component = page.components.find((c) => c.id === targetComponentId);
+      const targetSubxPinLabelIndex = subxPinLabelIndexFromTarget(target);
+      if (component?.kind === "SUBX" && targetSubxPinLabelIndex !== null) {
+        beginSubxPinLabelEdit(component, targetSubxPinLabelIndex);
+        return true;
+      }
       if (component?.kind === "LABEL" || component?.kind === "NOTE") {
-        e.preventDefault();
-        e.stopPropagation();
         beginTextEdit(component);
-        return;
+        return true;
       }
       if (component?.kind === "SUBX") {
-        e.preventDefault();
-        e.stopPropagation();
+        if (targetInClass(target, "subx-body-label")) {
+          beginValueEdit(component);
+          return true;
+        }
         const targetPage = subcircuitPageForInstance(docRef.current, component);
         if (!targetPage) {
           showCanvasNotice(`No schematic named "${component.value || "subcircuit"}"`);
-          return;
+          return true;
         }
         commit((d) => ({ ...d, activePageId: targetPage.id }));
         resetInteractionState();
         setStatus(`Opened subcircuit: ${targetPage.name}`);
-        return;
+        return true;
       }
+      if (component && isEditableComponentValue(component)) {
+        beginValueEdit(component);
+        return true;
+      }
+    }
+    const targetProbeId = probeLabelEditIdFromTarget(target) ?? probeIdFromTarget(target) ?? scopeProbeIdFromTarget(target);
+    if (targetProbeId) {
+      const probe = page.probes.find((p) => p.id === targetProbeId);
+      if (probe) {
+        beginProbeLabelEdit(probe);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function onCanvasDoubleClick(e: React.MouseEvent<SVGSVGElement>) {
+    if (scheduleCanvasDoubleAction(e.target)) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
     }
     const activeDraft = wireDraftRef.current;
     if (tool === "wire" && activeDraft && activeDraft.length >= 2) {
@@ -3398,12 +4323,19 @@ export function Editor() {
     return () => el.removeEventListener("wheel", handler);
   }, []);
 
-  function rotateSelected(selection: Set<string> = selectedIds) {
+  // Rotate / mirror / flip all share the same wire- and probe-rerouting
+  // machinery; they differ only in how each selected component is mutated.
+  // `mutate` is applied both when measuring pin movement and when rewriting
+  // the components, so the two always agree.
+  function transformSelected(
+    mutate: (c: CircuitComponent) => CircuitComponent,
+    selection: Set<string> = selectedIds,
+  ) {
     if (selection.size === 0) return;
     const selected = new Set(selection);
     commit((d) =>
       updateCurrentPage(d, (p) => {
-        const pinMoves = collectRotatedPinMoves(p.components, selected);
+        const pinMoves = collectTransformedPinMoves(p.components, selected, mutate);
         const contactWires = buildRotatedPinContactWires(
           p.components,
           p.wires,
@@ -3415,9 +4347,7 @@ export function Editor() {
         for (const wire of contactWires) {
           nextWires = addWireWithJunctions({ wires: nextWires }, wire).wires;
         }
-        const nextComponents = p.components.map((c) =>
-          selected.has(c.id) ? { ...c, rotation: rotateNext(c.rotation) } : c,
-        );
+        const nextComponents = p.components.map((c) => (selected.has(c.id) ? mutate(c) : c));
         const movedPinProbes = moveProbesWithPinMoves(
           p.probes,
           pinMoves,
@@ -3441,46 +4371,18 @@ export function Editor() {
     );
   }
 
+  function rotateSelected(selection: Set<string> = selectedIds) {
+    transformSelected((c) => ({ ...c, rotation: rotateNext(c.rotation) }), selection);
+  }
+
   function mirrorSelected(selection: Set<string> = selectedIds) {
-    if (selection.size === 0) return;
-    const selected = new Set(selection);
-    commit((d) =>
-      updateCurrentPage(d, (p) => {
-        const pinMoves = collectMirroredPinMoves(p.components, selected);
-        const contactWires = buildRotatedPinContactWires(
-          p.components,
-          p.wires,
-          selected,
-          pinMoves,
-          snapToGridRef.current,
-        );
-        let nextWires = moveWiresToRotatedPins(p.wires, pinMoves, snapToGridRef.current);
-        for (const wire of contactWires) {
-          nextWires = addWireWithJunctions({ wires: nextWires }, wire).wires;
-        }
-        const nextComponents = p.components.map((c) =>
-          selected.has(c.id) ? { ...c, mirrored: c.mirrored ? undefined : true } : c,
-        );
-        const movedPinProbes = moveProbesWithPinMoves(
-          p.probes,
-          pinMoves,
-          p.components,
-          p.wires,
-          selected,
-        );
-        const nextProbes = moveUnmovedProbesWithChangedWirePaths(
-          movedPinProbes,
-          p.probes,
-          p.wires,
-          nextWires,
-        );
-        return {
-          ...p,
-          components: nextComponents,
-          wires: pruneUnanchoredWireJunctions(nextWires, nextComponents, nextProbes),
-          probes: nextProbes,
-        };
-      }),
+    transformSelected((c) => ({ ...c, mirrored: c.mirrored ? undefined : true }), selection);
+  }
+
+  function flipVerticalSelected(selection: Set<string> = selectedIds) {
+    transformSelected(
+      (c) => ({ ...c, mirrored: c.mirrored ? undefined : true, rotation: flipRotation(c.rotation) }),
+      selection,
     );
   }
 
@@ -3645,9 +4547,46 @@ export function Editor() {
     );
   }
 
-  function beginTextEdit(component: CircuitComponent) {
+  // Swap a passive in place (R↔C↔L) without rewiring: the rotation is
+  // adjusted so both pins stay at their current world positions, and the
+  // value resets to the new kind's default since the unit family changes.
+  function changeComponentKind(id: string, kind: ComponentKind) {
+    commit((d) =>
+      updateCurrentPage(d, (p) => ({
+        ...p,
+        components: p.components.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                kind,
+                value: defaultValue(kind),
+                rotation: rotationForKindSwap(c.kind, kind, c.rotation),
+              }
+            : c,
+        ),
+      })),
+    );
+    setStatus(`Changed type to ${COMPONENT_LABELS[kind]}`);
+  }
+
+  function updateComponentLabel(id: string, label: string) {
+    commit((d) =>
+      updateCurrentPage(d, (p) => ({
+        ...p,
+        components: p.components.map((c) =>
+          c.id === id ? { ...c, label: label.trim() ? label : undefined } : c,
+        ),
+      })),
+    );
+  }
+
+  function beginTextEdit(
+    component: CircuitComponent,
+    options: { value?: string; focusMode?: CanvasTextEditFocusMode } = {},
+  ) {
     if (component.kind !== "LABEL" && component.kind !== "NOTE") return;
     textEditCancelBlurRef.current = false;
+    textEditOpenedAtRef.current = performance.now();
     setSelectedIds(new Set([component.id]));
     setTool("select");
     setDrag(null);
@@ -3660,23 +4599,284 @@ export function Editor() {
     setTextEdit({
       componentId: component.id,
       kind: component.kind,
-      value: component.value,
+      value: options.value ?? component.value,
+      focusMode: options.focusMode,
     });
+  }
+
+  function beginValueEdit(
+    component: CircuitComponent,
+    options: { value?: string; focusMode?: CanvasTextEditFocusMode } = {},
+  ) {
+    if (!isEditableComponentValue(component)) return;
+    textEditCancelBlurRef.current = false;
+    textEditOpenedAtRef.current = performance.now();
+    setSelectedIds(new Set([component.id]));
+    setTool("select");
+    setDrag(null);
+    setWireDrag(null);
+    setScopeDrag(null);
+    setNoteResize(null);
+    setPlacementDraft(null);
+    setWireDraft(null);
+    updateWireGesture(null);
+    setTextEdit({
+      componentId: component.id,
+      kind: "VALUE",
+      value: options.value ?? component.value,
+      focusMode: options.focusMode,
+    });
+  }
+
+  function beginComponentLabelEdit(
+    component: CircuitComponent,
+    options: { value?: string; focusMode?: CanvasTextEditFocusMode } = {},
+  ) {
+    if (component.kind === "LABEL" || component.kind === "NOTE") return;
+    textEditCancelBlurRef.current = false;
+    textEditOpenedAtRef.current = performance.now();
+    setSelectedIds(new Set([component.id]));
+    setTool("select");
+    setDrag(null);
+    setWireDrag(null);
+    setScopeDrag(null);
+    setNoteResize(null);
+    setPlacementDraft(null);
+    setWireDraft(null);
+    updateWireGesture(null);
+    setTextEdit({
+      componentId: component.id,
+      kind: "COMPONENT_LABEL",
+      value: options.value ?? component.label ?? "",
+      focusMode: options.focusMode,
+    });
+  }
+
+  function beginProbeLabelEdit(
+    probe: Probe,
+    options: { value?: string; focusMode?: CanvasTextEditFocusMode } = {},
+  ) {
+    textEditCancelBlurRef.current = false;
+    textEditOpenedAtRef.current = performance.now();
+    setSelectedIds(new Set([probe.id]));
+    setTool("select");
+    setDrag(null);
+    setWireDrag(null);
+    setScopeDrag(null);
+    setNoteResize(null);
+    setPlacementDraft(null);
+    setWireDraft(null);
+    updateWireGesture(null);
+    setTextEdit({
+      componentId: probe.id,
+      kind: "PROBE",
+      value: options.value ?? probe.label ?? "",
+      focusMode: options.focusMode,
+    });
+  }
+
+  function beginSubxPinLabelEdit(
+    component: CircuitComponent,
+    pinIndex: number,
+    options: { value?: string; focusMode?: CanvasTextEditFocusMode } = {},
+  ) {
+    if (component.kind !== "SUBX") return;
+    const targetPage = subcircuitPageForInstance(docRef.current, component);
+    const port = targetPage ? subcircuitPortComponents(targetPage)[pinIndex] : undefined;
+    if (!targetPage || !port) return;
+    textEditCancelBlurRef.current = false;
+    textEditOpenedAtRef.current = performance.now();
+    setSelectedIds(new Set([component.id]));
+    setTool("select");
+    setDrag(null);
+    setWireDrag(null);
+    setScopeDrag(null);
+    setNoteResize(null);
+    setPlacementDraft(null);
+    setWireDraft(null);
+    updateWireGesture(null);
+    setTextEdit({
+      componentId: component.id,
+      kind: "SUBX_PIN",
+      value: options.value ?? port.value,
+      focusMode: options.focusMode,
+      pinIndex,
+    });
+  }
+
+  function beginCanvasClickEditTarget(
+    target: CanvasClickEditTarget,
+    options: { value?: string; focusMode?: CanvasTextEditFocusMode } = {},
+  ): boolean {
+    const activePage = currentPage(docRef.current);
+    if (target.kind === "PROBE") {
+      const probe = activePage.probes.find((candidate) => candidate.id === target.id);
+      if (!probe) return false;
+      beginProbeLabelEdit(probe, options);
+      return true;
+    }
+    const component = activePage.components.find((candidate) => candidate.id === target.id);
+    if (!component) return false;
+    if (target.kind === "LABEL" || target.kind === "NOTE") {
+      if (component.kind !== target.kind) return false;
+      beginTextEdit(component, options);
+      return true;
+    }
+    if (target.kind === "VALUE") {
+      if (!isEditableComponentValue(component)) return false;
+      beginValueEdit(component, options);
+      return true;
+    }
+    if (target.kind === "COMPONENT_LABEL") {
+      if (component.kind === "LABEL" || component.kind === "NOTE") return false;
+      beginComponentLabelEdit(component, options);
+      return true;
+    }
+    if (target.kind === "SUBX_PIN") {
+      if (component.kind !== "SUBX" || target.pinIndex == null) return false;
+      beginSubxPinLabelEdit(component, target.pinIndex, options);
+      return true;
+    }
+    return false;
+  }
+
+  function beginSelectedTextEdit(initialValue?: string): boolean {
+    const focusMode = initialValue === undefined ? undefined : "end";
+    const [selectedId] = Array.from(selRef.current);
+    if (!selectedId) return false;
+    const preferredTarget = preferredTextEditTargetRef.current;
+    if (
+      preferredTarget?.id === selectedId &&
+      beginCanvasClickEditTarget(preferredTarget, { value: initialValue, focusMode })
+    ) {
+      return true;
+    }
+    const activePage = currentPage(docRef.current);
+    const component = activePage.components.find((candidate) => candidate.id === selectedId);
+    if (component) {
+      if (component.kind === "LABEL" || component.kind === "NOTE") {
+        beginTextEdit(component, { value: initialValue, focusMode });
+        return true;
+      }
+      if (isEditableComponentValue(component)) {
+        beginValueEdit(component, { value: initialValue, focusMode });
+        return true;
+      }
+      return false;
+    }
+    const probe = activePage.probes.find((candidate) => candidate.id === selectedId);
+    if (!probe) return false;
+    beginProbeLabelEdit(probe, { value: initialValue, focusMode });
+    return true;
+  }
+
+  function beginSelectedTextEditFromTyping(e: KeyboardEvent): boolean {
+    const initialValue = directTextEditInitialValue(e);
+    if (initialValue === null) return false;
+    const [selectedId] = Array.from(selRef.current);
+    if (!selectedId) return false;
+    const preferredTarget = preferredTextEditTargetRef.current;
+    if (
+      preferredTarget?.id === selectedId &&
+      beginCanvasClickEditTarget(preferredTarget, { value: initialValue, focusMode: "end" })
+    ) {
+      return true;
+    }
+    const activePage = currentPage(docRef.current);
+    const component = activePage.components.find((candidate) => candidate.id === selectedId);
+    if (component) {
+      if (component.kind === "LABEL" || component.kind === "NOTE") {
+        return beginSelectedTextEdit(initialValue);
+      }
+      if (canStartCanvasValueEditFromTyping(component.kind, component.value, initialValue)) {
+        return beginSelectedTextEdit(initialValue);
+      }
+      beginComponentLabelEdit(component, { value: initialValue, focusMode: "end" });
+      return true;
+    }
+    const probe = activePage.probes.find((candidate) => candidate.id === selectedId);
+    return Boolean(probe && beginSelectedTextEdit(initialValue));
   }
 
   function cancelTextEdit() {
     textEditCancelBlurRef.current = true;
+    textEditOpenedAtRef.current = 0;
     setTextEdit(null);
   }
 
-  function commitTextEdit(value = textEdit?.value ?? "") {
+  function commitTextEdit(
+    value = textEdit?.value ?? "",
+    options: { keepOpenOnRequiredEmpty?: boolean } = {},
+  ) {
     textEditCancelBlurRef.current = false;
+    textEditOpenedAtRef.current = 0;
     if (!textEdit) return;
-    const nextValue = textEdit.kind === "LABEL" ? value.trim() : value;
+    const nextValue = normalizeCanvasTextEditCommitValue(value, textEdit.kind);
+    if (!nextValue && canvasTextEditRequiresNonEmptyCommit(textEdit.kind)) {
+      const message =
+        textEdit.kind === "LABEL"
+          ? "Net label text cannot be empty"
+          : textEdit.kind === "SUBX_PIN"
+            ? "Subcircuit pin label cannot be empty"
+            : "Component value cannot be empty";
+      setStatus(message);
+      if (options.keepOpenOnRequiredEmpty) {
+        textEditOpenedAtRef.current = performance.now();
+        setTextEdit((edit) => (edit ? { ...edit, value, focusMode: "select-all" } : edit));
+        window.requestAnimationFrame(() => textEditRef.current?.focus());
+        return;
+      }
+      setTextEdit(null);
+      return;
+    }
+    if (textEdit.kind === "PROBE") {
+      const probe = page.probes.find((p) => p.id === textEdit.componentId);
+      const current = probe?.label?.trim() ?? "";
+      if (probe && current !== nextValue) {
+        updateProbeLabel(textEdit.componentId, nextValue);
+        setStatus(nextValue ? "Probe label updated" : "Probe label cleared");
+      }
+      setTextEdit(null);
+      return;
+    }
+    if (textEdit.kind === "SUBX_PIN") {
+      const instance = page.components.find((c) => c.id === textEdit.componentId && c.kind === "SUBX");
+      const targetPage = instance ? subcircuitPageForInstance(docRef.current, instance) : null;
+      const port = targetPage && textEdit.pinIndex !== undefined
+        ? subcircuitPortComponents(targetPage)[textEdit.pinIndex]
+        : undefined;
+      if (targetPage && port && port.value !== nextValue) {
+        commit((d) => ({
+          ...d,
+          pages: d.pages.map((candidate) =>
+            candidate.id === targetPage.id
+              ? {
+                  ...candidate,
+                  components: candidate.components.map((component) =>
+                    component.id === port.id ? { ...component, value: nextValue } : component,
+                  ),
+                }
+              : candidate,
+          ),
+        }));
+        setStatus(`Subcircuit pin ${textEdit.pinIndex! + 1} label updated`);
+      }
+      setTextEdit(null);
+      return;
+    }
     const component = page.components.find((c) => c.id === textEdit.componentId);
+    if (textEdit.kind === "COMPONENT_LABEL") {
+      const current = component?.label?.trim() ?? "";
+      if (component && current !== nextValue) {
+        updateComponentLabel(textEdit.componentId, nextValue);
+        setStatus(nextValue ? "Component label updated" : "Component label cleared");
+      }
+      setTextEdit(null);
+      return;
+    }
     if (component && component.value !== nextValue) {
       updateValue(textEdit.componentId, nextValue);
-      setStatus(`${COMPONENT_LABELS[textEdit.kind]} updated`);
+      setStatus(textEdit.kind === "VALUE" ? "Component value updated" : `${COMPONENT_LABELS[textEdit.kind]} updated`);
     }
     setTextEdit(null);
   }
@@ -3684,14 +4884,37 @@ export function Editor() {
   function onTextEditKeyDown(e: ReactKeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
     e.stopPropagation();
     if (!textEdit) return;
+    if (shouldRestoreCanvasTextSelectionBeforeInput({
+      kind: textEdit.kind,
+      key: e.key,
+      altKey: e.altKey,
+      ctrlKey: e.ctrlKey,
+      metaKey: e.metaKey,
+      elapsedMs: performance.now() - textEditOpenedAtRef.current,
+    })) {
+      const selection = canvasTextEditSelection(
+        e.currentTarget.value,
+        textEdit.kind,
+        textEdit.focusMode ?? defaultCanvasTextEditFocusMode(textEdit.kind),
+      );
+      e.currentTarget.setSelectionRange(selection.start, selection.end);
+      textEditOpenedAtRef.current = 0;
+    }
     if (e.key === "Escape") {
       e.preventDefault();
       cancelTextEdit();
       return;
     }
-    if (textEdit.kind === "LABEL" && e.key === "Enter") {
+    if (
+      (textEdit.kind === "LABEL" ||
+        textEdit.kind === "VALUE" ||
+        textEdit.kind === "PROBE" ||
+        textEdit.kind === "SUBX_PIN" ||
+        textEdit.kind === "COMPONENT_LABEL") &&
+      e.key === "Enter"
+    ) {
       e.preventDefault();
-      commitTextEdit();
+      commitTextEdit(undefined, { keepOpenOnRequiredEmpty: true });
       return;
     }
     if (textEdit.kind === "NOTE" && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -3833,6 +5056,53 @@ export function Editor() {
     );
   }
 
+  function updateSubcircuitPinSides(id: string, pinSides: string) {
+    commit((d) =>
+      updateCurrentPage(d, (p) => ({
+        ...p,
+        components: p.components.map((c) => {
+          if (c.id !== id || c.kind !== "SUBX") return c;
+          const params = { ...(c.params ?? {}) };
+          if (/^[LRTB]+$/.test(pinSides)) params.pinSides = pinSides;
+          else delete params.pinSides;
+          return { ...c, params };
+        }),
+      })),
+    );
+  }
+
+  function updateSubcircuitPinSide(id: string, pinIdx: number, side: "L" | "R" | "T" | "B") {
+    const component = page.components.find((c) => c.id === id && c.kind === "SUBX");
+    if (!component) return;
+    const sides = effectiveSubcircuitPinSidesForInstance(component);
+    if (pinIdx < 0 || pinIdx >= sides.length) return;
+    sides[pinIdx] = side;
+    updateSubcircuitPinSides(id, sides.join(""));
+  }
+
+  function resetSubcircuitPinSides(id: string) {
+    const component = page.components.find((c) => c.id === id && c.kind === "SUBX");
+    if (!component) return;
+    const subPage = subcircuitPageForInstance(docRef.current, component);
+    const next = subPage ? subcircuitInstanceParamsForPage(subPage).pinSides ?? "" : "";
+    updateSubcircuitPinSides(id, next);
+  }
+
+  function updateLabelPortSide(id: string, side: "L" | "R" | "T" | "B" | "") {
+    commit((d) =>
+      updateCurrentPage(d, (p) => ({
+        ...p,
+        components: p.components.map((c) => {
+          if (c.id !== id || c.kind !== "LABEL") return c;
+          const params = { ...(c.params ?? {}) };
+          if (side) params.portSide = side;
+          else delete params.portSide;
+          return { ...c, params };
+        }),
+      })),
+    );
+  }
+
   function setLabelPort(id: string, enabled: boolean) {
     commit((d) =>
       updateCurrentPage(d, (p) => {
@@ -3851,6 +5121,7 @@ export function Editor() {
             } else {
               params.port = "0";
               delete params.portOrder;
+              delete params.portSide;
             }
             return { ...c, params };
           }),
@@ -4289,12 +5560,16 @@ export function Editor() {
       const probeNodes = page.probes
         .map((probe) => result.nodes.posToNode.get(`${coordKey(probe.x)},${coordKey(probe.y)}`))
         .filter((node): node is string => !!node);
+      const labeledNodes = page.components
+        .filter((component) => component.kind === "LABEL" && component.value.trim())
+        .map((label) => result.nodes.posToNode.get(`${coordKey(label.x)},${coordKey(label.y)}`))
+        .filter((node): node is string => !!node && node !== "0");
       setSelectedTraces((prev) => {
         const availableNames = new Set(sim.vectors.map((v) => v.name));
         const surviving = new Set<string>();
         for (const n of prev) if (availableNames.has(n)) surviving.add(n);
         if (surviving.size > 0) return surviving;
-        return defaultVisibleTraceNames(sim.vectors, probeNodes, sim.plot);
+        return defaultVisibleTraceNames(sim.vectors, probeNodes, sim.plot, labeledNodes);
       });
       setReadings(latestNodeVoltages(sim.vectors, result.nodes.rootToName.values(), sim.plot));
       const wstr = result.warnings.length
@@ -4363,23 +5638,15 @@ export function Editor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const selectedList = useMemo(
-    () => page.components.filter((c) => selectedIds.has(c.id)),
-    [page.components, selectedIds],
-  );
-  const selectedWireList = useMemo(
-    () => page.wires.filter((w) => selectedIds.has(w.id)),
-    [page.wires, selectedIds],
-  );
-  const selectedProbeList = useMemo(
-    () => page.probes.filter((pr) => selectedIds.has(pr.id)),
-    [page.probes, selectedIds],
-  );
-  const lastSelected = selectedList[selectedList.length - 1] ?? null;
-  const lastSelectedWire = selectedWireList[selectedWireList.length - 1] ?? null;
-  const lastSelectedProbe = selectedProbeList[selectedProbeList.length - 1] ?? null;
-  const selectedObjectCount =
-    selectedList.length + selectedWireList.length + selectedProbeList.length;
+  const {
+    selectedList,
+    selectedWireList,
+    selectedProbeList,
+    lastSelected,
+    lastSelectedWire,
+    lastSelectedProbe,
+    selectedObjectCount,
+  } = useEditorSelection(page, selectedIds);
   const selectedAutoFormatWireCount = useMemo(
     () => wireIdsForAutoFormat(page, selectedIds).size,
     [page, selectedIds],
@@ -4469,12 +5736,12 @@ export function Editor() {
       if (c.kind === "LABEL") continue;
       const text = canvasValueLabel(c.kind, c.value);
       const offset = componentValueLabelOffsets.get(c.id);
-      if (text && offset) occupied.push(valueLabelBounds(c, offset, text));
+      if (text && offset) occupied.push(valueLabelBounds(c, offset, text, canvasValueFontSize));
     }
     const v = netLabelLayouts(page, occupied);
     lastNetLabelLayoutMapRef.current = v;
     return v;
-  }, [componentValueLabelOffsets, page, isDragging]);
+  }, [canvasValueFontSize, componentValueLabelOffsets, page, isDragging]);
   const sweepableSources = useMemo(() => {
     const out: string[] = [];
     for (const c of page.components) {
@@ -4511,6 +5778,7 @@ export function Editor() {
     placementDraft,
     marquee,
     panning,
+    textEdit,
     wireDraft,
     wireGesture,
   });
@@ -4580,8 +5848,10 @@ export function Editor() {
   // Freeze live-flow when the last run flagged floating pins — the
   // dashed motion implies "this circuit is alive" which is misleading
   // when ngspice's result is built on top of broken connectivity.
-  // Auto-run keeps the overlay alive across the brief stale window so
-  // it doesn't blink off and back on every time the user nudges the doc.
+  // Keep the wire-flow animation running across an auto-run cycle (edit →
+  // stale → re-run → fresh). Without this exception the dashed overlay
+  // blinks off every time the user nudges the doc and back on once the
+  // sim returns.
   const liveActive =
     isTransient
     && (autoRun || !simulationStale)
@@ -4664,6 +5934,186 @@ export function Editor() {
     () => probeScopes.filter(({ visible }) => visible),
     [probeScopes],
   );
+  const textEditOverlay = useMemo(() => {
+    if (!textEdit) return null;
+    const toPixels = (x: number, y: number, width: number, height: number) => ({
+      left: pan.x + x * CELL * zoom,
+      top: pan.y + y * CELL * zoom,
+      width: width * CELL * zoom,
+      height: height * CELL * zoom,
+    });
+    if (textEdit.kind === "PROBE") {
+      const probe = page.probes.find((candidate) => candidate.id === textEdit.componentId);
+      if (!probe) return null;
+      const scoped = probeScopes.find(({ probe: candidate }) => candidate.id === probe.id);
+      if (scoped && probeScopeLabelIds.has(probe.id)) {
+        const scopeX = probe.x + scoped.placement.dx;
+        const scopeY = probe.y + scoped.placement.dy;
+        return {
+          kind: textEdit.kind,
+          componentId: probe.id,
+          ariaLabel: "Edit probe label",
+          className: "probe-editor",
+          ...toPixels(scopeX + 0.24, scopeY + 0.18, Math.max(2.4, SCOPE_WIDTH - 0.48), 0.7),
+          fontSize: Math.max(11, Math.min(17, 0.42 * CELL * zoom)),
+          accent: probe.color,
+        };
+      }
+      const label = probe.label?.trim() ?? "";
+      const badgeW = Math.max(2.6, estimateInlineMathTextWidth(label || textEdit.value || "out") * 0.42 + 0.7);
+      return {
+        kind: textEdit.kind,
+        componentId: probe.id,
+        ariaLabel: "Edit probe label",
+        className: "probe-editor",
+        ...toPixels(probe.x + 0.45, probe.y - 0.94, Math.max(2.4, badgeW), 0.74),
+        fontSize: Math.max(11, Math.min(17, 0.42 * CELL * zoom)),
+        accent: probe.color,
+      };
+    }
+
+    const component = page.components.find((candidate) => candidate.id === textEdit.componentId);
+    if (!component) return null;
+    if (textEdit.kind === "NOTE" && component.kind === "NOTE") {
+      const lines = noteTextLines(textEdit.value);
+      const width = noteComponentWidth(component, lines);
+      const height = noteComponentHeight(component, lines);
+      return {
+        kind: textEdit.kind,
+        componentId: component.id,
+        ariaLabel: "Edit note",
+        className: "note-editor",
+        ...toPixels(component.x, component.y, width, height),
+        fontSize: Math.max(12, Math.min(18, 0.42 * CELL * zoom)),
+        accent: noteColor(component),
+        fill: noteFillColor(component, true),
+        stroke: noteStrokeColor(component, true),
+      };
+    }
+    if (textEdit.kind === "LABEL" && component.kind === "LABEL") {
+      const draftLabel = textEdit.value.trim() || component.value.trim() || "label";
+      const committedLayout = netLabelLayoutMap.get(component.id);
+      const layout = draftLabel === component.value.trim()
+        ? committedLayout
+        : netLabelLayout(component, page, draftLabel);
+      return {
+        kind: textEdit.kind,
+        componentId: component.id,
+        ariaLabel: "Edit net label",
+        className: "label-editor",
+        ...toPixels(
+          (layout?.chipX ?? component.x + 0.42) - 0.02,
+          (layout?.chipY ?? component.y - 0.44) - 0.02,
+          (layout?.chipW ?? 2.1) + 0.04,
+          (layout?.chipH ?? 0.88) + 0.04,
+        ),
+        fontSize: Math.max(12, Math.min(18, 0.46 * CELL * zoom)),
+        accent: "var(--accent)",
+      };
+    }
+    if (textEdit.kind === "SUBX_PIN" && component.kind === "SUBX" && textEdit.pinIndex !== undefined) {
+      const pins = getPinLayout(component);
+      const pin = pins[textEdit.pinIndex];
+      if (!pin) return null;
+      const sides = effectiveSubcircuitPinSidesForInstance(component);
+      const side = sides[textEdit.pinIndex] ?? (pin.x < 0 ? "L" : "R");
+      const bodyHalfW = subcircuitBodyWidth(component) / 2;
+      const bodyHalfH = subcircuitBodyHeight(component) / 2;
+      const local =
+        side === "T"
+          ? { x: pin.x, y: -bodyHalfH + 0.42 }
+          : side === "B"
+            ? { x: pin.x, y: bodyHalfH - 0.18 }
+            : side === "L"
+              ? { x: -bodyHalfW + 0.55, y: pin.y + 0.11 }
+              : { x: bodyHalfW - 0.55, y: pin.y + 0.11 };
+      const rotated = rotatePoint(local, component.rotation);
+      const label = textEdit.value.trim() || "pin";
+      const width = Math.max(1.5, Math.min(4.2, estimateInlineMathTextWidth(label) * 0.34 + 0.75));
+      return {
+        kind: textEdit.kind,
+        componentId: component.id,
+        ariaLabel: "Edit subcircuit pin label",
+        className: "subx-pin-label-editor",
+        ...toPixels(component.x + rotated.x - width / 2, component.y + rotated.y - 0.35, width, 0.7),
+        fontSize: Math.max(11, Math.min(15, 0.34 * CELL * zoom)),
+        accent: "var(--accent)",
+      };
+    }
+    if (textEdit.kind === "COMPONENT_LABEL") {
+      const label = textEdit.value.trim() || component.label?.trim() || "label";
+      const bounds = componentUserLabelBounds(component, label);
+      return {
+        kind: textEdit.kind,
+        componentId: component.id,
+        ariaLabel: "Edit component label",
+        className: "component-label-editor",
+        ...toPixels(bounds.x1, bounds.y1, bounds.x2 - bounds.x1, bounds.y2 - bounds.y1),
+        fontSize: Math.max(11, Math.min(16, 0.38 * CELL * zoom)),
+        accent: "var(--accent)",
+      };
+    }
+    if (textEdit.kind === "VALUE") {
+      if (component.kind === "SUBX") {
+        const bodyWidth = subcircuitBodyWidth(component);
+        const bodyHeight = subcircuitBodyHeight(component);
+        const editorWidth = Math.max(
+          1.8,
+          Math.min(bodyWidth - 0.5, estimateInlineMathTextWidth(textEdit.value || component.value || "X") * 0.42 + 0.85),
+        );
+        return {
+          kind: textEdit.kind,
+          componentId: component.id,
+          ariaLabel: "Edit subcircuit name",
+          className: "value-editor subx-label-editor",
+          ...toPixels(component.x - editorWidth / 2, component.y - Math.min(0.42, bodyHeight / 2), editorWidth, 0.82),
+          fontSize: Math.max(11, Math.min(17, 0.42 * CELL * zoom)),
+          accent: "var(--accent)",
+        };
+      }
+      const formattedDraftValue = canvasValueLabel(component.kind, textEdit.value);
+      const formattedCommittedValue = canvasValueLabel(component.kind, component.value);
+      const valueLabel =
+        formattedDraftValue ??
+        formattedCommittedValue ??
+        (textEdit.value.trim() || component.value.trim() || "value");
+      if (!valueLabel) return null;
+      const off = componentValueLabelOffsets.get(component.id) ?? { x: 0, y: 1.45, anchor: "middle" as const };
+      const labelX = component.x + off.x;
+      const labelY = component.y + off.y;
+      const labelBounds = valueLabelBounds(component, off, valueLabel, canvasValueFontSize);
+      const renderedWidth = labelBounds.x2 - labelBounds.x1 + 0.34;
+      const rawEditorValue = textEdit.value.trim() || component.value.trim() || valueLabel;
+      const width = canvasValueEditorWidthUnits(renderedWidth, rawEditorValue);
+      const x =
+        off.anchor === "end"
+          ? labelX - width
+          : off.anchor === "middle"
+            ? labelX - width / 2
+            : labelX;
+      return {
+        kind: textEdit.kind,
+        componentId: component.id,
+        ariaLabel: "Edit component value",
+        className: "value-editor",
+        ...toPixels(x, labelY - 0.58, width, 0.78),
+        fontSize: Math.max(11, Math.min(17, 0.42 * CELL * zoom)),
+        accent: "var(--accent)",
+      };
+    }
+    return null;
+  }, [
+    canvasValueFontSize,
+    componentValueLabelOffsets,
+    netLabelLayoutMap,
+    page,
+    pan.x,
+    pan.y,
+    probeScopeLabelIds,
+    probeScopes,
+    textEdit,
+    zoom,
+  ]);
   const traceAliases = useMemo(() => {
     const aliases = new Map<string, string>();
     for (const [node, label] of nodeDisplayLabels) {
@@ -4682,6 +6132,17 @@ export function Editor() {
     }
     return aliases;
   }, [nodeDisplayLabels, page.probes, pinAnnotations.nodes.posToNode]);
+  const userTraceNames = useMemo(() => {
+    if (!simResult) return new Set<string>();
+    const probeNodes = page.probes
+      .map((probe) => pinAnnotations.nodes.posToNode.get(`${coordKey(probe.x)},${coordKey(probe.y)}`))
+      .filter((node): node is string => !!node);
+    const labeledNodes = Array.from(nodeDisplayLabels.keys());
+    return new Set([
+      ...traceNamesForNodes(simResult.vectors, probeNodes, simResult.plot),
+      ...traceNamesForNodes(simResult.vectors, labeledNodes, simResult.plot),
+    ]);
+  }, [nodeDisplayLabels, page.probes, pinAnnotations.nodes.posToNode, simResult]);
   const runLabels = useMemo(() => sweepRunLabelsFromDirectives(doc.directives), [doc.directives]);
   const measurementAxisUnit = axisUnitFromLabel(analysisXAxisLabel(doc.analysis));
   const measurementDirectives = useMemo(
@@ -4695,33 +6156,28 @@ export function Editor() {
   // visual speed, opacity, and direction.
   const wireFlowSamples = useMemo(() => {
     const out = new Map<string, { signedCurrent: number; normalizedCurrent: number; source: LiveFlowSampleSource }>();
-    if (!simResult || !isTransient) return out;
+    if (!liveFlow || !simResult || !isTransient) return out;
     const scale = simResult.vectors.find((v) => v.is_scale);
     if (!scale) return out;
     const idx = findTimeIndex(scale.data, playTime);
-    const nearbyDerivativeIdx =
-      scale.data.length <= 1
-        ? -1
-        : idx > 0
-          ? idx - 1
-          : 1;
-    const nodeVoltageAt = (node: string | undefined, sampleIdx: number): number | undefined => {
-      if (!node) return undefined;
-      if (node === "0") return 0;
-      const trace = findNodeTrace(simResult.vectors, node, simResult.plot);
-      return trace && sampleIdx >= 0 && sampleIdx < trace.data.length
-        ? trace.data[sampleIdx]
-        : undefined;
-    };
-    const pinNode = (component: CircuitComponent, pinIdx: number): string | undefined => {
-      const p = pinWorldPos(component, pinIdx);
-      return pinAnnotations.nodes.posToNode.get(`${coordKey(p.x)},${coordKey(p.y)}`);
-    };
 
     const componentCurrents = new Map<string, { current: number; source: LiveFlowSampleSource }>();
+    const terminalCurrents = new Map<string, { current: number; source: LiveFlowSampleSource }>();
+    const subcircuitPinCurrents = new Map<string, { current: number; source: LiveFlowSampleSource }>();
     for (const c of page.components) {
       const rd = pinAnnotations.refdes.get(c.id);
       if (rd) {
+        const pins = getPinLayout(c);
+        for (let pinIndex = 0; pinIndex < pins.length; pinIndex += 1) {
+          const terminalCandidates = liveFlowTerminalCurrentTraceCandidates(c.kind, rd, pinIndex);
+          for (const name of terminalCandidates) {
+            const v = findNamedTrace(simResult.vectors, [name], simResult.plot);
+            if (v && idx < v.data.length) {
+              terminalCurrents.set(`${c.id}:${pinIndex}`, { current: v.data[idx], source: "ngspice" });
+              break;
+            }
+          }
+        }
         const candidates = liveFlowCurrentTraceCandidates(c.kind, rd);
         for (const name of candidates) {
           const v = findNamedTrace(simResult.vectors, [name], simResult.plot);
@@ -4730,49 +6186,56 @@ export function Editor() {
             break;
           }
         }
-      }
-      if (!componentCurrents.has(c.id) && (c.kind === "R" || c.kind === "C")) {
-        const n0 = pinNode(c, 0);
-        const n1 = pinNode(c, 1);
-        const pin0Voltage = nodeVoltageAt(n0, idx);
-        const pin1Voltage = nodeVoltageAt(n1, idx);
-        if (pin0Voltage === undefined || pin1Voltage === undefined) continue;
-        const previousPin0Voltage =
-          nearbyDerivativeIdx >= 0 ? nodeVoltageAt(n0, nearbyDerivativeIdx) : undefined;
-        const previousPin1Voltage =
-          nearbyDerivativeIdx >= 0 ? nodeVoltageAt(n1, nearbyDerivativeIdx) : undefined;
-        const deltaTime =
-          nearbyDerivativeIdx >= 0
-            ? Math.abs(scale.data[idx] - scale.data[nearbyDerivativeIdx])
-            : undefined;
-        const passiveCurrent = estimatePassiveLiveFlowCurrent({
-          kind: c.kind,
-          value: c.value,
-          pin0Voltage,
-          pin1Voltage,
-          previousPin0Voltage,
-          previousPin1Voltage,
-          deltaTime,
-        });
-        if (passiveCurrent !== null) {
-          componentCurrents.set(c.id, { current: passiveCurrent, source: "estimated" });
+        if (c.kind === "SUBX" || c.kind === "OPAMP") {
+          for (let pinIndex = 0; pinIndex < pins.length; pinIndex += 1) {
+            const senseRef = liveFlowSubcircuitPinSenseRef(rd, pinIndex);
+            const v = findNamedTrace(
+              simResult.vectors,
+              [`i(@${senseRef.toLowerCase()}[i])`, `@${senseRef.toLowerCase()}[i]`, `${senseRef.toLowerCase()}#branch`, `i(${senseRef.toLowerCase()})`],
+              simResult.plot,
+            );
+            if (v && idx < v.data.length) {
+              subcircuitPinCurrents.set(`${c.id}:${pinIndex}`, { current: v.data[idx], source: "ngspice" });
+            }
+          }
         }
       }
     }
 
-    let maxI = 1e-15;
     const raw = new Map<string, { current: number; source: LiveFlowSampleSource }>();
     for (const w of page.wires) {
       if (!liveFlowWireHasVisibleLength(w.points)) continue;
-      const candidates = [];
+      const candidates: WireFlowCandidate[] = [];
       for (const c of page.components) {
         const componentCurrent = componentCurrents.get(c.id);
-        if (!componentCurrent) continue;
         const pins = getPinLayout(c);
         for (let i = 0; i < pins.length; i++) {
           const p = pinWorldPos(c, i);
           const attachment = wireFlowAttachmentForPoint(w.points, p);
-          if (attachment) {
+          if (!attachment) continue;
+          if (c.kind === "SUBX" || c.kind === "OPAMP") {
+            const pinCurrent = subcircuitPinCurrents.get(`${c.id}:${i}`);
+            if (!pinCurrent) continue;
+            candidates.push({
+              componentCurrent: pinCurrent.current,
+              source: pinCurrent.source,
+              attachedPinIndex: 0,
+              pinCount: 2,
+              attachedAtStart: attachment.attachedAtStart,
+              distance: attachment.distance,
+            });
+          } else if (terminalCurrents.has(`${c.id}:${i}`)) {
+            const terminalCurrent = terminalCurrents.get(`${c.id}:${i}`)!;
+            candidates.push({
+              componentCurrent: terminalCurrent.current,
+              source: terminalCurrent.source,
+              attachedPinIndex: i,
+              pinCount: pins.length,
+              attachedAtStart: attachment.attachedAtStart,
+              distance: attachment.distance,
+              currentKind: "terminal",
+            });
+          } else if (componentCurrent && !liveFlowRequiresTerminalCurrent(c.kind)) {
             candidates.push({
               componentCurrent: componentCurrent.current,
               source: componentCurrent.source,
@@ -4787,33 +6250,110 @@ export function Editor() {
       const sample = wireFlowSampleFromCandidates(candidates);
       if (!sample) continue;
       raw.set(w.id, { current: sample.signedCurrent, source: sample.source });
-      if (Math.abs(sample.signedCurrent) > maxI) maxI = Math.abs(sample.signedCurrent);
     }
-    for (const [id, sample] of raw) {
-      out.set(id, {
-        signedCurrent: sample.current,
-        normalizedCurrent: sample.current / maxI,
-        source: sample.source,
-      });
+    return normalizeLiveFlowSamples(raw);
+  }, [liveFlow, simResult, playTime, page.components, page.wires, pinAnnotations, isTransient]);
+  const componentFlowSamples = useMemo(() => {
+    const raw = new Map<string, { current: number; source: LiveFlowSampleSource }>();
+    if (!liveFlow || !simResult || !isTransient) return new Map<string, LiveFlowSample>();
+    const scale = simResult.vectors.find((v) => v.is_scale);
+    if (!scale) return new Map<string, LiveFlowSample>();
+    const idx = findTimeIndex(scale.data, playTime);
+
+    for (const c of page.components) {
+      if (c.kind === "GND") {
+        const p = pinWorldPos(c, 0);
+        let strongest: LiveFlowSample | null = null;
+        for (const w of page.wires) {
+          const wireSample = wireFlowSamples.get(w.id);
+          if (!wireSample || wireSample.source !== "ngspice") continue;
+          if (!wireFlowAttachmentForPoint(w.points, p)) continue;
+          if (
+            strongest === null ||
+            Math.abs(wireSample.signedCurrent) > Math.abs(strongest.signedCurrent)
+          ) {
+            strongest = wireSample;
+          }
+        }
+        if (strongest) {
+          raw.set(c.id, { current: Math.abs(strongest.signedCurrent), source: "ngspice" });
+        }
+        continue;
+      }
+      const rd = pinAnnotations.refdes.get(c.id);
+      if (!rd) continue;
+      if (c.kind === "SUBX" || c.kind === "OPAMP") {
+        const pins = getPinLayout(c);
+        let strongestPinCurrent: number | null = null;
+        for (let pinIndex = 0; pinIndex < pins.length; pinIndex += 1) {
+          const senseRef = liveFlowSubcircuitPinSenseRef(rd, pinIndex);
+          const v = findNamedTrace(
+            simResult.vectors,
+            [`i(@${senseRef.toLowerCase()}[i])`, `@${senseRef.toLowerCase()}[i]`, `${senseRef.toLowerCase()}#branch`, `i(${senseRef.toLowerCase()})`],
+            simResult.plot,
+          );
+          if (v && idx < v.data.length && Number.isFinite(v.data[idx])) {
+            const current = v.data[idx];
+            if (
+              strongestPinCurrent === null ||
+              Math.abs(current) > Math.abs(strongestPinCurrent)
+            ) {
+              strongestPinCurrent = current;
+            }
+          }
+        }
+        if (strongestPinCurrent !== null) {
+          raw.set(c.id, { current: strongestPinCurrent, source: "ngspice" });
+        }
+        continue;
+      }
+
+      if (liveFlowRequiresTerminalCurrent(c.kind)) {
+        const drainOrCollector = findNamedTrace(
+          simResult.vectors,
+          liveFlowTerminalCurrentTraceCandidates(c.kind, rd, 0),
+          simResult.plot,
+        );
+        if (drainOrCollector && idx < drainOrCollector.data.length && Number.isFinite(drainOrCollector.data[idx])) {
+          raw.set(c.id, { current: drainOrCollector.data[idx], source: "ngspice" });
+          continue;
+        }
+        const sourceOrEmitter = findNamedTrace(
+          simResult.vectors,
+          liveFlowTerminalCurrentTraceCandidates(c.kind, rd, 2),
+          simResult.plot,
+        );
+        if (sourceOrEmitter && idx < sourceOrEmitter.data.length && Number.isFinite(sourceOrEmitter.data[idx])) {
+          raw.set(c.id, { current: -sourceOrEmitter.data[idx], source: "ngspice" });
+        }
+        continue;
+      }
+
+      const branch = findNamedTrace(
+        simResult.vectors,
+        liveFlowCurrentTraceCandidates(c.kind, rd),
+        simResult.plot,
+      );
+      if (branch && idx < branch.data.length && Number.isFinite(branch.data[idx])) {
+        raw.set(c.id, { current: branch.data[idx], source: "ngspice" });
+      }
     }
-    return out;
-  }, [simResult, playTime, page.components, page.wires, pinAnnotations, isTransient]);
+
+    return normalizeLiveFlowSamples(
+      raw,
+      Array.from(wireFlowSamples.values(), (sample) => sample.signedCurrent),
+    );
+  }, [liveFlow, simResult, playTime, page.components, page.wires, pinAnnotations.refdes, isTransient, wireFlowSamples]);
   const liveFlowUiStatus = useMemo(() => {
     let activeWireCount = 0;
-    let estimatedWireCount = 0;
-    let measuredWireCount = 0;
-    let sampledEstimatedWireCount = 0;
-    let sampledMeasuredWireCount = 0;
+    let ngspiceWireCount = 0;
     let strongestCurrent = 0;
     const visibleWireCount = page.wires.filter((wire) => liveFlowWireHasVisibleLength(wire.points)).length;
     for (const sample of wireFlowSamples.values()) {
-      if (sample.source === "estimated") sampledEstimatedWireCount += 1;
-      else sampledMeasuredWireCount += 1;
       const visual = liveFlowVisualFromSample(sample);
       if (visual.active) {
         activeWireCount += 1;
-        if (sample.source === "estimated") estimatedWireCount += 1;
-        else measuredWireCount += 1;
+        ngspiceWireCount += 1;
       }
       if (Math.abs(sample.signedCurrent) > Math.abs(strongestCurrent)) {
         strongestCurrent = sample.signedCurrent;
@@ -4829,10 +6369,7 @@ export function Editor() {
       visibleWireCount,
       activeWireCount,
       sampledWireCount: wireFlowSamples.size,
-      sampledMeasuredWireCount,
-      sampledEstimatedWireCount,
-      measuredWireCount,
-      estimatedWireCount,
+      ngspiceWireCount,
       strongestCurrent,
     });
   }, [doc.analysis.kind, isTransient, liveFlow, page.wires, runFloatingPins.length, simResult, simulationStale, wireFlowSamples]);
@@ -4846,7 +6383,7 @@ export function Editor() {
       const text = canvasValueLabel(component.kind, component.value);
       const offset = valueOffsets.get(component.id);
       if (!text || !offset) continue;
-      const bounds = valueLabelBounds(component, offset, text);
+      const bounds = valueLabelBounds(component, offset, text, canvasValueFontSize);
       occupiedValueLabels.push(bounds);
       obstacles.push(bounds);
     }
@@ -4873,7 +6410,22 @@ export function Editor() {
       });
     }
     return obstacles;
-  }, [page, probeScopes]);
+  }, [canvasValueFontSize, page, probeScopes]);
+  const liveFlowWireReadoutObstacles = useMemo(() => {
+    const allWireBounds = page.wires.map((wire) => ({
+      id: wire.id,
+      bounds: liveFlowWireObstacleBounds(wire.points, 0.14),
+    }));
+    const byWire = new Map<string, ReturnType<typeof liveFlowWireObstacleBounds>>();
+    for (const wire of page.wires) {
+      const obstacles = [];
+      for (const entry of allWireBounds) {
+        if (entry.id !== wire.id) obstacles.push(...entry.bounds);
+      }
+      byWire.set(wire.id, obstacles);
+    }
+    return byWire;
+  }, [page.wires]);
 
   const floatingPinMarkers = useMemo(() => {
     if (runFloatingPins.length === 0) return [];
@@ -5352,12 +6904,34 @@ export function Editor() {
                 <>
                   <Row label="Type">
                     <span className="row-type-value">
-                      <span className="mono">
-                        {COMPONENT_LABELS[lastSelected.kind]}
-                      </span>
+                      {SWAPPABLE_PASSIVE_KINDS.includes(lastSelected.kind) ? (
+                        <SelectField
+                          ariaLabel="Component type"
+                          value={lastSelected.kind}
+                          onValueChange={(value) =>
+                            changeComponentKind(lastSelected.id, value as ComponentKind)
+                          }
+                          options={SWAPPABLE_PASSIVE_KINDS.map((k) => ({
+                            value: k,
+                            label: COMPONENT_LABELS[k],
+                          }))}
+                        />
+                      ) : (
+                        <span className="mono">{COMPONENT_LABELS[lastSelected.kind]}</span>
+                      )}
                       <ComponentHelp kind={lastSelected.kind} />
                     </span>
                   </Row>
+                  {lastSelected.kind !== "LABEL" && lastSelected.kind !== "NOTE" && (
+                    <Row label="Label">
+                      <input
+                        className="value-input"
+                        value={lastSelected.label ?? ""}
+                        onChange={(e) => updateComponentLabel(lastSelected.id, e.target.value)}
+                        placeholder="Optional canvas label"
+                      />
+                    </Row>
+                  )}
                   {selectedRefdes && (
                     <Row label="Reference">
                       <span className="component-ref-chip" title="SPICE reference designator">
@@ -5439,48 +7013,37 @@ export function Editor() {
                       <>
                         {mosfetPresetKindForComponentKind(lastSelected.kind) && (
                           <Row label="Preset">
-                            <select
-                              className="value-input"
+                            <SelectField
+                              ariaLabel="Preset"
                               value={
                                 lastSelected.params?.preset ??
                                 selectedMosfetPresetId[mosfetPresetKindForComponentKind(lastSelected.kind)!] ??
                                 defaultMosfetPresetId(mosfetPresetKindForComponentKind(lastSelected.kind)!)
                               }
-                              onChange={(e) =>
-                                applyPresetToComponent(lastSelected.id, e.target.value)
-                              }
-                            >
-                              {mosfetPresets
+                              onValueChange={(value) => applyPresetToComponent(lastSelected.id, value)}
+                              options={mosfetPresets
                                 .filter((preset) => preset.kind === mosfetPresetKindForComponentKind(lastSelected.kind))
-                                .map((preset) => (
-                                  <option key={preset.id} value={preset.id}>
-                                    {preset.name}
-                                  </option>
-                                ))}
-                            </select>
+                                .map((preset) => ({ value: preset.id, label: preset.name }))}
+                            />
                           </Row>
                         )}
                         <Row label={lastSelected.kind === "B" ? "Expression" : isModelKind(lastSelected.kind) ? "Model" : "Value"}>
                           {isModelKind(lastSelected.kind) && lastSelected.kind !== "OPAMP" ? (
-                            <select
-                              className="value-input"
+                            <SelectField
+                              ariaLabel="Model"
                               value={lastSelected.value}
-                              onChange={(e) => updateComponentModel(lastSelected.id, e.target.value)}
-                            >
-                              {modelOptionsForKind(modelDefinitions, lastSelected.kind, lastSelected.value).map(
-                                (model) => (
-                                  <option key={`${model.type}:${model.name}`} value={model.name}>
-                                    {model.name}
-                                  </option>
-                                ),
+                              onValueChange={(value) => updateComponentModel(lastSelected.id, value)}
+                              options={modelOptionsForKind(modelDefinitions, lastSelected.kind, lastSelected.value).map(
+                                (model) => ({ value: model.name, label: model.name }),
                               )}
-                            </select>
+                            />
                           ) : (() => {
                             const family = componentValueUnitFamily(lastSelected.kind);
                             if (!family || isComplexValue(lastSelected.value)) {
                               return (
                                 <input
                                   className="value-input"
+                                  aria-label={lastSelected.kind === "B" ? "Expression" : "Value"}
                                   value={lastSelected.value}
                                   onChange={(e) => updateValue(lastSelected.id, e.target.value)}
                                   placeholder={lastSelected.kind === "B" ? "V=sin(2*pi*1k*time)" : undefined}
@@ -5489,6 +7052,7 @@ export function Editor() {
                             }
                             return (
                               <ValueWithUnit
+                                ariaLabel="Value"
                                 value={lastSelected.value}
                                 onChange={(next) => updateValue(lastSelected.id, next)}
                                 family={family}
@@ -5565,33 +7129,57 @@ export function Editor() {
                   )}
                   {lastSelected.kind === "LABEL" && doc.pages[0]?.id !== page.id && (
                     <Row label="Subcircuit port">
-                      <label className="checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={lastSelected.params?.port === "1"}
-                          onChange={(e) =>
-                            setLabelPort(lastSelected.id, e.target.checked)
-                          }
-                        />
-                        <span>Expose as pin</span>
-                      </label>
+                      <CheckboxField
+                        checked={lastSelected.params?.port === "1"}
+                        onCheckedChange={(checked) => setLabelPort(lastSelected.id, checked)}
+                        ariaLabel="Expose as subcircuit pin"
+                      >
+                        Expose as pin
+                      </CheckboxField>
                     </Row>
                   )}
                   {lastSelected.kind === "LABEL" &&
                     doc.pages[0]?.id !== page.id &&
                     lastSelected.params?.port === "1" && (
-                      <Row label="Pin order">
-                        <input
-                          className="value-input"
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={lastSelected.params?.portOrder ?? ""}
-                          placeholder="Auto"
-                          onChange={(e) => updateParam(lastSelected.id, "portOrder", e.target.value)}
-                          title="External subcircuit pin order used by the generated .subckt line and placed SUBX symbol"
-                        />
-                      </Row>
+                      <>
+                        <Row label="Pin order">
+                          <input
+                            className="value-input"
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={lastSelected.params?.portOrder ?? ""}
+                            placeholder="Auto"
+                            onChange={(e) => updateParam(lastSelected.id, "portOrder", e.target.value)}
+                            title="External subcircuit pin order used by the generated .subckt line and placed SUBX symbol"
+                          />
+                        </Row>
+                        <Row label="Pin side">
+                          <span className="subx-pin-side-buttons" role="group" aria-label="Subcircuit port side">
+                            <button
+                              type="button"
+                              className="subx-pin-side-btn"
+                              aria-pressed={!/^[LRTB]$/i.test(lastSelected.params?.portSide ?? "")}
+                              title="Infer side from this port label's position in the schematic"
+                              onClick={() => updateLabelPortSide(lastSelected.id, "")}
+                            >
+                              Auto
+                            </button>
+                            {SUBX_PIN_SIDE_OPTIONS.map((option) => (
+                              <button
+                                key={option.id}
+                                type="button"
+                                className="subx-pin-side-btn"
+                                aria-pressed={(lastSelected.params?.portSide ?? "").toUpperCase() === option.id}
+                                title={option.title}
+                                onClick={() => updateLabelPortSide(lastSelected.id, option.id)}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                          </span>
+                        </Row>
+                      </>
                     )}
                   {lastSelected.kind === "SUBX" && (
                     <>
@@ -5620,6 +7208,50 @@ export function Editor() {
                           onChange={(e) => updateParam(lastSelected.id, "h", e.target.value)}
                           title="Subcircuit body height in grid units; pins spread along each side"
                         />
+                      </Row>
+                      <Row label="Pin sides">
+                        <div className="subx-pin-side-editor">
+                          <div className="subx-pin-side-toolbar">
+                            <span>
+                              {effectiveSubcircuitPinSidesForInstance(lastSelected).length} pins
+                            </span>
+                            <button
+                              type="button"
+                              className="mini-btn subx-pin-side-auto"
+                              onClick={() => resetSubcircuitPinSides(lastSelected.id)}
+                              title="Recompute pin sides from the referenced schematic ports"
+                            >
+                              Auto
+                            </button>
+                          </div>
+                          <div className="subx-pin-side-list">
+                            {effectiveSubcircuitPinSidesForInstance(lastSelected).map((activeSide, pinIdx) => {
+                              const labels = subcircuitPinLabelsForInstance(doc, lastSelected);
+                              const pinLabel = labels[pinIdx]?.trim() || `Pin ${pinIdx + 1}`;
+                              return (
+                                <div className="subx-pin-side-row" key={`${lastSelected.id}-${pinIdx}`}>
+                                  <span className="subx-pin-side-name" title={pinLabel}>
+                                    {pinLabel}
+                                  </span>
+                                  <span className="subx-pin-side-buttons" role="group" aria-label={`Side for ${pinLabel}`}>
+                                    {SUBX_PIN_SIDE_OPTIONS.map((option) => (
+                                      <button
+                                        key={option.id}
+                                        type="button"
+                                        className="subx-pin-side-btn"
+                                        aria-pressed={activeSide === option.id}
+                                        title={option.title}
+                                        onClick={() => updateSubcircuitPinSide(lastSelected.id, pinIdx, option.id)}
+                                      >
+                                        {option.label}
+                                      </button>
+                                    ))}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </Row>
                     </>
                   )}
@@ -5802,7 +7434,16 @@ export function Editor() {
               ) : null}
               <div className="inspector-actions">
                 {selectedList.length > 0 && <button onClick={() => rotateSelected()}>Rotate</button>}
-                {selectedList.length > 0 && <button onClick={() => mirrorSelected()}>Mirror</button>}
+                {selectedList.length > 0 && (
+                  <button onClick={() => mirrorSelected()} title="Mirror left ↔ right">
+                    Mirror ↔
+                  </button>
+                )}
+                {selectedList.length > 0 && (
+                  <button onClick={() => flipVerticalSelected()} title="Flip top ↕ bottom">
+                    Flip ↕
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     void autoArrangeSchematic(selectedList.length > 0 ? selectedIds : new Set());
@@ -5935,25 +7576,18 @@ export function Editor() {
                             aria-label={`${model.name} model name`}
                             spellCheck={false}
                           />
-                          <select
+                          <SelectField
                             className="model-type-select"
                             value={model.type}
-                            onChange={(e) =>
+                            onValueChange={(value) =>
                               updateSharedModel(model, {
                                 ...model,
-                                type: e.target.value as ModelDeviceType,
+                                type: value as ModelDeviceType,
                               })
                             }
-                            aria-label={`${model.name} model type`}
-                          >
-                            {(["NMOS", "PMOS", "D", "NPN", "PNP"] satisfies ModelDeviceType[]).map(
-                              (type) => (
-                                <option key={type} value={type}>
-                                  {type}
-                                </option>
-                              ),
-                            )}
-                          </select>
+                            ariaLabel={`${model.name} model type`}
+                            options={MODEL_TYPE_OPTIONS}
+                          />
                           <button
                             type="button"
                             className="model-remove-btn"
@@ -6124,55 +7758,57 @@ export function Editor() {
            top so it's always reachable without dedicating toolbar space. */}
         <div className="canvas-actions" role="group" aria-label="Run controls">
           <div className="tb-group tb-analyses" role="group" aria-label="Analysis type">
-            {(
-              [
-                {
-                  kind: "tran",
-                  label: "Tran",
-                  name: "Transient",
-                  desc: "Solve voltages and currents over time. Use for step responses, ringing, oscillation — any time-domain behavior.",
-                },
-                {
-                  kind: "ac",
-                  label: "AC",
-                  name: "AC sweep",
-                  desc: "Small-signal frequency response. Plots gain and phase versus frequency for filters, amplifiers, and impedance.",
-                },
-                {
-                  kind: "dc",
-                  label: "DC",
-                  name: "DC sweep",
-                  desc: "Vary a source value and plot the steady-state response. Useful for IV curves and transfer characteristics.",
-                },
-                {
-                  kind: "op",
-                  label: "OP",
-                  name: "Operating point",
-                  desc: "Single steady-state DC solution. Shows node voltages and branch currents with no time variation.",
-                },
-              ] as const
-            ).map((a) => {
-              const tipId = `canvas-pill-tip-${a.kind}`;
-              return (
-                <button
-                  key={a.kind}
-                  className={`tb-pill ${doc.analysis.kind === a.kind ? "active" : ""}`}
-                  onClick={() => switchAnalysis(a.kind)}
-                  title={`${a.name} analysis`}
-                  aria-label={`${a.name} analysis`}
-                  aria-pressed={doc.analysis.kind === a.kind}
-                  aria-describedby={tipId}
-                >
-                  {a.label}
-                  <span id={tipId} className="tool-tip" role="tooltip">
-                    <span className="tool-tip-head">
-                      <span className="tool-tip-name">{a.name}</span>
-                    </span>
-                    <span className="tool-tip-desc">{a.desc}</span>
-                  </span>
-                </button>
-              );
-            })}
+            <Tooltip.Provider delayDuration={260} skipDelayDuration={120}>
+              {(
+                [
+                  {
+                    kind: "tran",
+                    label: "Tran",
+                    name: "Transient",
+                    desc: "Solve voltages and currents over time. Use for step responses, ringing, oscillation — any time-domain behavior.",
+                  },
+                  {
+                    kind: "ac",
+                    label: "AC",
+                    name: "AC sweep",
+                    desc: "Small-signal frequency response. Plots gain and phase versus frequency for filters, amplifiers, and impedance.",
+                  },
+                  {
+                    kind: "dc",
+                    label: "DC",
+                    name: "DC sweep",
+                    desc: "Vary a source value and plot the steady-state response. Useful for IV curves and transfer characteristics.",
+                  },
+                  {
+                    kind: "op",
+                    label: "OP",
+                    name: "Operating point",
+                    desc: "Single steady-state DC solution. Shows node voltages and branch currents with no time variation.",
+                  },
+                ] as const
+              ).map((a) => (
+                <Tooltip.Root key={a.kind}>
+                  <Tooltip.Trigger asChild>
+                    <button
+                      className={`tb-pill ${doc.analysis.kind === a.kind ? "active" : ""}`}
+                      onClick={() => switchAnalysis(a.kind)}
+                      aria-label={`${a.name} analysis`}
+                      aria-pressed={doc.analysis.kind === a.kind}
+                    >
+                      {a.label}
+                    </button>
+                  </Tooltip.Trigger>
+                  <Tooltip.Portal>
+                    <Tooltip.Content className="tool-tip tool-tip-pill" side="bottom" align="center" sideOffset={10}>
+                      <span className="tool-tip-head">
+                        <span className="tool-tip-name">{a.name}</span>
+                      </span>
+                      <span className="tool-tip-desc">{a.desc}</span>
+                    </Tooltip.Content>
+                  </Tooltip.Portal>
+                </Tooltip.Root>
+              ))}
+            </Tooltip.Provider>
           </div>
           <button
             className={`tb-run ${runningVisible ? "running" : ""}`}
@@ -6259,37 +7895,42 @@ export function Editor() {
           </div>
         )}
         <aside className="tool-strip" role="toolbar" aria-label="Drawing tools">
+          <Tooltip.Provider delayDuration={260} skipDelayDuration={120}>
           {DIRECT_TOOL_ITEMS.map((item) => {
-            const tooltipId = `tool-tip-${item.tool}`;
             const itemKind = item.kind;
             return (
-              <button
-                key={item.tool}
-                className={`tool-icon ${tool === item.tool ? "active" : ""}`}
-                onClick={() => selectTool(item.tool)}
-                onMouseEnter={() => setActiveToolGroupId(null)}
-                onFocus={() => setActiveToolGroupId(null)}
-                aria-label={item.name}
-                aria-pressed={tool === item.tool}
-                aria-keyshortcuts={item.hint}
-                aria-describedby={tooltipId}
-              >
-                {itemKind ? <PaletteGlyph kind={itemKind} /> : <ToolIcon tool={item.tool} />}
-                {item.hint && <span className="tool-hint">{item.hint}</span>}
-                <span id={tooltipId} className="tool-tip" role="tooltip">
-                  <span className="tool-tip-head">
-                    <span className="tool-tip-name">{item.name}</span>
-                    {item.hint && <kbd className="tool-tip-key">{item.hint}</kbd>}
-                  </span>
-                  {item.desc && (
-                    <span className="tool-tip-desc">
-                      {itemKind ? toolDescriptionFor(itemKind, item.desc) : item.desc}
+              <Tooltip.Root key={item.tool}>
+                <Tooltip.Trigger asChild>
+                  <button
+                    className={`tool-icon ${tool === item.tool ? "active" : ""}`}
+                    onClick={() => selectTool(item.tool)}
+                    onMouseEnter={() => setActiveToolGroupId(null)}
+                    onFocus={() => setActiveToolGroupId(null)}
+                    aria-label={item.name}
+                    aria-pressed={tool === item.tool}
+                    aria-keyshortcuts={item.hint}
+                  >
+                    {itemKind ? <PaletteGlyph kind={itemKind} /> : <ToolIcon tool={item.tool} />}
+                    {item.hint && <span className="tool-hint">{item.hint}</span>}
+                  </button>
+                </Tooltip.Trigger>
+                <Tooltip.Portal>
+                  <Tooltip.Content className="tool-tip" side="right" align="center" sideOffset={10}>
+                    <span className="tool-tip-head">
+                      <span className="tool-tip-name">{item.name}</span>
+                      {item.hint && <kbd className="tool-tip-key">{item.hint}</kbd>}
                     </span>
-                  )}
-                </span>
-              </button>
+                    {item.desc && (
+                      <span className="tool-tip-desc">
+                        {itemKind ? toolDescriptionFor(itemKind, item.desc) : item.desc}
+                      </span>
+                    )}
+                  </Tooltip.Content>
+                </Tooltip.Portal>
+              </Tooltip.Root>
             );
           })}
+          </Tooltip.Provider>
           <div className="tool-sep" />
           {TOOL_GROUPS.map((group) => {
             const groupActive = group.tools.includes(tool);
@@ -6549,118 +8190,46 @@ export function Editor() {
               return page.wires.map((w) => {
                 const sel = selectedIds.has(w.id);
                 const hovered = hoverId === w.id;
-                const flowSample = wireFlowSamples.get(w.id);
-                const flow = liveActive ? liveFlowVisualFromSample(flowSample) : null;
-                const wireFlowActive = Boolean(flow?.active);
-                const flowStyle: React.CSSProperties | undefined = wireFlowActive && flow
-                  ? ({
-                      opacity: flow.opacity,
-                      "--flow-duration": `${flow.durationSeconds}s`,
-                      "--flow-cycle": `${flow.dash + flow.gap}`,
-                      "--flow-dash": `${flow.dash}`,
-                      "--flow-gap": `${flow.gap}`,
-                      "--flow-offset": `${liveFlowPhaseForId(w.id)}`,
-                    } as React.CSSProperties)
-                  : undefined;
-                const flowReadoutText = liveFlowReadoutText(flowSample, wireFlowActive);
-                const wireTitle = liveActive ? flowReadoutText.title : undefined;
-                const showFlowReadout = Boolean(liveActive && (sel || hovered));
-                const flowReadoutWidth = liveFlowReadoutWidth(flowReadoutText);
-                const flowReadout = showFlowReadout
-                  ? liveFlowReadoutPosition(w.points, 0.38, {
-                      width: flowReadoutWidth,
-                      height: 0.64,
-                      obstacles: [...liveFlowReadoutObstacles, ...placedFlowReadouts],
-                    })
-                  : null;
-                if (flowReadout) {
-                  placedFlowReadouts.push(liveFlowReadoutBounds(
-                    flowReadout.x,
-                    flowReadout.y,
-                    flowReadoutWidth,
-                    0.64,
-                  ));
+                const flowSample = liveActive ? wireFlowSamples.get(w.id) : undefined;
+                const wireFlowActive = liveActive && Boolean(liveFlowVisualFromSample(flowSample)?.active);
+                const showFlowReadout = Boolean(liveActive && (sel || hovered) && flowSample?.source === "ngspice");
+                let flowReadout: LiveFlowReadoutPosition | null = null;
+                let flowReadoutWidth = 0;
+                if (showFlowReadout) {
+                  const readoutText = liveFlowReadoutText(flowSample, wireFlowActive);
+                  flowReadoutWidth = liveFlowReadoutWidth(readoutText);
+                  flowReadout = liveFlowReadoutPosition(w.points, 0.38, {
+                    width: flowReadoutWidth,
+                    height: 0.64,
+                    obstacles: [
+                      ...liveFlowReadoutObstacles,
+                      ...(liveFlowWireReadoutObstacles.get(w.id) ?? []),
+                      ...placedFlowReadouts,
+                    ],
+                  });
+                  if (flowReadout) {
+                    placedFlowReadouts.push(liveFlowReadoutBounds(
+                      flowReadout.x,
+                      flowReadout.y,
+                      flowReadoutWidth,
+                      0.64,
+                    ));
+                  }
                 }
-                const flowReadoutArrow =
-                  flowReadout && flow && flowReadoutText.showArrow
-                    ? liveFlowReadoutArrow(flowReadout, flow.direction)
-                    : "";
                 return (
-                  <g key={w.id} className={`wire-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}>
-                    {wireTitle && <title>{wireTitle}</title>}
-                    <polyline
-                      points={w.points.map((p) => p.join(",")).join(" ")}
-                      fill="none"
-                      stroke="var(--ink)"
-                      opacity={0.001}
-                      strokeWidth={0.72}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      pointerEvents="all"
-                      className="wire-hit-target"
-                      data-wire-id={w.id}
-                    />
-                    <polyline
-                      points={w.points.map((p) => p.join(",")).join(" ")}
-                      fill="none"
-                      stroke={sel || hovered ? "var(--accent)" : "var(--ink)"}
-                      strokeWidth={
-                        sel
-                          ? selectedSchematicStrokeWidth
-                          : hovered
-                            ? hoveredSchematicStrokeWidth
-                            : schematicStrokeWidth
-                      }
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      data-wire-id={w.id}
-                    />
-                    {wireFlowActive && (
-                      <>
-                        <polyline
-                          points={w.points.map((p) => p.join(",")).join(" ")}
-                          fill="none"
-                          strokeWidth={schematicStrokeWidth * ((flow?.strokeMultiplier ?? 1.25) + 0.56)}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          pointerEvents="none"
-                          className="wire-live-casing"
-                          data-wire-id={w.id}
-                        />
-                        <polyline
-                          points={w.points.map((p) => p.join(",")).join(" ")}
-                          fill="none"
-                          strokeWidth={schematicStrokeWidth * (flow?.strokeMultiplier ?? 1.25)}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          pointerEvents="none"
-                          className={`wire-live wire-live-overlay ${flowSample?.source === "estimated" ? "estimated" : "measured"} ${flow?.direction === -1 ? "reverse" : ""}`}
-                          data-wire-id={w.id}
-                          style={flowStyle}
-                        />
-                      </>
-                    )}
-                    {flowReadout && (
-                      <foreignObject
-                        x={flowReadout.x - flowReadoutWidth / 2}
-                        y={flowReadout.y - 0.32}
-                        width={flowReadoutWidth}
-                        height={0.64}
-                        className="live-flow-readout-object"
-                        pointerEvents="none"
-                      >
-                        <div
-                          className={`live-flow-readout ${liveFlowReadoutSourceClass(flowSample)} ${wireFlowActive ? "active" : "inactive"}`}
-                          aria-label={flowReadoutText.title}
-                        >
-                          {flowSample && <span className="live-flow-readout-dot" aria-hidden="true" />}
-                          {flowReadoutText.showArrow && <strong aria-hidden="true">{flowReadoutArrow}</strong>}
-                          <span className="live-flow-readout-label">{flowReadoutText.label}</span>
-                          {flowReadoutText.detail && <small className="live-flow-readout-detail">{flowReadoutText.detail}</small>}
-                        </div>
-                      </foreignObject>
-                    )}
-                  </g>
+                  <WireNode
+                    key={w.id}
+                    w={w}
+                    selected={sel}
+                    hovered={hovered}
+                    liveActive={liveActive}
+                    flowSample={flowSample}
+                    flowReadout={flowReadout}
+                    flowReadoutWidth={flowReadoutWidth}
+                    selectedStroke={selectedSchematicStrokeWidth}
+                    hoveredStroke={hoveredSchematicStrokeWidth}
+                    defaultStroke={schematicStrokeWidth}
+                  />
                 );
               });
             })()}
@@ -6728,8 +8297,7 @@ export function Editor() {
               const { component: draft } = componentFromPlacementDraft(placementDraft, "__placement");
               const draftBounds = componentVisualBoundsFor(draft, 0.24);
               const pins = getPinLayout(draft).map((_, idx) => pinWorldPos(draft, idx));
-              const endpointLabels = pins.map((_, idx) => pinLabelForKind(draft.kind, idx) ?? `${idx + 1}`);
-              const canInsertInline = pins.length === 2 && placementLength(placementDraft) >= 0.35;
+              const canInsertInline = placementCanInsertInline(pins.length, placementLength(placementDraft));
               const cutSpan = canInsertInline
                 ? placementWireCutSpan(draft, placementDraft.start, placementDraft.end)
                 : null;
@@ -6791,14 +8359,14 @@ export function Editor() {
                             strokeWidth: 0.075,
                           }}
                         />
-                        {lines.slice(0, 3).map((line, idx) => (
+                        {noteRenderItems(draft.value).slice(0, 3).map((line, idx) => (
                           <SvgInlineMathText
                             key={idx}
                             x={draft.x + 0.45}
-                            y={draft.y + 0.72 + idx * 0.45}
-                            fontSize={0.32}
+                            y={draft.y + 0.76 + line.row * NOTE_RENDER_ROW_STEP}
+                            fontSize={0.5}
                             className="note-text"
-                            text={line || " "}
+                            text={line.text || " "}
                           />
                         ))}
                       </>
@@ -6812,6 +8380,7 @@ export function Editor() {
                         mirrored={draft.mirrored}
                         subxPins={draft.kind === "SUBX" ? getPinLayout(draft) : undefined}
                         subxLabel={draft.kind === "SUBX" ? draft.value : undefined}
+                        subxPinSides={draft.kind === "SUBX" ? effectiveSubcircuitPinSidesForInstance(draft) : undefined}
                         subxPinLabels={draft.kind === "SUBX" && selectedSubcircuitPage
                           ? subcircuitPortLabels(selectedSubcircuitPage).slice(0, getPinLayout(draft).length)
                           : undefined}
@@ -6836,31 +8405,6 @@ export function Editor() {
                       className="placement-draft-endpoint"
                     />
                   ))}
-                  {endpointLabels.map((label, idx) => {
-                    const pin = pins[idx];
-                    if (!pin) return null;
-                    const other = pins.length > 1 ? pins[idx === 0 ? 1 : 0] : placementDraft.start;
-                    const awayX = pin.x - other.x;
-                    const awayY = pin.y - other.y;
-                    const horizontal = Math.abs(awayX) >= Math.abs(awayY);
-                    const x = pin.x + (horizontal ? (awayX >= 0 ? 0.48 : -0.48) : 0);
-                    const y = pin.y + (horizontal ? 0 : awayY >= 0 ? 0.56 : -0.56);
-                    const chipW = Math.max(0.52, label.length * 0.24 + 0.34);
-                    return (
-                      <g key={`${label}-${idx}`} className="placement-draft-label">
-                        <rect
-                          x={x - chipW / 2}
-                          y={y - 0.25}
-                          width={chipW}
-                          height={0.48}
-                          rx={0.13}
-                        />
-                        <text x={x} y={y + 0.15} textAnchor="middle">
-                          {label}
-                        </text>
-                      </g>
-                    );
-                  })}
                 </g>
               );
             })()}
@@ -6880,6 +8424,24 @@ export function Editor() {
                     key={c.id}
                     data-component-id={c.id}
                     className={`component-group net-label-group ${connected ? "connected" : "unconnected"} ${nearMiss ? "near-miss" : ""} ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}
+                    onClick={(event) => {
+                      if (event.detail >= 2 && scheduleCanvasDoubleAction(event.target)) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }
+                    }}
+                    onMouseDown={(event) => {
+                      if (event.detail >= 2 && scheduleCanvasDoubleAction(event.target)) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }
+                    }}
+                    onDoubleClick={(event) => {
+                      if (scheduleCanvasDoubleAction(event.target)) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }
+                    }}
                   >
                     <title>
                       {connected
@@ -6946,48 +8508,21 @@ export function Editor() {
                           rx={0.18}
                           className={`net-label-chip ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}
                         />
-                        <SvgInlineMathText
-                          x={layout.textX}
-                          y={layout.textY}
-                          fontSize={0.46}
-                          textAnchor="middle"
-                          className="net-label-text"
-                          text={label}
-                        />
+                        {shouldRenderCanvasText(textEdit, c.id, "LABEL") && (
+                          <SvgInlineMathText
+                            x={layout.textX}
+                            y={layout.chipY + layout.chipH / 2}
+                            fontSize={0.42}
+                            textAnchor="middle"
+                            className="net-label-text"
+                            text={label}
+                            maxWidth={Math.max(0.1, layout.chipW - 0.44)}
+                            boxHeight={Math.max(0.1, layout.chipH - 0.12)}
+                            verticalAnchor="middle"
+                            overflow="hidden"
+                          />
+                        )}
                       </>
-                    )}
-                    {textEdit?.componentId === c.id && (
-                      <foreignObject
-                        x={(layout?.chipX ?? c.x + 0.42) - 0.02}
-                        y={(layout?.chipY ?? c.y - 0.44) - 0.02}
-                        width={(layout?.chipW ?? 2.1) + 0.04}
-                        height={(layout?.chipH ?? 0.88) + 0.04}
-                        className="canvas-text-editor-object"
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onDoubleClick={(event) => event.stopPropagation()}
-                      >
-                        <input
-                          ref={(node) => {
-                            textEditRef.current = node;
-                          }}
-                          className="canvas-text-editor label-editor"
-                          value={textEdit.value}
-                          onChange={(event) =>
-                            setTextEdit((edit) =>
-                              edit?.componentId === c.id ? { ...edit, value: event.target.value } : edit,
-                            )
-                          }
-                          onBlur={() => {
-                            if (textEditCancelBlurRef.current) {
-                              textEditCancelBlurRef.current = false;
-                              return;
-                            }
-                            commitTextEdit();
-                          }}
-                          onKeyDown={onTextEditKeyDown}
-                          aria-label="Edit net label"
-                        />
-                      </foreignObject>
                     )}
                   </g>
                 );
@@ -6998,13 +8533,32 @@ export function Editor() {
                 const lines = noteTextLines(c.value);
                 const width = noteComponentWidth(c, lines);
                 const height = noteComponentHeight(c, lines);
-                const showResizeHandle = sel || hovered || noteResize?.noteId === c.id;
-                const noteActive = sel || hovered;
+                const noteEditing = isEditingCanvasText(textEdit, c.id, "NOTE");
+                const showResizeHandle = !noteEditing && (sel || hovered || noteResize?.noteId === c.id);
+                const noteActive = !noteEditing && (sel || hovered);
                 return (
                   <g
                     key={c.id}
                     data-component-id={c.id}
-                    className={`component-group note-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}
+                    className={`component-group note-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""} ${noteEditing ? "text-editing" : ""}`}
+                    onClick={(event) => {
+                      if (event.detail >= 2 && scheduleCanvasDoubleAction(event.target)) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }
+                    }}
+                    onMouseDown={(event) => {
+                      if (event.detail >= 2 && scheduleCanvasDoubleAction(event.target)) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }
+                    }}
+                    onDoubleClick={(event) => {
+                      if (scheduleCanvasDoubleAction(event.target)) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }
+                    }}
                   >
                     <rect
                       x={c.x}
@@ -7020,56 +8574,26 @@ export function Editor() {
                       width={width}
                       height={height}
                       rx={0.22}
-                      className={`note-card ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}
+                      className={`note-card ${sel ? "selected" : ""} ${hovered ? "hovered" : ""} ${noteEditing ? "editing" : ""}`}
                       style={{
-                        fill: noteFillColor(c, noteActive),
-                        stroke: noteStrokeColor(c, noteActive),
-                        strokeWidth: noteActive ? 0.075 : 0.05,
+                        fill: noteEditing
+                          ? `color-mix(in srgb, white 92%, ${noteColor(c)} 8%)`
+                          : noteFillColor(c, noteActive),
+                        stroke: noteEditing ? noteColor(c) : noteStrokeColor(c, noteActive),
+                        strokeWidth: noteEditing || noteActive ? 0.075 : 0.05,
                       }}
                     />
-                    {lines.map((line, idx) => (
-                      <SvgInlineMathText
-                        key={idx}
-                        x={c.x + 0.45}
-                        y={c.y + 0.72 + idx * 0.45}
-                        fontSize={0.32}
-                        className="note-text"
-                        text={line || " "}
-                      />
-                    ))}
-                    {textEdit?.componentId === c.id && (
-                      <foreignObject
-                        x={c.x + 0.28}
-                        y={c.y + 0.25}
-                        width={Math.max(1.2, width - 0.56)}
-                        height={Math.max(0.8, height - 0.5)}
-                        className="canvas-text-editor-object"
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onDoubleClick={(event) => event.stopPropagation()}
-                      >
-                        <textarea
-                          ref={(node) => {
-                            textEditRef.current = node;
-                          }}
-                          className="canvas-text-editor note-editor"
-                          value={textEdit.value}
-                          onChange={(event) =>
-                            setTextEdit((edit) =>
-                              edit?.componentId === c.id ? { ...edit, value: event.target.value } : edit,
-                            )
-                          }
-                          onBlur={() => {
-                            if (textEditCancelBlurRef.current) {
-                              textEditCancelBlurRef.current = false;
-                              return;
-                            }
-                            commitTextEdit();
-                          }}
-                          onKeyDown={onTextEditKeyDown}
-                          aria-label="Edit note"
+                    {!noteEditing &&
+                      noteRenderItems(c.value).map((line, idx) => (
+                        <SvgInlineMathText
+                          key={idx}
+                          x={c.x + 0.45}
+                          y={c.y + 0.76 + line.row * NOTE_RENDER_ROW_STEP}
+                          fontSize={0.5}
+                          className="note-text"
+                          text={line.text || " "}
                         />
-                      </foreignObject>
-                    )}
+                      ))}
                     {showResizeHandle && (
                       <rect
                         x={c.x + width - 0.34}
@@ -7087,135 +8611,50 @@ export function Editor() {
               const sel = selectedIds.has(c.id);
               const hovered = hoverId === c.id;
               const floating = floatingComponentIds.has(c.id);
-              const bounds = componentVisualBoundsFor(c, 0.16);
-              const connectionToolActive = tool === "wire" || tool === "probe";
               const activeConnectionGesture = Boolean(wireDraft) || Boolean(wireGesture);
-              const activeDevice = isActiveMultiPinKind(c.kind);
               const showSubxResizeHandle =
                 c.kind === "SUBX" && tool === "select" && (sel || hovered || subxResize?.componentId === c.id);
-              const terminalTone =
-                c.kind === "GND"
-                  ? "hidden"
-                  : pinTargetTone({
-                      connectionGestureActive: activeConnectionGesture,
-                      connectionToolActive,
-                      hovered,
-                      selected: sel,
-                      selectToolActive: tool === "select",
-                    });
-              const showPinTargets = terminalTone !== "hidden";
-              const pinHints = activeDevice && activeConnectionGesture && (sel || hovered) ? pinHintsFor(c) : [];
+              const editingComponentValue = isEditingCanvasText(textEdit, c.id, "VALUE");
+              const editingComponentLabel = isEditingCanvasText(textEdit, c.id, "COMPONENT_LABEL");
+              const valueLabelText = canvasValueLabel(c.kind, c.value) || null;
+              const isSubx = c.kind === "SUBX";
+              const subxPinLabels = isSubx ? subcircuitPinLabelsForInstance(doc, c) : undefined;
+              let subxPinLabelEditingIndex: number | null = null;
+              if (isSubx && subxPinLabels) {
+                for (let i = 0; i < subxPinLabels.length; i++) {
+                  if (isEditingCanvasText(textEdit, c.id, "SUBX_PIN", i)) {
+                    subxPinLabelEditingIndex = i;
+                    break;
+                  }
+                }
+              }
               return (
-                <g
+                <RegularComponentNode
                   key={c.id}
-                  data-component-id={c.id}
-                  className={`component-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""} ${floating ? "floating" : ""}`}
-                >
-                  <rect
-                    x={bounds.x1}
-                    y={bounds.y1}
-                    width={bounds.x2 - bounds.x1}
-                    height={bounds.y2 - bounds.y1}
-                    rx={0.35}
-                    className="component-hit-target"
-                  />
-                  {floating && (
-                    <rect
-                      x={bounds.x1}
-                      y={bounds.y1}
-                      width={bounds.x2 - bounds.x1}
-                      height={bounds.y2 - bounds.y1}
-                      rx={0.35}
-                      className="component-floating"
-                    />
-                  )}
-                  <g transform={`translate(${c.x} ${c.y}) rotate(${c.rotation})`}>
-                    <ComponentGlyph
-                      kind={c.kind}
-                      selected={sel}
-                      strokeWidth={sel ? selectedSchematicStrokeWidth : schematicStrokeWidth}
-                      mirrored={c.mirrored}
-                      subxPins={c.kind === "SUBX" ? getPinLayout(c) : undefined}
-                      subxLabel={c.kind === "SUBX" ? (c.value || "X") : undefined}
-                      subxPinLabels={c.kind === "SUBX" ? subcircuitPinLabelsForInstance(doc, c) : undefined}
-                    />
-                    {getPinLayout(c).map((p, i) => (
-                      <g key={i}>
-                        <circle
-                          cx={p.x}
-                          cy={p.y}
-                          r={0.42}
-                          className="component-pin-hit"
-                          data-connection-handle="true"
-                        />
-                        {showPinTargets && (
-                          <circle
-                            cx={p.x}
-                            cy={p.y}
-                            r={0.36}
-                            className={`pin-target-ring ${terminalTone}`}
-                            data-connection-handle="true"
-                          />
-                        )}
-                        <circle
-                          cx={p.x}
-                          cy={p.y}
-                          r={showPinTargets ? 0.2 : 0.14}
-                          className={`component-pin ${sel ? "selected" : ""} ${showPinTargets ? terminalTone : "idle"}`}
-                          data-connection-handle="true"
-                        />
-                      </g>
-                    ))}
-                  </g>
-                  {pinHints.map(({ label, position, anchor, dx, dy }) => {
-                    const x = position.x + dx;
-                    const y = position.y + dy;
-                    return (
-                      <g key={`${c.id}-${label}-${position.x}-${position.y}`} className="pin-hint" pointerEvents="none">
-                        <text
-                          x={x}
-                          y={y + 0.13}
-                          textAnchor={anchor}
-                          className="pin-hint-text"
-                        >
-                          {label}
-                        </text>
-                      </g>
-                    );
-                  })}
-                  {(() => {
-                    const valueLabel = canvasValueLabel(c.kind, c.value);
-                    if (!valueLabel) return null;
-                    const off = componentValueLabelOffsets.get(c.id) ?? { x: 0, y: 1.45, anchor: "middle" as const };
-                    const labelX = c.x + off.x;
-                    const labelY = c.y + off.y;
-                    return (
-                      <g className="component-value-label" pointerEvents="none">
-                        <SvgInlineMathText
-                          x={labelX}
-                          y={labelY}
-                          textAnchor={off.anchor}
-                          className="component-value-text"
-                          fontSize={canvasValueFontSize}
-                          text={valueLabel}
-                        />
-                      </g>
-                    );
-                  })()}
-                  {showSubxResizeHandle && (
-                    <rect
-                      x={bounds.x2 - 0.34}
-                      y={bounds.y2 - 0.34}
-                      width={0.46}
-                      height={0.46}
-                      rx={0.11}
-                      className="note-resize-handle subx-resize-handle"
-                      data-subx-resize-id={c.id}
-                    />
-                  )}
-	                </g>
-	              );
-	            })}
+                  c={c}
+                  selected={sel}
+                  hovered={hovered}
+                  floating={floating}
+                  liveActive={liveFlow}
+                  flowSample={componentFlowSamples.get(c.id)}
+                  tool={tool}
+                  activeConnectionGesture={activeConnectionGesture}
+                  showSubxResizeHandle={showSubxResizeHandle}
+                  editingComponentValue={editingComponentValue}
+                  editingComponentLabel={editingComponentLabel}
+                  valueLabelOffset={componentValueLabelOffsets.get(c.id)}
+                  valueLabelText={valueLabelText}
+                  selectedStroke={selectedSchematicStrokeWidth}
+                  defaultStroke={schematicStrokeWidth}
+                  valueFontSize={canvasValueFontSize}
+                  subxBodyWidth={isSubx ? subcircuitBodyWidth(c) : 0}
+                  subxPinLabels={subxPinLabels}
+                  subxPinSides={isSubx ? effectiveSubcircuitPinSidesForInstance(c) : undefined}
+                  subxPinLabelEditingIndex={subxPinLabelEditingIndex}
+                  scheduleCanvasDoubleAction={scheduleCanvasDoubleActionStable}
+                />
+              );
+            })}
 
             {page.wires.map((w) => {
               const sel = selectedIds.has(w.id);
@@ -7324,6 +8763,7 @@ export function Editor() {
                   trace={trace}
                   emptyMessage={node ? "press Run" : "not connected"}
                   playTime={isTransient ? playTime : null}
+                  labelEditId={probe.id}
                 />
               </g>
               );
@@ -7333,67 +8773,20 @@ export function Editor() {
               const node = pinAnnotations.nodes.posToNode.get(
                 `${coordKey(p.x)},${coordKey(p.y)}`,
               );
-              const disconnected = !node;
-              const label = p.label?.trim() ?? "";
-              const badgeW = Math.max(2.6, estimateInlineMathTextWidth(label) * 0.42 + 0.7);
-              const badgeX = p.x + 0.45;
-              const badgeY = p.y - 0.92;
               const sel = selectedIds.has(p.id);
               const hov = hoverId === p.id;
-              const showBadge = Boolean(label) && !probeScopeLabelIds.has(p.id);
+              const showBadge = Boolean(p.label?.trim()) && !probeScopeLabelIds.has(p.id);
+              const editing = !shouldRenderCanvasText(textEdit, p.id, "PROBE");
               return (
-                <g
+                <ProbeNode
                   key={p.id}
-                  className={`probe-marker ${sel ? "selected" : ""} ${hov ? "hovered" : ""} ${disconnected ? "disconnected" : ""}`}
-                  data-probe-id={p.id}
-                >
-                  <title>{node ? `Probe: ${node}` : "Probe"}</title>
-                  {(sel || hov || disconnected) && (
-                    <circle
-                      cx={p.x}
-                      cy={p.y}
-                      r={sel ? 0.42 : 0.38}
-                      fill="none"
-                      stroke={disconnected ? "var(--danger)" : "var(--accent)"}
-                      strokeWidth={sel ? 0.045 : 0.035}
-                      strokeDasharray={disconnected ? "0.16 0.1" : undefined}
-                    />
-                  )}
-                  <circle
-                    cx={p.x}
-                    cy={p.y}
-                    r={0.24}
-                    fill={p.color}
-                    fillOpacity={0.08}
-                    stroke={disconnected ? "var(--danger)" : p.color}
-                    strokeWidth={0.06}
-                  />
-                  <circle cx={p.x} cy={p.y} r={0.09} fill={disconnected ? "var(--danger)" : p.color} />
-                  {showBadge && (
-                    <>
-                      <rect
-                        x={badgeX}
-                        y={badgeY}
-                        width={badgeW}
-                        height={0.7}
-                        rx={0.18}
-                        fill="var(--bg-window)"
-                        stroke={p.color}
-                        strokeWidth={0.05}
-                      />
-                      <SvgInlineMathText
-                        x={badgeX + 0.28}
-                        y={badgeY + 0.48}
-                        fontSize={0.42}
-                        text={label}
-                        style={{
-                          fill: p.color,
-                          fontWeight: 600,
-                        }}
-                      />
-                    </>
-                  )}
-                </g>
+                  p={p}
+                  node={node}
+                  selected={sel}
+                  hovered={hov}
+                  showBadge={showBadge}
+                  editing={editing}
+                />
               );
             })}
 
@@ -7424,6 +8817,81 @@ export function Editor() {
             )}
           </g>
         </svg>
+        {textEdit && textEditOverlay && (
+          <div
+            className={`canvas-text-editor-overlay ${textEditOverlay.kind.toLowerCase()}-editor-overlay`}
+            style={{
+              left: textEditOverlay.left,
+              top: textEditOverlay.top,
+              width: textEditOverlay.width,
+              height: textEditOverlay.height,
+              fontSize: textEditOverlay.fontSize,
+              "--text-editor-accent": textEditOverlay.accent,
+              "--text-editor-fill": "fill" in textEditOverlay ? textEditOverlay.fill : undefined,
+              "--text-editor-stroke": "stroke" in textEditOverlay ? textEditOverlay.stroke : undefined,
+            } as CSSProperties}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            {textEdit.kind === "NOTE" ? (
+              <textarea
+                ref={setCanvasTextEditRef}
+                className={`canvas-text-editor ${textEditOverlay.className}`}
+                value={textEdit.value}
+                onChange={(event) => {
+                  textEditOpenedAtRef.current = 0;
+                  setTextEdit((edit) =>
+                    edit?.componentId === textEditOverlay.componentId
+                      ? { ...edit, value: event.target.value }
+                      : edit,
+                  );
+                }}
+                onBlur={() => {
+                  if (textEditCancelBlurRef.current) {
+                    textEditCancelBlurRef.current = false;
+                    return;
+                  }
+                  commitTextEdit();
+                }}
+                onKeyDown={onTextEditKeyDown}
+                aria-label={textEditOverlay.ariaLabel}
+                autoFocus
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                wrap="soft"
+              />
+            ) : (
+              <input
+                ref={setCanvasTextEditRef}
+                className={`canvas-text-editor ${textEditOverlay.className}`}
+                value={textEdit.value}
+                onChange={(event) => {
+                  textEditOpenedAtRef.current = 0;
+                  setTextEdit((edit) =>
+                    edit?.componentId === textEditOverlay.componentId
+                      ? { ...edit, value: event.target.value }
+                      : edit,
+                  );
+                }}
+                onBlur={() => {
+                  if (textEditCancelBlurRef.current) {
+                    textEditCancelBlurRef.current = false;
+                    return;
+                  }
+                  commitTextEdit();
+                }}
+                onKeyDown={onTextEditKeyDown}
+                aria-label={textEditOverlay.ariaLabel}
+                autoFocus
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+              />
+            )}
+          </div>
+        )}
         <div className="canvas-hud">
           <button
             type="button"
@@ -7471,6 +8939,8 @@ export function Editor() {
               role="status"
               aria-live="polite"
               aria-label={`Live Flow: ${liveFlowUiStatus.label}. ${liveFlowUiStatus.title}`}
+              data-live-flow-source={liveFlowUiStatus.source}
+              data-live-flow-tone={liveFlowUiStatus.tone}
             >
               <span className="live-flow-source-dot" aria-hidden="true" />
               <span className="live-flow-status-label">Live Flow: {liveFlowUiStatus.label}</span>
@@ -7500,6 +8970,7 @@ export function Editor() {
             plot={simResult.plot}
             vectors={simResult.vectors}
             selectedTraces={selectedTraces}
+            userTraceNames={userTraceNames}
             traceAliases={traceAliases}
             runLabels={runLabels}
             xAxisLabel={analysisXAxisLabel(doc.analysis)}
@@ -7726,398 +9197,6 @@ function subcircuitPinsForPage(page: SchematicPage): string[] {
   return subcircuitPortLabels(page);
 }
 
-function NetlistModal({
-  netlist,
-  warnings,
-  onClose,
-}: {
-  netlist: string;
-  warnings: string[];
-  onClose: () => void;
-}) {
-  const cardRef = useRef<HTMLDivElement | null>(null);
-  const prevFocusRef = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    prevFocusRef.current = document.activeElement as HTMLElement | null;
-    cardRef.current
-      ?.querySelector<HTMLElement>(
-        'button, [href], input, [tabindex]:not([tabindex="-1"])',
-      )
-      ?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      } else if (e.key === "Tab") {
-        trapModalTab(e, cardRef.current);
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.removeEventListener("keydown", onKey, true);
-      prevFocusRef.current?.focus?.();
-    };
-  }, [onClose]);
-  return (
-    <div className="modal-scrim" onMouseDown={onClose} role="presentation">
-      <div
-        ref={cardRef}
-        className="modal-card netlist-modal"
-        onMouseDown={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Generated netlist"
-      >
-        <div className="modal-header">
-          <div className="modal-title">Generated netlist</div>
-          <button className="icon-btn" onClick={onClose} title="Close" aria-label="Close dialog">
-            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
-              <line x1={3.5} y1={3.5} x2={10.5} y2={10.5} />
-              <line x1={10.5} y1={3.5} x2={3.5} y2={10.5} />
-            </svg>
-          </button>
-        </div>
-        {warnings.length > 0 && (
-          <div className="form-warn" style={{ marginBottom: 10 }}>
-            <strong>Warnings:</strong>
-            <ul style={{ margin: "4px 0 0 0", paddingLeft: 18 }}>
-              {warnings.map((w, i) => (
-                <li key={i}>{w}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-        <pre className="netlist-pre">{netlist}</pre>
-        <div className="modal-actions">
-          <button
-            onClick={() => {
-              navigator.clipboard?.writeText(netlist);
-            }}
-          >
-            Copy
-          </button>
-          <button className="run-btn" onClick={onClose}>
-            Done
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ImportNetlistModal({
-  onClose,
-  onImport,
-}: {
-  onClose: () => void;
-  onImport: (
-    text: string,
-    opts: {
-      signal?: AbortSignal;
-      mode?: "auto" | "labels";
-      onPhase?: (
-        phase: "parsing" | "layout" | "routing" | "rendering",
-        detail?: { current?: number; total?: number },
-      ) => void;
-    },
-  ) => Promise<string[]>;
-}) {
-  const cardRef = useRef<HTMLDivElement | null>(null);
-  const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
-  const prevFocusRef = useRef<HTMLElement | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const [text, setText] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [phase, setPhase] = useState<"parsing" | "layout" | "routing" | "rendering" | null>(null);
-  const [phaseDetail, setPhaseDetail] = useState<{ current?: number; total?: number } | null>(null);
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    prevFocusRef.current = document.activeElement as HTMLElement | null;
-    textAreaRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        if (busy) {
-          abortRef.current?.abort();
-        } else {
-          onClose();
-        }
-      } else if (e.key === "Tab") {
-        trapModalTab(e, cardRef.current);
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.removeEventListener("keydown", onKey, true);
-      prevFocusRef.current?.focus?.();
-    };
-  }, [onClose, busy]);
-
-  // Tick an elapsed-seconds counter while the import is running so the
-  // user knows the app hasn't frozen.
-  useEffect(() => {
-    if (!busy) {
-      setElapsed(0);
-      return;
-    }
-    const start = performance.now();
-    setElapsed(0);
-    const handle = window.setInterval(() => {
-      setElapsed((performance.now() - start) / 1000);
-    }, 100);
-    return () => window.clearInterval(handle);
-  }, [busy]);
-
-  async function runImport(mode: "auto" | "labels") {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      setError("Paste a SPICE netlist first.");
-      return;
-    }
-    setError(null);
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setBusy(true);
-    setPhase("parsing");
-    setPhaseDetail(null);
-    try {
-      await onImport(trimmed, {
-        signal: controller.signal,
-        mode,
-        onPhase: (p, d) => {
-          setPhase(p);
-          setPhaseDetail(d ?? null);
-        },
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(false);
-    } finally {
-      abortRef.current = null;
-      setPhase(null);
-      setPhaseDetail(null);
-    }
-  }
-
-  function fallbackToLabels() {
-    abortRef.current?.abort();
-  }
-
-  const partCount = useMemo(() => countLikelyParts(text), [text]);
-  // Show the "use label-only layout" escape hatch as soon as the user
-  // can see ELK is going to take a while. For small netlists, wait 2 s
-  // (avoids flashing the button on quick imports). For large netlists
-  // (>80 parts) surface it immediately — the user already saw the
-  // "large netlists can take a few seconds" warning before hitting
-  // Import, and shouldn't have to wait another two before getting out.
-  const showFallback = busy && (elapsed >= 2 || partCount > 80);
-  const sizeHint = partCount
-    ? `~${partCount} component${partCount === 1 ? "" : "s"} detected`
-    : null;
-
-  return (
-    <div
-      className="modal-scrim"
-      onMouseDown={busy ? undefined : onClose}
-      role="presentation"
-    >
-      <div
-        ref={cardRef}
-        className="modal-card netlist-modal"
-        onMouseDown={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Import netlist"
-      >
-        <div className="modal-header">
-          <div className="modal-title">Import netlist</div>
-          <button
-            className="icon-btn"
-            onClick={onClose}
-            disabled={busy}
-            title="Close"
-            aria-label="Close dialog"
-          >
-            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
-              <line x1={3.5} y1={3.5} x2={10.5} y2={10.5} />
-              <line x1={10.5} y1={3.5} x2={3.5} y2={10.5} />
-            </svg>
-          </button>
-        </div>
-        <p style={{ margin: "0 0 8px", color: "var(--ink-muted)", fontSize: 12 }}>
-          Paste a SPICE-style netlist. It will replace the current schematic
-          (use <strong>Open</strong> instead to import from a file on disk).
-        </p>
-        <textarea
-          ref={textAreaRef}
-          className="value-input netlist-pre"
-          value={text}
-          onChange={(e) => {
-            setText(e.target.value);
-            if (error) setError(null);
-          }}
-          placeholder={"V1 in 0 DC 5\nR1 in out 1k\nC1 out 0 1uF\n.tran 10u 10m\n.end"}
-          spellCheck={false}
-          style={{ minHeight: 220, fontFamily: "var(--mono)", fontSize: 12, resize: "vertical" }}
-          disabled={busy}
-        />
-        {sizeHint && !busy && (
-          <div style={{ marginTop: 6, fontSize: 11, color: "var(--ink-muted)" }}>
-            {sizeHint}
-            {partCount > 80 && (
-              <>
-                {" — large netlists can take a few seconds to auto-layout. "}
-                <button
-                  type="button"
-                  onClick={() => runImport("labels")}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    padding: 0,
-                    color: "var(--accent)",
-                    cursor: "pointer",
-                    boxShadow: "none",
-                  }}
-                >
-                  Skip auto-layout
-                </button>
-              </>
-            )}
-          </div>
-        )}
-        {busy && (
-          <div className="form-warn" role="status" aria-live="polite" style={{ marginTop: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span className="tb-run-spinner" aria-hidden="true" />
-              <strong>{phaseHeadline(phase, phaseDetail)} {elapsed.toFixed(1)}s</strong>
-            </div>
-            <div style={{ marginTop: 4, color: "var(--ink-muted)", fontSize: 11 }}>
-              {phaseDetailText(phase, partCount, phaseDetail)}
-            </div>
-            {showFallback && phase !== "rendering" && (
-              <div style={{ marginTop: 8 }}>
-                <button type="button" onClick={fallbackToLabels}>
-                  Cancel auto-layout · use disconnected (label-only) layout
-                </button>
-              </div>
-            )}
-            <progress
-              style={{ marginTop: 8, width: "100%" }}
-              aria-label={`Importing, ${elapsed.toFixed(1)} seconds elapsed`}
-            />
-          </div>
-        )}
-        {error && !busy && (
-          <div className="form-warn" style={{ marginTop: 8 }}>
-            {error}
-          </div>
-        )}
-        <div className="modal-actions">
-          <button onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button
-            className="run-btn"
-            onClick={() => runImport("auto")}
-            disabled={busy || !text.trim()}
-          >
-            {busy ? "Importing…" : "Import"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Quick heuristic for how many SPICE components are in a netlist —
- *  count non-blank, non-comment, non-directive lines. Used to give the
- *  user a "this is going to take a while" hint before they hit Import. */
-type ImportPhase = "parsing" | "layout" | "routing" | "rendering" | null;
-interface ImportPhaseDetail {
-  current?: number;
-  total?: number;
-}
-
-function phaseHeadline(p: ImportPhase, d: ImportPhaseDetail | null): string {
-  switch (p) {
-    case "parsing":
-      return "Parsing netlist…";
-    case "layout":
-      return "Laying out components…";
-    case "routing":
-      if (d && typeof d.current === "number" && typeof d.total === "number") {
-        return `Routing wires… ${d.current} of ${d.total}`;
-      }
-      return "Routing wires…";
-    case "rendering":
-      return "Rendering schematic…";
-    default:
-      return "Importing…";
-  }
-}
-
-function phaseDetailText(
-  p: ImportPhase,
-  partCount: number,
-  _d: ImportPhaseDetail | null,
-): string {
-  switch (p) {
-    case "layout":
-      return `Auto-layout running over ${partCount || "the"} component${
-        partCount === 1 ? "" : "s"
-      } in a Web Worker. ELK is single-pass and grows super-linearly with size; expect a few seconds per 100 components.`;
-    case "routing":
-      return "Routing the orthogonal wire paths between components. This runs on the main thread; the import can still be cancelled.";
-    case "rendering":
-      return `Layout done. Mounting ${partCount || "the"} component${
-        partCount === 1 ? "" : "s"
-      } into the canvas — this is a one-shot React commit that briefly blocks the main thread.`;
-    case "parsing":
-      return "Reading components, nets, models, and directives.";
-    default:
-      return "Reading components, nets, models, and directives.";
-  }
-}
-
-function countLikelyParts(text: string): number {
-  let n = 0;
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (!line) continue;
-    if (line.startsWith("*")) continue;
-    if (line.startsWith(".")) continue;
-    n += 1;
-  }
-  return n;
-}
-
-function trapModalTab(e: KeyboardEvent, root: HTMLElement | null) {
-  if (!root) return;
-  const focusable = Array.from(
-    root.querySelectorAll<HTMLElement>(
-      'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter((el) => el.offsetParent !== null && el.getAttribute("aria-hidden") !== "true");
-  if (focusable.length === 0) return;
-
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  const active = document.activeElement;
-  if (e.shiftKey && active === first) {
-    e.preventDefault();
-    last.focus();
-  } else if (!e.shiftKey && active === last) {
-    e.preventDefault();
-    first.focus();
-  } else if (!root.contains(active)) {
-    e.preventDefault();
-    first.focus();
-  }
-}
-
 function findTimeIndex(xs: number[], t: number): number {
   if (xs.length === 0) return 0;
   if (t <= xs[0]) return 0;
@@ -8189,6 +9268,17 @@ function labelDirectControls(children: React.ReactNode, label: string): React.Re
   });
 }
 
+function directTextEditInitialValue(e: KeyboardEvent): string | null {
+  if (e.metaKey || e.ctrlKey || e.altKey) return null;
+  if (e.key.length !== 1) return null;
+  if (e.key === " ") return null;
+  return e.key;
+}
+
+function isEditableComponentValue(component: CircuitComponent): boolean {
+  return isEditableCanvasComponentValue(component.kind, component.value);
+}
+
 function CoordinateField({
   value,
   step,
@@ -8250,19 +9340,6 @@ function detectSubckts(directives: string): { name: string; pins: string[] }[] {
     }
   }
   return out;
-}
-
-function isModelKind(k: ComponentKind): boolean {
-  return (
-    k === "D" ||
-    k === "NPN" ||
-    k === "PNP" ||
-    k === "NMOS" ||
-    k === "PMOS" ||
-    k === "NMOS4" ||
-    k === "PMOS4" ||
-    k === "OPAMP"
-  );
 }
 
 function isSinglePinSnappingTool(tool: Tool): boolean {
@@ -8672,34 +9749,21 @@ type DirectContactPin = {
   from: { x: number; y: number };
 };
 
-function collectRotatedPinMoves(
+// Measure how each selected component's pins move when `mutate` is applied,
+// so wires/probes anchored to those pins can follow. Shared by rotate,
+// mirror, and vertical-flip via `transformSelected`.
+function collectTransformedPinMoves(
   components: CircuitComponent[],
   selected: Set<string>,
+  mutate: (c: CircuitComponent) => CircuitComponent,
 ): PinMove[] {
   const moves: PinMove[] = [];
   for (const c of components) {
     if (!selected.has(c.id)) continue;
-    const rotated = { ...c, rotation: rotateNext(c.rotation) };
+    const transformed = mutate(c);
     for (let i = 0; i < getPinLayout(c).length; i++) {
       const from = pinWorldPos(c, i);
-      const to = pinWorldPos(rotated, i);
-      if (!samePoint(from, to)) moves.push({ from, to });
-    }
-  }
-  return moves;
-}
-
-function collectMirroredPinMoves(
-  components: CircuitComponent[],
-  selected: Set<string>,
-): PinMove[] {
-  const moves: PinMove[] = [];
-  for (const c of components) {
-    if (!selected.has(c.id)) continue;
-    const mirrored = { ...c, mirrored: c.mirrored ? undefined : true };
-    for (let i = 0; i < getPinLayout(c).length; i++) {
-      const from = pinWorldPos(c, i);
-      const to = pinWorldPos(mirrored, i);
+      const to = pinWorldPos(transformed, i);
       if (!samePoint(from, to)) moves.push({ from, to });
     }
   }

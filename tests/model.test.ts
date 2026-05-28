@@ -3,18 +3,26 @@ import test from "node:test";
 
 import {
   orderedSubcircuitPortLabels,
+  flipRotation,
   getPinLayout,
   pinWorldPos,
   MAX_SUBCIRCUIT_PINS,
+  rotationForKindSwap,
   subcircuitBodyWidth,
+  subcircuitInstanceParamsForPage,
   subcircuitPinLabelsForInstance,
+  subcircuitPinSidesForInstance,
   subcircuitPortCount,
   subcircuitPortLabels,
   subcircuitPageForInstance,
+  SWAPPABLE_PASSIVE_KINDS,
   updatePageMeta,
   uniquePageName,
   type CircuitDoc,
   type CircuitComponent,
+  type ComponentKind,
+  type Rotation,
+  effectiveSubcircuitPinSidesForInstance,
 } from "../src/editor/model.ts";
 
 function docWithPages(activePageId = "main"): CircuitDoc {
@@ -180,6 +188,144 @@ test("subcircuitPortLabels deduplicates ports and clamps public pin count", () =
   assert.equal(subcircuitPortCount({ ...page, components: [] }), 0);
 });
 
+test("subcircuitInstanceParamsForPage captures public pin sides from schematic geometry", () => {
+  const page = {
+    id: "sub",
+    name: "relu_cell",
+    description: "",
+    wires: [],
+    probes: [],
+    components: [
+      { id: "x", kind: "LABEL" as const, x: -8, y: -2, rotation: 0 as const, value: "x", params: { port: "1", portOrder: "1" } },
+      { id: "dp", kind: "LABEL" as const, x: -8, y: 0, rotation: 0 as const, value: "dp", params: { port: "1", portOrder: "2" } },
+      { id: "h", kind: "LABEL" as const, x: 8, y: -2, rotation: 0 as const, value: "h", params: { port: "1", portOrder: "3" } },
+      { id: "wp", kind: "LABEL" as const, x: 8, y: 0, rotation: 0 as const, value: "wp", params: { port: "1", portOrder: "4" } },
+      { id: "internal", kind: "LABEL" as const, x: 0, y: 0, rotation: 0 as const, value: "u_internal" },
+    ],
+  };
+
+  assert.deepEqual(subcircuitInstanceParamsForPage(page), {
+    npins: "4",
+    pinSides: "LLRR",
+  });
+});
+
+test("subcircuitInstanceParamsForPage captures top and bottom ports from schematic geometry", () => {
+  const page = {
+    id: "sub",
+    name: "cell",
+    description: "",
+    wires: [],
+    probes: [],
+    components: [
+      { id: "vdd", kind: "LABEL" as const, x: 0, y: -8, rotation: 0 as const, value: "vdd", params: { port: "1", portOrder: "1" } },
+      { id: "x", kind: "LABEL" as const, x: -8, y: 0, rotation: 0 as const, value: "x", params: { port: "1", portOrder: "2" } },
+      { id: "h", kind: "LABEL" as const, x: 8, y: 0, rotation: 0 as const, value: "h", params: { port: "1", portOrder: "3" } },
+      { id: "vss", kind: "LABEL" as const, x: 0, y: 8, rotation: 0 as const, value: "vss", params: { port: "1", portOrder: "4" } },
+    ],
+  };
+
+  assert.deepEqual(subcircuitInstanceParamsForPage(page), {
+    npins: "4",
+    pinSides: "TLRB",
+  });
+});
+
+test("subcircuitInstanceParamsForPage lets explicit port sides override geometry", () => {
+  const page = {
+    id: "sub",
+    name: "cell",
+    description: "",
+    wires: [],
+    probes: [],
+    components: [
+      { id: "vdd", kind: "LABEL" as const, x: -8, y: 0, rotation: 0 as const, value: "vdd", params: { port: "1", portOrder: "1", portSide: "T" } },
+      { id: "x", kind: "LABEL" as const, x: -8, y: 2, rotation: 0 as const, value: "x", params: { port: "1", portOrder: "2" } },
+      { id: "h", kind: "LABEL" as const, x: 8, y: 2, rotation: 0 as const, value: "h", params: { port: "1", portOrder: "3", portSide: "B" } },
+      { id: "vss", kind: "LABEL" as const, x: 8, y: 0, rotation: 0 as const, value: "vss", params: { port: "1", portOrder: "4", portSide: "not-a-side" } },
+    ],
+  };
+
+  assert.deepEqual(subcircuitInstanceParamsForPage(page), {
+    npins: "4",
+    pinSides: "TLBR",
+  });
+});
+
+test("subcircuitInstanceParamsForPage preserves explicit sides even when ports are vertically aligned", () => {
+  const page = {
+    id: "sub",
+    name: "power_pin_cell",
+    description: "",
+    wires: [],
+    probes: [],
+    components: [
+      { id: "vdd", kind: "LABEL" as const, x: -4, y: -2, rotation: 0 as const, value: "vdd", params: { port: "1", portOrder: "1", portSide: "T" } },
+      { id: "x", kind: "LABEL" as const, x: -4, y: 0, rotation: 0 as const, value: "x", params: { port: "1", portOrder: "2" } },
+      { id: "vss", kind: "LABEL" as const, x: -4, y: 2, rotation: 0 as const, value: "vss", params: { port: "1", portOrder: "3", portSide: "B" } },
+    ],
+  };
+
+  assert.deepEqual(subcircuitInstanceParamsForPage(page), {
+    npins: "3",
+    pinSides: "TLB",
+  });
+});
+
+test("SUBX pin layout honors explicit pin side hints", () => {
+  const subx: CircuitComponent = {
+    id: "xrelu",
+    kind: "SUBX",
+    x: 0,
+    y: 0,
+    rotation: 0,
+    value: "relu_cell",
+    params: { npins: "7", pinSides: "LLLLLLR" },
+  };
+
+  const pins = getPinLayout(subx);
+
+  assert.equal(pins.length, 7);
+  assert.deepEqual(pins.map((pin) => Math.sign(pin.x)), [-1, -1, -1, -1, -1, -1, 1]);
+  assert.ok(pins[0].y < pins[5].y);
+  assert.equal(pins[6].y, 0);
+});
+
+test("SUBX pin layout supports top and bottom side hints", () => {
+  const subx: CircuitComponent = {
+    id: "xcell",
+    kind: "SUBX",
+    x: 0,
+    y: 0,
+    rotation: 0,
+    value: "cell",
+    params: { npins: "4", pinSides: "TLRB" },
+  };
+
+  const pins = getPinLayout(subx);
+
+  assert.deepEqual(subcircuitPinSidesForInstance(subx), ["T", "L", "R", "B"]);
+  assert.ok(pins[0].y < -1);
+  assert.ok(pins[1].x < -2);
+  assert.ok(pins[2].x > 2);
+  assert.ok(pins[3].y > 1);
+});
+
+test("SUBX effective pin sides expose the legacy fallback for editing", () => {
+  const subx: CircuitComponent = {
+    id: "xlegacy",
+    kind: "SUBX",
+    x: 0,
+    y: 0,
+    rotation: 0,
+    value: "legacy",
+    params: { npins: "5" },
+  };
+
+  assert.equal(subcircuitPinSidesForInstance(subx), null);
+  assert.deepEqual(effectiveSubcircuitPinSidesForInstance(subx), ["L", "L", "L", "R", "R"]);
+});
+
 test("SUBX pin layout supports large reusable blocks without truncating at 16 pins", () => {
   const subx: CircuitComponent = {
     id: "xwide",
@@ -274,4 +420,61 @@ test("SUBX pin layout follows custom symbol dimensions", () => {
     { x: 4.6, y: 0 },
     { x: 4.6, y: 2.4 },
   ]);
+});
+
+function passive(kind: ComponentKind, rotation: Rotation, mirrored = false): CircuitComponent {
+  return { id: "x1", kind, x: 4, y: 3, rotation, value: "1k", mirrored: mirrored || undefined };
+}
+
+function sortedPinWorld(c: CircuitComponent): { x: number; y: number }[] {
+  return getPinLayout(c)
+    .map((_, i) => pinWorldPos(c, i))
+    .sort((a, b) => a.x - b.x || a.y - b.y);
+}
+
+test("flipRotation reflects rotation across the horizontal axis", () => {
+  assert.equal(flipRotation(0), 180);
+  assert.equal(flipRotation(90), 90);
+  assert.equal(flipRotation(180), 0);
+  assert.equal(flipRotation(270), 270);
+});
+
+test("vertical flip (mirror + flipRotation) reflects every pin about the component centre", () => {
+  for (const kind of ["R", "C", "NMOS", "OPAMP"] as ComponentKind[]) {
+    for (const rotation of [0, 90, 180, 270] as Rotation[]) {
+      const c = passive(kind, rotation);
+      const flipped: CircuitComponent = {
+        ...c,
+        mirrored: c.mirrored ? undefined : true,
+        rotation: flipRotation(c.rotation),
+      };
+      const expected = getPinLayout(c)
+        .map((_, i) => {
+          const p = pinWorldPos(c, i);
+          return { x: p.x, y: 2 * c.y - p.y };
+        })
+        .sort((a, b) => a.x - b.x || a.y - b.y);
+      assert.deepEqual(sortedPinWorld(flipped), expected, `${kind} @ ${rotation}`);
+    }
+  }
+});
+
+test("rotationForKindSwap keeps both passive pins at their world positions", () => {
+  for (const from of SWAPPABLE_PASSIVE_KINDS) {
+    for (const to of SWAPPABLE_PASSIVE_KINDS) {
+      for (const rotation of [0, 90, 180, 270] as Rotation[]) {
+        const before = passive(from, rotation);
+        const after: CircuitComponent = {
+          ...before,
+          kind: to,
+          rotation: rotationForKindSwap(from, to, rotation),
+        };
+        assert.deepEqual(
+          sortedPinWorld(after),
+          sortedPinWorld(before),
+          `${from}->${to} @ ${rotation}`,
+        );
+      }
+    }
+  }
 });

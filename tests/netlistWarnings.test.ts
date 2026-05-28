@@ -60,7 +60,15 @@ test("subcircuit instances can export more than eight pins", () => {
     ],
   };
 
-  assert.match(buildNetlist(doc).netlist, /^X1 n1 n2 n3 n4 n5 n6 n7 n8 n9 n10 n11 n12 wide$/m);
+  const netlist = buildNetlist(doc).netlist;
+  assert.match(netlist, /^VLFX1P1 n1 lf_X1_p1 0$/m);
+  assert.match(netlist, /^VLFX1P12 n12 lf_X1_p12 0$/m);
+  assert.match(
+    netlist,
+    /^X1 lf_X1_p1 lf_X1_p2 lf_X1_p3 lf_X1_p4 lf_X1_p5 lf_X1_p6 lf_X1_p7 lf_X1_p8 lf_X1_p9 lf_X1_p10 lf_X1_p11 lf_X1_p12 wide$/m,
+  );
+  assert.match(netlist, /@VLFX1P1\[i\]/);
+  assert.match(netlist, /@VLFX1P12\[i\]/);
 });
 
 test("capacitors can emit initial conditions", () => {
@@ -254,6 +262,69 @@ test("canvas notes export as comments without electrical components", () => {
   assert.doesNotMatch(netlist, /^1\b/m);
 });
 
+test("generated netlists explicitly save device currents for Live Flow", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "tran", tstep: "10u", tstop: "1m" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "v1", kind: "V", x: -8, y: 0, rotation: 0, value: "DC 5" },
+          { id: "i1", kind: "I", x: -4, y: 0, rotation: 0, value: "DC 1m" },
+          { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" },
+          { id: "c1", kind: "C", x: 4, y: 0, rotation: 0, value: "1u" },
+          { id: "l1", kind: "L", x: 6, y: 0, rotation: 0, value: "1m" },
+          { id: "d1", kind: "D", x: 8, y: 0, rotation: 0, value: "D" },
+          { id: "m1", kind: "NMOS", x: 12, y: 0, rotation: 0, value: "NMOS" },
+          { id: "m2", kind: "PMOS", x: 16, y: 0, rotation: 0, value: "PMOS" },
+          { id: "m3", kind: "NMOS4", x: 20, y: 0, rotation: 0, value: "NMOS" },
+          { id: "m4", kind: "PMOS4", x: 24, y: 0, rotation: 0, value: "PMOS" },
+          { id: "q1", kind: "NPN", x: 28, y: 0, rotation: 0, value: "NPN" },
+          { id: "q2", kind: "PNP", x: 32, y: 0, rotation: 0, value: "PNP" },
+          { id: "b1", kind: "B", x: 36, y: 0, rotation: 0, value: "V=1" },
+        ],
+      },
+    ],
+  };
+
+  assert.match(
+    buildNetlist(doc).netlist,
+    /^\.save all @V1\[i\] @I1\[current\] @R1\[i\] @C1\[i\] @L1\[i\] @D1\[id\] @M1\[id\] @M1\[ig\] @M1\[is\] @M2\[id\] @M2\[ig\] @M2\[is\] @M3\[id\] @M3\[ig\] @M3\[is\] @M3\[ib\] @M4\[id\] @M4\[ig\] @M4\[is\] @M4\[ib\] @Q1\[ic\] @Q1\[ie\] @Q1\[ib\] @Q2\[ic\] @Q2\[ie\] @Q2\[ib\] @B1\[i\]$/m,
+  );
+});
+
+test("built-in op-amp instances expose pin-sense currents for Live Flow", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "tran", tstep: "10u", tstop: "1m" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "op", kind: "OPAMP", x: 0, y: 0, rotation: 0, value: "OPAMP" },
+        ],
+      },
+    ],
+  };
+
+  const netlist = buildNetlist(doc).netlist;
+
+  assert.match(netlist, /^VLFX1P1 n1 lf_X1_p1 0$/m);
+  assert.match(netlist, /^VLFX1P2 n2 lf_X1_p2 0$/m);
+  assert.match(netlist, /^VLFX1P3 n3 lf_X1_p3 0$/m);
+  assert.match(netlist, /^X1 lf_X1_p1 lf_X1_p2 lf_X1_p3 OPAMP$/m);
+  assert.match(netlist, /^\.save all @VLFX1P1\[i\] @VLFX1P2\[i\] @VLFX1P3\[i\]$/m);
+});
+
 test("floating active-device warnings use terminal names", () => {
   const doc: CircuitDoc = {
     activePageId: "main",
@@ -278,6 +349,68 @@ test("floating active-device warnings use terminal names", () => {
   assert.ok(result.warnings.some((warning) => warning.includes("M1 G pin is floating")));
   assert.ok(result.warnings.some((warning) => warning.includes("M1 S pin is floating")));
   assert.deepEqual(result.floatingPins.map((pin) => pin.pinLabel), ["D", "G", "S"]);
+});
+
+test("a node reached by only one device terminal is flagged even when a net label pads the count", () => {
+  // R1 spans in→out; `out` carries a net label but no second device. The
+  // old pin-count check saw 2 pins (R1 + label) and stayed silent; the
+  // device-terminal check must still flag `out` as floating.
+  // R1 alone, with a net label on each pin and nothing else. Each end is a
+  // single-device node padded to 2 pins by its label.
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" },
+          { id: "lblIn", kind: "LABEL", x: -2, y: 0, rotation: 0, value: "in" },
+          { id: "lblOut", kind: "LABEL", x: 2, y: 0, rotation: 0, value: "out" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+  assert.ok(
+    result.warnings.some((w) => /only one terminal/.test(w) && w.includes("out")),
+    `expected a single-terminal warning for node 'out'; got ${JSON.stringify(result.warnings)}`,
+  );
+});
+
+test("a node held only by a voltage source is not flagged as floating", () => {
+  // V1 drives node `in` (its + pin); the − pin is grounded. `in` has a single
+  // device terminal, but the source *defines* its potential, so it is not
+  // floating — flagging it would be a false positive and suppress Live Flow.
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "v1", kind: "V", x: 0, y: 0, rotation: 0, value: "DC 1" },
+          { id: "gnd", kind: "GND", x: 0, y: 2, rotation: 0, value: "" },
+          { id: "lblIn", kind: "LABEL", x: 0, y: -2, rotation: 0, value: "in" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+  assert.ok(
+    !result.warnings.some((w) => /only one terminal/.test(w) && w.includes("in")),
+    `voltage-source node 'in' must not be flagged floating; got ${JSON.stringify(result.warnings)}`,
+  );
 });
 
 test("netlist warns when a net label is close to a pin but not connected", () => {
@@ -308,6 +441,70 @@ test("netlist warns when a net label is close to a pin but not connected", () =>
   );
   assert.equal(
     result.warnings.some((warning) => warning.includes("label pin")),
+    false,
+  );
+});
+
+test("component pins are not connected by wire pass-through without an explicit junction", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [
+          { id: "w-crossing", points: [[-4, 0], [4, 0]] },
+        ],
+        probes: [],
+        components: [
+          { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+
+  assert.match(result.netlist, /^R1 n1 n2 1k$/m);
+  assert.ok(
+    result.warnings.some((warning) =>
+      warning.includes("R1 1 pin lies on wire w-crossing, but there is no explicit junction there"),
+    ),
+  );
+  assert.ok(
+    result.warnings.some((warning) =>
+      warning.includes("R1 2 pin lies on wire w-crossing, but there is no explicit junction there"),
+    ),
+  );
+});
+
+test("component pins connect to wires when the wire has an explicit junction at the pin", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [
+          { id: "w-junctions", points: [[-4, 0], [-2, 0], [2, 0], [4, 0]] },
+        ],
+        probes: [],
+        components: [
+          { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+
+  assert.match(result.netlist, /^R1 n1 n1 1k$/m);
+  assert.equal(
+    result.warnings.some((warning) => warning.includes("lies on wire w-junctions")),
     false,
   );
 });
@@ -753,7 +950,7 @@ test("probes on wire segments resolve to the segment node", () => {
   assert.equal(probeNode, result.nodes.pinToNode.get("r1#0"));
 });
 
-test("component pins on wire segments resolve to the segment node", () => {
+test("component pins on explicit wire junctions resolve to the segment node", () => {
   const doc: CircuitDoc = {
     activePageId: "main",
     directives: "",
@@ -766,7 +963,7 @@ test("component pins on wire segments resolve to the segment node", () => {
           { id: "r1", kind: "R", x: 2, y: 0, rotation: 0, value: "1k" },
           { id: "r2", kind: "R", x: 6, y: 0, rotation: 0, value: "1k" },
         ],
-        wires: [{ id: "w1", points: [[0, 0], [8, 0]] }],
+        wires: [{ id: "w1", points: [[0, 0], [4, 0], [8, 0]] }],
         probes: [],
       },
     ],

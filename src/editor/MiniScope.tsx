@@ -22,6 +22,8 @@ interface Props {
   playTime?: number | null;
   /** Empty-state message shown when the scope has no trace data. */
   emptyMessage?: string;
+  /** Probe id used to expose the scope label as an editable canvas text target. */
+  labelEditId?: string;
 }
 
 const CELL_PX = 20; // matches CELL in Editor (the scale factor at zoom=1)
@@ -37,6 +39,7 @@ export function MiniScope({
   trace,
   playTime,
   emptyMessage = "press Run",
+  labelEditId,
 }: Props) {
   const clipId = useId().replace(/:/g, "");
   const strokeW = 0.06;
@@ -59,7 +62,7 @@ export function MiniScope({
         >
           {emptyMessage}
         </HtmlOverlay>
-        {label && <ScopeLabel width={width} color={color} text={label} />}
+        {label && <ScopeLabel width={width} color={color} text={label} editId={labelEditId} />}
       </g>
     );
   }
@@ -95,7 +98,7 @@ export function MiniScope({
         >
           {formatSI(v, "V")}
         </HtmlOverlay>
-        {label && <ScopeLabel width={width} color={color} text={label} />}
+        {label && <ScopeLabel width={width} color={color} text={label} editId={labelEditId} />}
       </g>
     );
   }
@@ -202,7 +205,7 @@ export function MiniScope({
       {readoutText && (
         <ScopeReadout width={width} height={height} text={readoutText} />
       )}
-      {label && <ScopeLabel width={width} color={color} text={label} />}
+      {label && <ScopeLabel width={width} color={color} text={label} editId={labelEditId} />}
     </g>
   );
 }
@@ -297,14 +300,20 @@ function ScopeLabel({
   width,
   color,
   text,
+  editId,
 }: {
   width: number;
   color: string;
   text: string;
+  editId?: string;
 }) {
   const w = Math.min(width - 0.5, Math.max(1.6, estimateInlineMathTextWidth(text) * 0.42 + 0.5));
   return (
-    <g transform={`translate(${width / 2 - w / 2} ${-0.85})`}>
+    <g
+      className="probe-scope-label"
+      data-probe-label-edit-id={editId}
+      transform={`translate(${width / 2 - w / 2} ${-0.85})`}
+    >
       <rect x={0} y={0} width={w} height={0.7} rx={0.18} fill={color} />
       <HtmlOverlay
         x={0}

@@ -10,7 +10,6 @@ import {
   boundsFromPoints,
   normalizeCoord,
   normalizeTuple,
-  pointOnSegment,
   samePoint,
 } from "./geometry.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
@@ -125,7 +124,7 @@ function layoutTopologyForPage(
     }
     for (const [key, pin] of pinByKey) {
       const point = pinWorldPos(pin.component, pin.pinIdx);
-      if (pointTouchesWirePath(point, wire)) union.union(key, wireKey);
+      if (wireHasExplicitPoint(wire, point)) union.union(key, wireKey);
     }
   }
 
@@ -531,7 +530,7 @@ function wireIdsTouchingComponents(
   for (const wire of page.wires) {
     if (target.has(wire.id)) continue;
     if (components.some((component) =>
-      getPinLayout(component).some((_, pinIdx) => pointTouchesWirePath(pinWorldPos(component, pinIdx), wire)),
+      getPinLayout(component).some((_, pinIdx) => wireHasExplicitPoint(wire, pinWorldPos(component, pinIdx))),
     )) {
       target.add(wire.id);
     }
@@ -580,14 +579,8 @@ function movedPinPointMap(
   return map;
 }
 
-function pointTouchesWirePath(point: { x: number; y: number }, wire: Wire): boolean {
-  if (wire.points.some(([x, y]) => samePoint(point, { x, y }))) return true;
-  for (let idx = 0; idx < wire.points.length - 1; idx++) {
-    const [x1, y1] = wire.points[idx];
-    const [x2, y2] = wire.points[idx + 1];
-    if (pointOnSegment(point.x, point.y, x1, y1, x2, y2)) return true;
-  }
-  return false;
+function wireHasExplicitPoint(wire: Wire, point: { x: number; y: number }): boolean {
+  return wire.points.some(([x, y]) => samePoint(point, { x, y }));
 }
 
 function dedupeLayoutPins(pins: LayoutPin[]): LayoutPin[] {

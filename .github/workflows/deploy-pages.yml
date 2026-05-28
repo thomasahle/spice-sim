@@ -22,15 +22,21 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
       - name: Build
         env:
           SPICESIM_BASE: /spice-sim/
-        run: npx vite build
+        run: npm run build
 
       - uses: actions/configure-pages@v5
 
