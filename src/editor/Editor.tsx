@@ -205,6 +205,7 @@ import {
   StatusBar,
   ToolIcon,
 } from "./editorChrome";
+import { EditorCanvasHUD } from "./EditorCanvasHUD";
 import {
   copiedProbesForInsertedTopology,
   copyConnectedProbes,
@@ -8916,61 +8917,19 @@ export function Editor() {
             )}
           </div>
         )}
-        <div className="canvas-hud">
-          <button
-            type="button"
-            className={gridVisible ? "active" : ""}
-            onClick={() => setGridVisible((v) => !v)}
-            title="Toggle grid visibility (Shift+G)"
-            aria-label="Toggle grid visibility"
-            aria-pressed={gridVisible}
-          >
-            Grid: {gridVisible ? "On" : "Off"}
-          </button>
-          <button
-            type="button"
-            className={snapToGrid ? "active" : ""}
-            onClick={() => setSnapToGrid((v) => !v)}
-            title="Toggle snap to grid (Shift+S)"
-            aria-label="Toggle snap to grid"
-            aria-pressed={snapToGrid}
-          >
-            Snap: {snapToGrid ? "On" : "Off"}
-          </button>
-          <button
-            type="button"
-            className={autoRun ? "active" : ""}
-            onClick={() => setAutoRun((v) => !v)}
-            title={autoRunUi.title}
-            aria-label={`${autoRunUi.title} Toggle auto-run.`}
-            aria-pressed={autoRun}
-          >
-            {autoRunUi.buttonLabel}
-          </button>
-          <span>Zoom: {Math.round(zoom * 100)}%</span>
-          <button
-            type="button"
-            onClick={fitToContent}
-            title="Fit schematic to view (Shift+F)"
-            aria-label="Fit schematic to view"
-          >
-            Fit
-          </button>
-          {!isTransient && liveFlowUiStatus.show && (
-            <span
-              className={`live-flow-status ${liveFlowUiStatus.tone} ${liveFlowUiStatus.source}`}
-              title={liveFlowUiStatus.title}
-              role="status"
-              aria-live="polite"
-              aria-label={`Live Flow: ${liveFlowUiStatus.label}. ${liveFlowUiStatus.title}`}
-              data-live-flow-source={liveFlowUiStatus.source}
-              data-live-flow-tone={liveFlowUiStatus.tone}
-            >
-              <span className="live-flow-source-dot" aria-hidden="true" />
-              <span className="live-flow-status-label">Live Flow: {liveFlowUiStatus.label}</span>
-            </span>
-          )}
-        </div>
+        <EditorCanvasHUD
+          gridVisible={gridVisible}
+          onToggleGrid={() => setGridVisible((v) => !v)}
+          snapToGrid={snapToGrid}
+          onToggleSnap={() => setSnapToGrid((v) => !v)}
+          autoRun={autoRun}
+          onToggleAutoRun={() => setAutoRun((v) => !v)}
+          autoRunUi={autoRunUi}
+          zoom={zoom}
+          onFit={fitToContent}
+          isTransient={isTransient}
+          liveFlowUiStatus={liveFlowUiStatus}
+        />
         </div>
 
         {isTransient && transientScale && (
