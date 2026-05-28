@@ -186,6 +186,12 @@ import {
 } from "./wireGeometry";
 import { collectPageBounds, pinHintsFor } from "./selectionBounds";
 import {
+  copiedProbesForInsertedTopology,
+  copyConnectedProbes,
+  floatingPinSummary,
+  probeHasConnection,
+} from "./probeValidation";
+import {
   buildRotatedPinContactWires,
   buildTranslatedPinContactWires,
   collectDirectContactPins,
@@ -9490,9 +9496,6 @@ function electricalComponentCount(page: SchematicPage): number {
   return page.components.filter((c) => c.kind !== "GND" && c.kind !== "LABEL" && c.kind !== "NOTE").length;
 }
 
-function floatingPinSummary(pin: FloatingPinDiagnostic): string {
-  return `${pin.refdes} ${pin.pinLabel ? `${pin.pinLabel} pin` : `pin ${pin.pinIdx + 1}`}`;
-}
 
 
 function clipboardAnchor(
@@ -9516,58 +9519,6 @@ async function readSystemSchematicClipboard(): Promise<SchematicClipboard | null
   }
 }
 
-function copyConnectedProbes(
-  probes: Probe[],
-  components: CircuitComponent[],
-  wires: Wire[],
-  ox: number,
-  oy: number,
-): Probe[] {
-  return probes
-    .map((pr) => ({
-      ...pr,
-      id: makeId("probe"),
-      x: pr.x + ox,
-      y: pr.y + oy,
-      scopeDx: pr.scopeDx == null ? undefined : normalizeCoord(pr.scopeDx),
-      scopeDy: pr.scopeDy == null ? undefined : normalizeCoord(pr.scopeDy),
-    }))
-    .filter((pr) => probeHasConnection(pr, components, wires));
-}
-
-function copiedProbesForInsertedTopology(
-  probes: Probe[],
-  components: CircuitComponent[],
-  insertedWires: Wire[],
-  existingProbes: Probe[],
-): Probe[] {
-  return probes.filter((probe) => {
-    if (existingProbes.some((existing) => samePoint(existing, probe))) return false;
-    return probeHasConnection(probe, components, insertedWires);
-  });
-}
-
-function probeHasConnection(
-  probe: Probe,
-  components: CircuitComponent[],
-  wires: Wire[],
-): boolean {
-  const p = { x: probe.x, y: probe.y };
-  for (const c of components) {
-    for (let i = 0; i < getPinLayout(c).length; i++) {
-      if (samePoint(p, pinWorldPos(c, i))) return true;
-    }
-  }
-  for (const w of wires) {
-    if (w.points.some(([x, y]) => samePoint(p, { x, y }))) return true;
-    for (let idx = 0; idx < w.points.length - 1; idx++) {
-      const [x1, y1] = w.points[idx];
-      const [x2, y2] = w.points[idx + 1];
-      if (pointOnSegment(probe.x, probe.y, x1, y1, x2, y2)) return true;
-    }
-  }
-  return false;
-}
 
 
 
