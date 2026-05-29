@@ -3,12 +3,19 @@ export type AutoRunState =
   | "running"
   | "paused-tool"
   | "paused-interaction"
+  | "paused-subcircuit"
+  | "paused-slow"
   | "engine-offline"
   | "empty"
   | "needs-ground"
   | "needs-source"
   | "needs-circuit"
   | "ready";
+
+// Above this last-run duration, auto-run stops firing on edits — re-running a
+// heavy circuit on every keystroke wastes CPU on a result the user isn't
+// watching. Manual Run stays available and resets the measurement.
+export const AUTO_RUN_SLOW_MS = 2500;
 
 export interface AutoRunStatusInput {
   autoRun: boolean;
@@ -19,6 +26,12 @@ export interface AutoRunStatusInput {
   componentCount: number;
   hasGround: boolean;
   hasStimulus: boolean;
+  /** Whether the root (main) schematic page is the one being edited. The
+   *  simulation always builds from the main page, so auto-run only fires
+   *  while it's in view; subcircuit edits mark it stale and rerun on return. */
+  isMainPageActive: boolean;
+  /** Duration of the last completed run, or null if none yet. */
+  lastRunMs: number | null;
 }
 
 export interface AutoRunStatus {
@@ -46,6 +59,9 @@ export function describeAutoRunStatus(input: AutoRunStatusInput): AutoRunStatus 
   if (input.interactionActive) {
     return status("paused-interaction", "Auto: Paused", "paused", "Auto-run pauses while you are dragging, wiring, resizing, or editing the canvas.", true, false);
   }
+  if (!input.isMainPageActive) {
+    return status("paused-subcircuit", "Auto: Paused", "paused", "Auto-run pauses while editing a subcircuit. The main schematic reruns when you switch back to it.", true, false);
+  }
   if (input.componentCount === 0) {
     return status("empty", "Auto: Waiting", "waiting", "Auto-run is waiting for a circuit. Place components, a source, and ground.", false, false);
   }
@@ -57,6 +73,17 @@ export function describeAutoRunStatus(input: AutoRunStatusInput): AutoRunStatus 
   }
   if (!input.hasStimulus) {
     return status("needs-source", "Auto: Needs Source", "needs source", "Auto-run needs an independent or behavioral source before it can simulate.", false, false);
+  }
+  if (input.lastRunMs != null && input.lastRunMs > AUTO_RUN_SLOW_MS) {
+    const seconds = (input.lastRunMs / 1000).toFixed(1);
+    return status(
+      "paused-slow",
+      "Auto: Paused",
+      "slow",
+      `Auto-run paused — the last run took ${seconds}s. Press Run to simulate; auto-run resumes once a run is fast again.`,
+      true,
+      false,
+    );
   }
   return status("ready", "Auto: On", "on", "Auto-run will rerun automatically after circuit edits settle.", false, true);
 }

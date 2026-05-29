@@ -1420,6 +1420,9 @@ export function Editor() {
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [simResult, setSimResult] = useState<SimResult | null>(null);
   const [simulationStale, setSimulationStale] = useState(false);
+  // Duration of the last completed run; gates auto-run's adaptive idle window
+  // and its "too slow, pause" cutoff. Null until the first run completes.
+  const [lastRunMs, setLastRunMs] = useState<number | null>(null);
   const [waveformVisible, setWaveformVisible] = useState(true);
   const [selectedTraces, setSelectedTraces] = useState<Set<string>>(new Set());
   const [filePath, setFilePath] = useState<string | null>(null);
@@ -1768,6 +1771,10 @@ export function Editor() {
     setReadings(null);
     setSimResult(null);
     setSimulationStale(false);
+    // Reset the slow-run gate so a fresh (e.g. just-cleared or freshly loaded)
+    // circuit isn't held in the "paused — last run was slow" state inherited
+    // from a previous, heavier circuit.
+    setLastRunMs(null);
     setSelectedTraces(new Set());
     setLog("");
     setRunWarnings([]);
@@ -5510,6 +5517,7 @@ export function Editor() {
       setRunning(false);
       return;
     }
+    const runStartedAt = performance.now();
     try {
       setStatus("Running ngspice…");
       const apiAnalysis = analysisToApi(docRef.current.analysis);
@@ -5577,7 +5585,12 @@ export function Editor() {
       setStatus(`✗ ${summary.status}`);
       setLog(formatSimulationErrorLog(summary));
     } finally {
-      if (runId === latestRunIdRef.current) setRunning(false);
+      if (runId === latestRunIdRef.current) {
+        setRunning(false);
+        // Record how long this run took so auto-run can scale its idle window
+        // and pause itself on circuits that are too heavy to rerun live.
+        setLastRunMs(performance.now() - runStartedAt);
+      }
     }
   }
 
@@ -5724,9 +5737,18 @@ export function Editor() {
     wireDraft,
     wireGesture,
   });
-  const autoRunComponentCount = page.components.length;
-  const autoRunHasGround = page.components.some((c) => c.kind === "GND");
-  const autoRunHasStimulus = page.components.some((c) => isSimulationStimulusKind(c.kind));
+  // The simulation always builds from the root page; gate the auto-run
+  // component/ground/source checks on that page (not the active subcircuit).
+  const mainPage = doc.pages[0];
+  const isMainPageActive = mainPage?.id === doc.activePageId;
+  const autoRunComponentCount = mainPage ? mainPage.components.length : 0;
+  const autoRunHasGround = mainPage ? mainPage.components.some((c) => c.kind === "GND") : false;
+  const autoRunHasStimulus = mainPage
+    ? mainPage.components.some((c) => isSimulationStimulusKind(c.kind))
+    : false;
+  // There's something worth auto-running only when the result is missing or
+  // has gone stale since the last run.
+  const needsRun = simResult === null || simulationStale;
   const autoRunUi = describeAutoRunStatus({
     autoRun,
     running: runningVisible,
@@ -5736,6 +5758,8 @@ export function Editor() {
     componentCount: autoRunComponentCount,
     hasGround: autoRunHasGround,
     hasStimulus: autoRunHasStimulus,
+    isMainPageActive,
+    lastRunMs,
   });
 
   useAutoRunSimulation({
@@ -5744,6 +5768,9 @@ export function Editor() {
     tool,
     canvasInteractionActive,
     autoRunRunnable: autoRunUi.runnable,
+    isMainPageActive,
+    needsRun,
+    lastRunMs,
     runSimulation: () => void runSimulation(),
   });
 

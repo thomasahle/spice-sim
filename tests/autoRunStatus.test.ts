@@ -12,6 +12,8 @@ const ready = {
   componentCount: 3,
   hasGround: true,
   hasStimulus: true,
+  isMainPageActive: true,
+  lastRunMs: null,
 };
 
 test("auto-run status reports off and ready states", () => {
@@ -49,6 +51,27 @@ test("auto-run status reports engine and active run states", () => {
     { state: "running", buttonLabel: "Auto: Running", statusLabel: "running", paused: false, runnable: false },
   );
   assert.equal(describeAutoRunStatus({ ...ready, engineOk: false }).state, "engine-offline");
+});
+
+test("auto-run pauses while editing a subcircuit (main page not active)", () => {
+  const status = describeAutoRunStatus({ ...ready, isMainPageActive: false });
+  assert.equal(status.state, "paused-subcircuit");
+  assert.equal(status.paused, true);
+  assert.equal(status.runnable, false);
+});
+
+test("auto-run pauses when the last run was too slow, but stays runnable when fast", () => {
+  const slow = describeAutoRunStatus({ ...ready, lastRunMs: 4000 });
+  assert.equal(slow.state, "paused-slow");
+  assert.equal(slow.runnable, false);
+  // A fast prior run keeps auto-run live.
+  assert.equal(describeAutoRunStatus({ ...ready, lastRunMs: 120 }).state, "ready");
+  // The slow gate sits behind the completeness checks — a circuit missing a
+  // source reports that first even if a previous (different) run was slow.
+  assert.equal(
+    describeAutoRunStatus({ ...ready, hasStimulus: false, lastRunMs: 4000 }).state,
+    "needs-source",
+  );
 });
 
 function pick(status: ReturnType<typeof describeAutoRunStatus>) {
