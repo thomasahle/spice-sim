@@ -6497,22 +6497,35 @@ export function Editor() {
                     lastSelected.kind !== "I" &&
                     lastSelected.kind !== "NOTE" && (
                       <>
-                        {mosfetPresetKindForComponentKind(lastSelected.kind) && (
-                          <Row label="Preset">
-                            <SelectField
-                              ariaLabel="Preset"
-                              value={
-                                lastSelected.params?.preset ??
-                                selectedMosfetPresetId[mosfetPresetKindForComponentKind(lastSelected.kind)!] ??
-                                defaultMosfetPresetId(mosfetPresetKindForComponentKind(lastSelected.kind)!)
-                              }
-                              onValueChange={(value) => applyPresetToComponent(lastSelected.id, value)}
-                              options={mosfetPresets
-                                .filter((preset) => preset.kind === mosfetPresetKindForComponentKind(lastSelected.kind))
-                                .map((preset) => ({ value: preset.id, label: preset.name }))}
-                            />
-                          </Row>
-                        )}
+                        {mosfetPresetKindForComponentKind(lastSelected.kind) && (() => {
+                          const presetKind = mosfetPresetKindForComponentKind(lastSelected.kind)!;
+                          const kindPresets = mosfetPresets.filter((preset) => preset.kind === presetKind);
+                          // Show the preset the selected device *actually* matches
+                          // (by model + W/L), not whatever it was placed with — so
+                          // hand-editing W/L surfaces as "Custom" instead of a stale
+                          // preset name. Picking a real preset re-applies it.
+                          const matching = kindPresets.find((preset) =>
+                            componentMatchesMosfetPreset(lastSelected, preset),
+                          );
+                          const CUSTOM_PRESET = "__custom__";
+                          const options = kindPresets.map((preset) => ({ value: preset.id, label: preset.name }));
+                          return (
+                            <Row label="Preset">
+                              <SelectField
+                                ariaLabel="Preset"
+                                value={matching?.id ?? CUSTOM_PRESET}
+                                onValueChange={(value) => {
+                                  if (value !== CUSTOM_PRESET) applyPresetToComponent(lastSelected.id, value);
+                                }}
+                                options={
+                                  matching
+                                    ? options
+                                    : [{ value: CUSTOM_PRESET, label: "Custom (edited)" }, ...options]
+                                }
+                              />
+                            </Row>
+                          );
+                        })()}
                         <Row label={lastSelected.kind === "B" ? "Expression" : isModelKind(lastSelected.kind) ? "Model" : "Value"}>
                           {isModelKind(lastSelected.kind) && lastSelected.kind !== "OPAMP" ? (
                             <SelectField
