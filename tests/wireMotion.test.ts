@@ -204,6 +204,32 @@ test("probes on detoured selected wire bodies stay on the routed wire path", () 
   );
 });
 
+test("a probe orphaned by a replaced wire re-anchors onto the nearest surviving wire", () => {
+  // The wire the probe sat on ("w1") vanishes (reroute gave it a new id "w2");
+  // the probe should snap onto the nearby replacement rather than dangle.
+  assert.deepEqual(
+    moveUnmovedProbesWithChangedWirePaths(
+      [{ id: "pin", x: 0, y: 0, color: "#0a84ff", label: "n1" }],
+      [{ id: "pin", x: 0, y: 0, color: "#0a84ff", label: "n1" }],
+      [{ id: "w1", points: [[-2, 0], [2, 0]] }],
+      [{ id: "w2", points: [[-2, 0.5], [2, 0.5]] }],
+    ),
+    [{ id: "pin", x: 0, y: 0.5, color: "#0a84ff", label: "n1" }],
+  );
+});
+
+test("a probe whose replacement wire is too far away is left in place", () => {
+  assert.deepEqual(
+    moveUnmovedProbesWithChangedWirePaths(
+      [{ id: "pin", x: 0, y: 0, color: "#0a84ff", label: "n1" }],
+      [{ id: "pin", x: 0, y: 0, color: "#0a84ff", label: "n1" }],
+      [{ id: "w1", points: [[-2, 0], [2, 0]] }],
+      [{ id: "w2", points: [[-2, 9], [2, 9]] }],
+    ),
+    [{ id: "pin", x: 0, y: 0, color: "#0a84ff", label: "n1" }],
+  );
+});
+
 test("probes already moved by explicit pin or selection rules are not remapped again", () => {
   assert.deepEqual(
     moveUnmovedProbesWithChangedWirePaths(

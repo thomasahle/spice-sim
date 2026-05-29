@@ -2,6 +2,7 @@ import {
   normalizePoint,
   pointOnPolylineBody,
   pointOnSegment,
+  projectPointToSegment,
   samePoint,
   sameTuple,
 } from "./geometry.ts";
@@ -103,6 +104,11 @@ export function moveProbesWithPinMoves(
   });
 }
 
+// A probe orphaned by a rerouted/replaced wire snaps onto the nearest current
+// wire within this radius (in cell units) so it follows the connection instead
+// of dangling. Bounded so a probe never teleports across the canvas.
+const PROBE_REANCHOR_MAX_DIST = 2.0;
+
 export function moveUnmovedProbesWithChangedWirePaths(
   currentProbes: Probe[],
   originalProbes: Probe[],
@@ -110,14 +116,19 @@ export function moveUnmovedProbesWithChangedWirePaths(
   afterWires: Wire[],
 ): Probe[] {
   const originalById = new Map(originalProbes.map((probe) => [probe.id, probe]));
+  const afterById = new Map(afterWires.map((wire) => [wire.id, wire]));
   const changedWires = beforeWires
-    .map((before) => ({ before, after: afterWires.find((wire) => wire.id === before.id) }))
+    .map((before) => ({ before, after: afterById.get(before.id) }))
     .filter(
       (entry): entry is { before: Wire; after: Wire } =>
         Boolean(entry.after) && !sameWirePoints(entry.before.points, entry.after!.points),
     );
+  // Wires that vanished entirely between before/after — e.g. a reroute that
+  // replaced the wire with a fresh id, or a merge/split. A probe sitting on a
+  // vanished wire would otherwise be left behind and lose its node.
+  const removedWires = beforeWires.filter((wire) => !afterById.has(wire.id));
 
-  if (changedWires.length === 0) return currentProbes;
+  if (changedWires.length === 0 && removedWires.length === 0) return currentProbes;
 
   return currentProbes.map((probe) => {
     const original = originalById.get(probe.id);
@@ -129,8 +140,48 @@ export function moveUnmovedProbesWithChangedWirePaths(
       if (moved) return { ...probe, x: moved.x, y: moved.y };
     }
 
+    // Fallback: the probe sat on a wire that disappeared. Re-anchor it onto the
+    // nearest surviving wire so it keeps following the (rerouted) connection.
+    const wasOnRemovedWire = removedWires.some((wire) => pointOnWirePath(original, wire.points));
+    if (wasOnRemovedWire) {
+      const snapped = nearestPointOnWires(original, afterWires, PROBE_REANCHOR_MAX_DIST);
+      if (snapped) return { ...probe, x: snapped.x, y: snapped.y };
+    }
+
     return probe;
   });
+}
+
+function pointOnWirePath(point: { x: number; y: number }, points: [number, number][]): boolean {
+  for (let idx = 0; idx < points.length - 1; idx++) {
+    const [x1, y1] = points[idx];
+    const [x2, y2] = points[idx + 1];
+    if (pointOnSegment(point.x, point.y, x1, y1, x2, y2)) return true;
+  }
+  return false;
+}
+
+function nearestPointOnWires(
+  point: { x: number; y: number },
+  wires: Wire[],
+  maxDist: number,
+): { x: number; y: number } | null {
+  let best: { x: number; y: number } | null = null;
+  let bestDist = maxDist;
+  for (const wire of wires) {
+    for (let idx = 0; idx < wire.points.length - 1; idx++) {
+      const [x1, y1] = wire.points[idx];
+      const [x2, y2] = wire.points[idx + 1];
+      const proj = projectPointToSegment(point.x, point.y, x1, y1, x2, y2);
+      if (!proj) continue;
+      const dist = Math.hypot(proj.x - point.x, proj.y - point.y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = proj;
+      }
+    }
+  }
+  return best ? normalizePoint(best) : null;
 }
 
 function stationaryPinAtPoint(
