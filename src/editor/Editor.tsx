@@ -1235,6 +1235,10 @@ const ProbeNode = memo(function ProbeNode({
 // keeping memory in the tens of KB even for large schematics.
 const UNDO_LIMIT = 100;
 
+// Same-source commits (same mergeKey) within this window collapse into a
+// single undo step — so typing "2.2k" into a value field is one undo, not four.
+const COMMIT_MERGE_WINDOW_MS = 600;
+
 export function Editor() {
   // Workspace: tracks multiple projects, each holding its own CircuitDoc in
   // localStorage. Loaded lazily on first render; if empty, we bootstrap with
@@ -1680,7 +1684,10 @@ export function Editor() {
   }
 
   function updateActivePageMeta(patch: Partial<Pick<SchematicPage, "name" | "description">>) {
-    commit((d) => updatePageMeta(d, d.activePageId, patch));
+    // Key the merge by which field is being typed so a name burst and a
+    // description burst stay distinct undo steps.
+    const field = "name" in patch ? "name" : "description";
+    commit((d) => updatePageMeta(d, d.activePageId, patch), `page-meta:${field}`);
   }
 
   function resetInteractionState() {
@@ -1869,6 +1876,9 @@ export function Editor() {
   }
   const selRef = useRef(selectedIds);
   selRef.current = selectedIds;
+  // Tracks the most recent merge-keyed commit so bursts of same-source edits
+  // (e.g. typing into a field) coalesce into one undo step. See `commit`.
+  const lastCommitMergeRef = useRef<{ key: string; at: number } | null>(null);
   // pastRef / futureRef / docRef are provided by useDocHistory.
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
@@ -1945,8 +1955,17 @@ export function Editor() {
       return next.size === prev.size ? prev : next;
     });
   }
-  function commit(updater: (d: CircuitDoc) => CircuitDoc) {
-    pushPast(historySnapshot());
+  // Coalesce rapid same-source commits (e.g. typing into a value field) into a
+  // single undo step. The first commit of a burst pushes the pre-edit doc;
+  // subsequent commits with the same mergeKey within the window reuse that
+  // entry (skip the push) so undo rewinds the whole burst, not one keystroke.
+  function commit(updater: (d: CircuitDoc) => CircuitDoc, mergeKey?: string) {
+    const now = performance.now();
+    const last = lastCommitMergeRef.current;
+    const merge =
+      mergeKey != null && last?.key === mergeKey && now - last.at < COMMIT_MERGE_WINDOW_MS;
+    if (!merge) pushPast(historySnapshot());
+    lastCommitMergeRef.current = mergeKey != null ? { key: mergeKey, at: now } : null;
     setFuture([]);
     setDoc(updater(docRef.current));
     invalidateSimulationState();
@@ -2017,6 +2036,8 @@ export function Editor() {
   function undo() {
     const p = pastRef.current;
     if (p.length === 0) return;
+    // End any in-progress commit-merge burst so the next edit starts fresh.
+    lastCommitMergeRef.current = null;
     const prev = p[p.length - 1];
     setPast(p.slice(0, -1));
     setFuture([historySnapshot(), ...futureRef.current]);
@@ -2026,6 +2047,7 @@ export function Editor() {
   function redo() {
     const f = futureRef.current;
     if (f.length === 0) return;
+    lastCommitMergeRef.current = null;
     const next = f[0];
     setFuture(f.slice(1));
     pushPast(historySnapshot());
@@ -4542,11 +4564,13 @@ export function Editor() {
   }
 
   function updateValue(id: string, value: string) {
-    commit((d) =>
-      updateCurrentPage(d, (p) => ({
-        ...p,
-        components: p.components.map((c) => (c.id === id ? { ...c, value } : c)),
-      })),
+    commit(
+      (d) =>
+        updateCurrentPage(d, (p) => ({
+          ...p,
+          components: p.components.map((c) => (c.id === id ? { ...c, value } : c)),
+        })),
+      `value:${id}`,
     );
   }
 
@@ -4573,13 +4597,15 @@ export function Editor() {
   }
 
   function updateComponentLabel(id: string, label: string) {
-    commit((d) =>
-      updateCurrentPage(d, (p) => ({
-        ...p,
-        components: p.components.map((c) =>
-          c.id === id ? { ...c, label: label.trim() ? label : undefined } : c,
-        ),
-      })),
+    commit(
+      (d) =>
+        updateCurrentPage(d, (p) => ({
+          ...p,
+          components: p.components.map((c) =>
+            c.id === id ? { ...c, label: label.trim() ? label : undefined } : c,
+          ),
+        })),
+      `label:${id}`,
     );
   }
 
@@ -5047,15 +5073,17 @@ export function Editor() {
   }
 
   function updateParam(id: string, key: string, value: string) {
-    commit((d) =>
-      updateCurrentPage(d, (p) => ({
-        ...p,
-        components: p.components.map((c) =>
-          c.id === id
-            ? { ...c, params: { ...(c.params ?? {}), [key]: value } }
-            : c,
-        ),
-      })),
+    commit(
+      (d) =>
+        updateCurrentPage(d, (p) => ({
+          ...p,
+          components: p.components.map((c) =>
+            c.id === id
+              ? { ...c, params: { ...(c.params ?? {}), [key]: value } }
+              : c,
+          ),
+        })),
+      `param:${id}:${key}`,
     );
   }
 
@@ -5202,13 +5230,15 @@ export function Editor() {
   }
 
   function updateProbeLabel(id: string, label: string) {
-    commit((d) =>
-      updateCurrentPage(d, (p) => ({
-        ...p,
-        probes: p.probes.map((probe) =>
-          probe.id === id ? { ...probe, label: label.trim() ? label : undefined } : probe,
-        ),
-      })),
+    commit(
+      (d) =>
+        updateCurrentPage(d, (p) => ({
+          ...p,
+          probes: p.probes.map((probe) =>
+            probe.id === id ? { ...probe, label: label.trim() ? label : undefined } : probe,
+          ),
+        })),
+      `probe-label:${id}`,
     );
   }
 
