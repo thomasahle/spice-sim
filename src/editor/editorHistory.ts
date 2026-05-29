@@ -1,17 +1,10 @@
 import type { CircuitDoc } from "./model.ts";
 
-export interface HistorySnapshot {
-  doc: CircuitDoc;
-  selectedIds: string[];
-}
-
-export function makeHistorySnapshot(doc: CircuitDoc, selectedIds: Iterable<string>): HistorySnapshot {
-  return { doc, selectedIds: [...selectedIds] };
-}
-
-export function selectedIdsFromSnapshot(snapshot: HistorySnapshot): Set<string> {
-  return new Set(snapshot.selectedIds);
-}
+// A history entry is just the document. Selection is intentionally NOT part of
+// the snapshot — undo/redo restore the circuit but leave the user's current
+// selection alone (decision: undo should not yank selection back to a past
+// state). The editor prunes any now-missing ids after a restore.
+export type HistorySnapshot = CircuitDoc;
 
 export function pushBoundedHistory(
   history: HistorySnapshot[],

@@ -260,8 +260,6 @@ import {
 } from "./schematicClipboard";
 import { collectSelectedTopology } from "./selectionTopology";
 import {
-  makeHistorySnapshot,
-  selectedIdsFromSnapshot,
   type HistorySnapshot,
 } from "./editorHistory";
 import {
@@ -1928,11 +1926,24 @@ export function Editor() {
   const latestRunIdRef = useRef(0);
 
   function historySnapshot(): HistorySnapshot {
-    return makeHistorySnapshot(docRef.current, selRef.current);
+    return docRef.current;
   }
   function restoreHistorySnapshot(snapshot: HistorySnapshot) {
-    setDoc(snapshot.doc);
-    setSelectedIds(selectedIdsFromSnapshot(snapshot));
+    setDoc(snapshot);
+    // Selection is preserved across undo/redo (it does not ride with history),
+    // but drop ids that the restored doc no longer contains so we never keep a
+    // ghost selection pointing at deleted objects.
+    const restoredPage = currentPage(snapshot);
+    const liveIds = new Set<string>([
+      ...restoredPage.components.map((c) => c.id),
+      ...restoredPage.wires.map((w) => w.id),
+      ...restoredPage.probes.map((p) => p.id),
+    ]);
+    setSelectedIds((prev) => {
+      const next = new Set<string>();
+      for (const id of prev) if (liveIds.has(id)) next.add(id);
+      return next.size === prev.size ? prev : next;
+    });
   }
   function commit(updater: (d: CircuitDoc) => CircuitDoc) {
     pushPast(historySnapshot());
