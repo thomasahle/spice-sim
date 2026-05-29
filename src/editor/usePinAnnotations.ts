@@ -44,30 +44,29 @@ export function usePinAnnotations({
   isDragging: boolean;
   canvasValueFontSize: number;
 }): PinAnnotationLayouts {
+  // Only buildNetlist is genuinely expensive — it walks every page to resolve
+  // the whole netlist. Freeze just this one while a drag is in flight so we
+  // don't rebuild it per pointer-move frame. (The cost: node-name hover text
+  // on adjacent wires reads the pre-drag mapping until the drag commits.)
   const pinAnnotations = useStableDuringDrag(() => buildNetlist(doc), [doc], isDragging);
-  const wireJunctionDots = useStableDuringDrag(
-    () => buildWireJunctionDots(page),
-    [page],
-    isDragging,
-  );
-  const componentValueLabelOffsets = useStableDuringDrag(
+  // The layout derivations below are cheap single-page traversals, so they run
+  // live during a drag — junction dots track the moving wire, value labels and
+  // net-label placement reflow as the component moves, instead of snapping into
+  // place only on drop.
+  const wireJunctionDots = useMemo(() => buildWireJunctionDots(page), [page]);
+  const componentValueLabelOffsets = useMemo(
     () => valueLabelOffsets(page, (component) => canvasValueLabel(component.kind, component.value) || null),
     [page],
-    isDragging,
   );
-  const netLabelLayoutMap = useStableDuringDrag(
-    () => {
-      const occupied: { x1: number; y1: number; x2: number; y2: number }[] = [];
-      for (const c of page.components) {
-        if (c.kind === "LABEL") continue;
-        const text = canvasValueLabel(c.kind, c.value);
-        const offset = componentValueLabelOffsets.get(c.id);
-        if (text && offset) occupied.push(valueLabelBounds(c, offset, text, canvasValueFontSize));
-      }
-      return netLabelLayouts(page, occupied);
-    },
-    [canvasValueFontSize, componentValueLabelOffsets, page],
-    isDragging,
-  );
+  const netLabelLayoutMap = useMemo(() => {
+    const occupied: { x1: number; y1: number; x2: number; y2: number }[] = [];
+    for (const c of page.components) {
+      if (c.kind === "LABEL") continue;
+      const text = canvasValueLabel(c.kind, c.value);
+      const offset = componentValueLabelOffsets.get(c.id);
+      if (text && offset) occupied.push(valueLabelBounds(c, offset, text, canvasValueFontSize));
+    }
+    return netLabelLayouts(page, occupied);
+  }, [canvasValueFontSize, componentValueLabelOffsets, page]);
   return { pinAnnotations, wireJunctionDots, componentValueLabelOffsets, netLabelLayoutMap };
 }
