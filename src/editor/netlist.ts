@@ -202,9 +202,17 @@ interface PageOpts {
   modelTypesByName: Map<string, Set<ModelDeviceType>>;
   /** Global refdes counters, namespaced for the root only. Subckts use local counters. */
   globalCounters?: Record<string, number>;
+  /** Optional canonical-net-key → assigned-name map for stable auto node names
+   *  across edits. Mutated in place: a net keeps the name it was last given
+   *  (keyed by device-pin membership), so adding an unrelated component no
+   *  longer renumbers existing nets. Omitted → plain n1, n2, … each build. */
+  stableNames?: Map<string, string>;
 }
 
-export function buildNetlist(doc: CircuitDoc): NetlistResult {
+export function buildNetlist(
+  doc: CircuitDoc,
+  stableNames?: Map<string, string>,
+): NetlistResult {
   const usedModels = new Set<ComponentKind>();
   const modelTypesByName = buildModelTypeIndex(doc.directives);
   const globalCounters: Record<string, number> = {};
@@ -213,13 +221,15 @@ export function buildNetlist(doc: CircuitDoc): NetlistResult {
   const floatingPins: FloatingPinDiagnostic[] = [];
   const modelDiagnostics: ModelDiagnostic[] = [];
 
-  // Root page (pages[0]) — main netlist
+  // Root page (pages[0]) — main netlist. Stable naming applies to the root's
+  // auto nodes only; subcircuit-internal node names are scoped to their .subckt.
   const root = doc.pages[0];
   const rootBuild = buildPageNetlist(root, {
     isSubckt: false,
     usedModels,
     modelTypesByName,
     globalCounters,
+    stableNames,
   });
   warnings.push(...rootBuild.warnings);
   floatingPins.push(...rootBuild.floatingPins);
@@ -580,10 +590,57 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
     }
     rootToName.set(root, finalName);
   }
+  // Assign names to the remaining (unlabeled) device nets. Default: a simple
+  // n1, n2, … counter in document order. With a `stableNames` hint, each net
+  // keeps the name it was given last time — keyed by its device-pin membership
+  // (component id + pin index), which is independent of document order and
+  // geometry — so adding/removing an unrelated component no longer renumbers
+  // existing nets (which would silently retarget `.measure v(nX)`).
+  const stableNames = opts.stableNames;
+  // Canonical, order-independent identity per net: its sorted set of real
+  // device pins (labels / ground / notes are annotations, not identity).
+  const netMembers = new Map<string, string[]>();
+  for (const cp of compPinKeys) {
+    if (cp.kind === "LABEL" || cp.kind === "GND" || cp.kind === "NOTE") continue;
+    const r = dsu.find(cp.posKey);
+    const list = netMembers.get(r);
+    if (list) list.push(`${cp.compId}:${cp.pinIdx}`);
+    else netMembers.set(r, [`${cp.compId}:${cp.pinIdx}`]);
+  }
+  const canonicalNetKey = (root: string): string =>
+    (netMembers.get(root) ?? []).slice().sort().join("|");
+
+  const taken = new Set(rootToName.values());
+  // Pass 1: reuse previously-assigned names for nets we've seen before.
+  if (stableNames) {
+    for (const cp of compPinKeys) {
+      const r = dsu.find(cp.posKey);
+      if (rootToName.has(r)) continue;
+      const ckey = canonicalNetKey(r);
+      if (!ckey) continue;
+      const prior = stableNames.get(ckey);
+      if (prior && !taken.has(prior)) {
+        rootToName.set(r, prior);
+        taken.add(prior);
+      }
+    }
+  }
+  // Pass 2: assign fresh n# names to the rest, skipping any already taken.
+  // With no `stableNames`, pass 1 is skipped and this reproduces the old
+  // sequential numbering exactly (n1, n2, … in document order).
   let nodeCounter = 1;
   for (const cp of compPinKeys) {
     const r = dsu.find(cp.posKey);
-    if (!rootToName.has(r)) rootToName.set(r, `n${nodeCounter++}`);
+    if (rootToName.has(r)) continue;
+    while (taken.has(`n${nodeCounter}`)) nodeCounter++;
+    const name = `n${nodeCounter}`;
+    nodeCounter++;
+    rootToName.set(r, name);
+    taken.add(name);
+    if (stableNames) {
+      const ckey = canonicalNetKey(r);
+      if (ckey) stableNames.set(ckey, name);
+    }
   }
 
   const pinToNode = new Map<string, string>();
