@@ -731,12 +731,13 @@ test("liveFlowStatus explains unavailable and active states", () => {
       sampledWireCount: 0,
     });
     assert.equal(status.label, "Needs transient");
-    assert.equal(status.tone, "warning");
+    assert.equal(status.show, false);
+    assert.equal(status.tone, "muted");
     assert.match(status.title, /Switch analysis to transient/);
   }
 
-  assert.equal(
-    liveFlowStatus({
+  {
+    const status = liveFlowStatus({
       enabled: true,
       hasResult: true,
       isTransient: false,
@@ -744,9 +745,11 @@ test("liveFlowStatus explains unavailable and active states", () => {
       floatingPinCount: 0,
       activeWireCount: 0,
       sampledWireCount: 0,
-    }).label,
-    "Needs transient",
-  );
+    });
+    assert.equal(status.label, "Needs transient");
+    assert.equal(status.show, false);
+    assert.equal(status.tone, "muted");
+  }
 
   assert.equal(
     liveFlowStatus({

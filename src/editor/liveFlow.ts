@@ -708,10 +708,10 @@ export function liveFlowStatus(input: LiveFlowStatusInput): LiveFlowStatus {
   if (input.hasResult === false) {
     if (input.analysisKind && input.analysisKind !== "tran") {
       return {
-        show: true,
+        show: false,
         label: "Needs transient",
         title: "Switch analysis to transient, then run the simulation to animate wire current flow.",
-        tone: "warning",
+        tone: "muted",
         source: "none",
       };
     }
@@ -725,10 +725,10 @@ export function liveFlowStatus(input: LiveFlowStatusInput): LiveFlowStatus {
   }
   if (!input.isTransient) {
     return {
-      show: true,
+      show: false,
       label: "Needs transient",
       title: "Live Flow needs a transient simulation result.",
-      tone: "warning",
+      tone: "muted",
       source: "none",
     };
   }
