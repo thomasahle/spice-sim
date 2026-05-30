@@ -48,6 +48,26 @@ function rcStepDoc() {
   };
 }
 
+function operatingPointDoc() {
+  return {
+    pages: [
+      {
+        id: "p-live-flow-op",
+        name: "main",
+        description: "Live Flow non-transient HUD smoke",
+        components: [
+          { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" },
+        ],
+        wires: [],
+        probes: [],
+      },
+    ],
+    activePageId: "p-live-flow-op",
+    directives: "",
+    analysis: { kind: "op" },
+  };
+}
+
 function rlStepDoc() {
   return {
     pages: [
@@ -820,6 +840,42 @@ async function hoverWireAndReadouts(page, wireId) {
     readoutText: [...document.querySelectorAll(".live-flow-readout")].map((el) => el.textContent?.trim() ?? ""),
   }));
 }
+
+test("non-transient schematics do not show a Live Flow warning chip on the canvas", async () => {
+  const { browser, page } = await launchApp({ width: 1300, height: 850 });
+  try {
+    await page.goto(docUrl(operatingPointDoc()), { waitUntil: "networkidle2" });
+    await page.waitForSelector(".canvas-hud", { timeout: 5000 });
+
+    const state = await page.evaluate(() => ({
+      bodyHasRemovedWarning: (document.body.textContent ?? "").includes("Live Flow: Needs transient"),
+      canvasHudText: document.querySelector(".canvas-hud")?.textContent ?? "",
+      canvasHudStatusCount: document.querySelectorAll(".canvas-hud .live-flow-status").length,
+      appStatusCount: document.querySelectorAll(".live-flow-status").length,
+    }));
+
+    assert.equal(
+      state.bodyHasRemovedWarning,
+      false,
+      `removed warning label should not appear anywhere in the app chrome: ${JSON.stringify(state, null, 2)}`,
+    );
+    assert.equal(
+      state.canvasHudStatusCount,
+      0,
+      `canvas HUD should not reserve a Live Flow status chip for non-transient schematics: ${JSON.stringify(state, null, 2)}`,
+    );
+    assert.equal(
+      state.appStatusCount,
+      0,
+      `non-ngspice Live Flow warnings should not reserve a visible status chip: ${JSON.stringify(state, null, 2)}`,
+    );
+    assert.match(state.canvasHudText, /Grid:/);
+    assert.match(state.canvasHudText, /Snap:/);
+    assert.match(state.canvasHudText, /Zoom:/);
+  } finally {
+    await browser.close();
+  }
+});
 
 test("Live Flow animates only ngspice current-vector samples after a real transient run", async () => {
   const { browser, page } = await launchApp({ width: 1500, height: 950 });

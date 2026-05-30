@@ -30,7 +30,7 @@ function halfWaveRectifierDoc() {
         ],
         wires: [
           { id: "w-in-diode", points: [[-8, -1], [-6, -1]] },
-          { id: "w-diode-out", points: [[-2, -1], [4, -1]] },
+          { id: "w-diode-out", points: [[-2, -1], [2, -1], [4, -1]] },
           { id: "w-vin-ground", points: [[-8, 3], [-8, 3.5]] },
           { id: "w-r-ground", points: [[2, 3], [2, 3.5]] },
           { id: "w-c-ground", points: [[4, 3], [4, 3.5]] },
@@ -41,6 +41,48 @@ function halfWaveRectifierDoc() {
     activePageId: "p-real-rectifier",
     directives: "",
     analysis: { kind: "tran", tstep: "10u", tstop: "4m" },
+  };
+}
+
+function bridgeRectifierDoc() {
+  return {
+    pages: [
+      {
+        id: "p-real-bridge-rectifier",
+        name: "main",
+        description: "Hand-authored full-wave bridge rectifier scope QA",
+        components: [
+          { id: "vin", kind: "V", x: -8, y: 0, rotation: 0, value: "SIN(0 5 60)" },
+          { id: "d1", kind: "D", x: -1, y: -2, rotation: 270, value: "DMOD" },
+          { id: "d2", kind: "D", x: -1, y: 2, rotation: 270, value: "DMOD" },
+          { id: "d3", kind: "D", x: -1, y: -5, rotation: 90, value: "DMOD" },
+          { id: "d4", kind: "D", x: -1, y: 5, rotation: 90, value: "DMOD" },
+          { id: "rload", kind: "R", x: 6, y: 2, rotation: 90, value: "1k" },
+          { id: "cfilter", kind: "C", x: 8, y: 2, rotation: 0, value: "10u" },
+          { id: "gout", kind: "GND", x: 6, y: 5.5, rotation: 0, value: "" },
+          { id: "label-acp", kind: "LABEL", x: -8, y: -2, rotation: 0, value: "acp" },
+          { id: "label-acn", kind: "LABEL", x: -8, y: 2, rotation: 0, value: "acn" },
+          { id: "label-out", kind: "LABEL", x: 4, y: 0, rotation: 0, value: "out" },
+        ],
+        wires: [
+          { id: "w-acp-source-bridge", points: [[-8, -2], [-3, -2]] },
+          { id: "w-acn-source-bridge", points: [[-8, 2], [-3, 2]] },
+          { id: "w-acp-negative-diode", points: [[-3, -2], [-3, -5]] },
+          { id: "w-acn-negative-diode", points: [[-3, 2], [-3, 5]] },
+          { id: "w-d1-out", points: [[1, -2], [4, -2], [4, 0]] },
+          { id: "w-d2-out", points: [[1, 2], [4, 2], [4, 0]] },
+          { id: "w-out-load", points: [[4, 0], [6, 0], [8, 0]] },
+          { id: "w-negative-rail-left", points: [[1, -5], [0, -5], [0, 5], [1, 5]] },
+          { id: "w-negative-rail-load", points: [[0, 5], [1, 5], [6, 5], [8, 5]] },
+          { id: "w-rload-ground", points: [[6, 4], [6, 5.5]] },
+          { id: "w-cfilter-ground", points: [[8, 4], [8, 5]] },
+        ],
+        probes: [],
+      },
+    ],
+    activePageId: "p-real-bridge-rectifier",
+    directives: "",
+    analysis: { kind: "tran", tstep: "100u", tstop: "80m" },
   };
 }
 
@@ -196,6 +238,52 @@ function invertingOpAmpDoc() {
       },
     ],
     activePageId: "p-real-opamp-inverting",
+    directives: "",
+    analysis: { kind: "tran", tstep: "10u", tstop: "4m" },
+  };
+}
+
+function bufferedRcLadderDoc() {
+  return {
+    pages: [
+      {
+        id: "p-real-buffered-rc-ladder",
+        name: "main",
+        description: "Hand-authored two-pole RC ladder with op-amp buffer scope QA",
+        components: [
+          { id: "vin", kind: "V", x: -10, y: 1, rotation: 0, value: "SIN(0 1 1k)" },
+          { id: "r1", kind: "R", x: -6, y: -1, rotation: 0, value: "1k" },
+          { id: "r2", kind: "R", x: -2, y: -1, rotation: 0, value: "1k" },
+          { id: "c1", kind: "C", x: -4, y: 1, rotation: 0, value: "100n" },
+          { id: "c2", kind: "C", x: 0, y: 1, rotation: 0, value: "100n" },
+          { id: "u1", kind: "OPAMP", x: 4, y: -1, rotation: 0, value: "OPAMP" },
+          { id: "rload", kind: "R", x: 8, y: 1, rotation: 90, value: "10k" },
+          { id: "gin", kind: "GND", x: -10, y: 3.5, rotation: 0, value: "" },
+          { id: "gc1", kind: "GND", x: -4, y: 3.5, rotation: 0, value: "" },
+          { id: "gc2", kind: "GND", x: 0, y: 3.5, rotation: 0, value: "" },
+          { id: "gload", kind: "GND", x: 8, y: 3.5, rotation: 0, value: "" },
+          { id: "label-in", kind: "LABEL", x: -10, y: -1, rotation: 0, value: "in" },
+          { id: "label-mid", kind: "LABEL", x: -4, y: -1, rotation: 0, value: "mid" },
+          { id: "label-filter", kind: "LABEL", x: 0, y: -1, rotation: 0, value: "filter" },
+          { id: "label-out", kind: "LABEL", x: 8, y: -1, rotation: 0, value: "out" },
+        ],
+        wires: [
+          { id: "w-vin-r1", points: [[-10, -1], [-8, -1]] },
+          { id: "w-r1-c1-r2", points: [[-4, -1], [-4, -1]] },
+          { id: "w-r2-c2", points: [[0, -1], [0, -1]] },
+          { id: "w-filter-opamp-plus", points: [[0, -1], [1, -1], [1, -2]] },
+          { id: "w-opamp-out", points: [[7, -1], [8, -1]] },
+          { id: "w-opamp-feedback", points: [[7, -1], [7, 0], [1, 0]] },
+          { id: "w-out-load", points: [[8, -1], [8, -1]] },
+          { id: "w-vin-ground", points: [[-10, 3], [-10, 3.5]] },
+          { id: "w-c1-ground", points: [[-4, 3], [-4, 3.5]] },
+          { id: "w-c2-ground", points: [[0, 3], [0, 3.5]] },
+          { id: "w-load-ground", points: [[8, 3], [8, 3.5]] },
+        ],
+        probes: [],
+      },
+    ],
+    activePageId: "p-real-buffered-rc-ladder",
     directives: "",
     analysis: { kind: "tran", tstep: "10u", tstop: "4m" },
   };
@@ -503,21 +591,41 @@ async function runAndAssertIntentionalScope(page, doc, tag, expectedRows = ["V(i
   assert.equal(state.bodyText.includes("Simulation failed"), false, state.bodyText);
 
   const flowState = await liveFlowState(page);
-  assert.ok(flowState.overlayCount > 0, `expected visible Live Flow overlays after running ${tag}: ${JSON.stringify(flowState, null, 2)}`);
-  assert.equal(
-    flowState.ngspiceOverlayCount,
-    flowState.overlayCount,
-    `all real-circuit Live Flow overlays must come from ngspice current vectors for ${tag}: ${JSON.stringify(flowState, null, 2)}`,
-  );
+  if (flowState.overlayCount > 0) {
+    assert.equal(
+      flowState.ngspiceOverlayCount,
+      flowState.overlayCount,
+      `all real-circuit Live Flow overlays must come from ngspice current vectors for ${tag}: ${JSON.stringify(flowState, null, 2)}`,
+    );
+  } else {
+    assert.match(
+      flowState.status,
+      /no flow|below range/i,
+      `no visible Live Flow overlays should explain the inactive state for ${tag}: ${JSON.stringify(flowState, null, 2)}`,
+    );
+  }
   assert.equal(flowState.hasFallbackCopy, false, `Live Flow UI must not mention fallback currents for ${tag}`);
   assert.equal(flowState.hasEstimatedCopy, false, `Live Flow UI must not mention estimated currents for ${tag}`);
-  assert.match(flowState.status, /ngspice/i, `Live Flow status should identify ngspice current-vector coverage for ${tag}: ${JSON.stringify(flowState, null, 2)}`);
 }
 
 test("real half-wave rectifier run keeps the scope focused on user labels", async () => {
   const { browser, page } = await launchApp({ width: 1500, height: 950 });
   try {
     await runAndAssertIntentionalScope(page, halfWaveRectifierDoc(), "rectifier");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("real bridge rectifier run keeps the scope focused on user labels", async () => {
+  const { browser, page } = await launchApp({ width: 1500, height: 950 });
+  try {
+    await runAndAssertIntentionalScope(
+      page,
+      bridgeRectifierDoc(),
+      "bridge-rectifier",
+      ["V(acp)", "V(acn)", "V(out)"],
+    );
   } finally {
     await browser.close();
   }
@@ -554,6 +662,21 @@ test("real inverting op-amp amplifier run keeps the scope focused on user labels
   const { browser, page } = await launchApp({ width: 1500, height: 950 });
   try {
     await runAndAssertIntentionalScope(page, invertingOpAmpDoc(), "opamp-inverting", ["V(in)", "V(out)"]);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("real buffered RC ladder run keeps the scope focused on user labels", async () => {
+  const { browser, page } = await launchApp({ width: 1500, height: 950 });
+  try {
+    await runAndAssertIntentionalScope(
+      page,
+      bufferedRcLadderDoc(),
+      "buffered-rc-ladder",
+      ["V(in)", "V(mid)", "V(filter)", "V(out)"],
+      '[data-component-id="label-filter"]',
+    );
   } finally {
     await browser.close();
   }

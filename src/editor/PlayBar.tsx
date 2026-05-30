@@ -67,6 +67,7 @@ export function PlayBar({
   }, [playing, speed, tmax, tmin, setTime]);
 
   const timeLabel = formatTime(time);
+  const showLiveFlowStatus = liveFlowStatus.show && liveFlowStatus.source === "ngspice";
 
   return (
     <div
@@ -136,7 +137,7 @@ export function PlayBar({
         </Switch.Root>
         <span className="live-flow-toggle-label">Live Flow</span>
       </div>
-      {liveFlowStatus.show && (
+      {showLiveFlowStatus && (
         <span
           className={`live-flow-status ${liveFlowStatus.tone} ${liveFlowStatus.source}`}
           title={liveFlowStatus.title}

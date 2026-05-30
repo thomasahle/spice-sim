@@ -1,9 +1,8 @@
 // Canvas bottom-right HUD: grid / snap / auto-run toggles, zoom readout,
-// fit-to-content, and the Live Flow status badge. Purely presentational —
-// state and behaviors are passed in from Editor.tsx.
+// and fit-to-content. Purely presentational — state and behaviors are
+// passed in from Editor.tsx.
 
 import type { describeAutoRunStatus } from "./autoRunStatus.ts";
-import type { liveFlowStatus } from "./liveFlow.ts";
 
 interface EditorCanvasHUDProps {
   gridVisible: boolean;
@@ -15,8 +14,6 @@ interface EditorCanvasHUDProps {
   autoRunUi: ReturnType<typeof describeAutoRunStatus>;
   zoom: number;
   onFit: () => void;
-  isTransient: boolean;
-  liveFlowUiStatus: ReturnType<typeof liveFlowStatus>;
 }
 
 export function EditorCanvasHUD({
@@ -29,8 +26,6 @@ export function EditorCanvasHUD({
   autoRunUi,
   zoom,
   onFit,
-  isTransient,
-  liveFlowUiStatus,
 }: EditorCanvasHUDProps) {
   return (
     <div className="canvas-hud">
@@ -73,20 +68,6 @@ export function EditorCanvasHUD({
       >
         Fit
       </button>
-      {!isTransient && liveFlowUiStatus.show && (
-        <span
-          className={`live-flow-status ${liveFlowUiStatus.tone} ${liveFlowUiStatus.source}`}
-          title={liveFlowUiStatus.title}
-          role="status"
-          aria-live="polite"
-          aria-label={`Live Flow: ${liveFlowUiStatus.label}. ${liveFlowUiStatus.title}`}
-          data-live-flow-source={liveFlowUiStatus.source}
-          data-live-flow-tone={liveFlowUiStatus.tone}
-        >
-          <span className="live-flow-source-dot" aria-hidden="true" />
-          <span className="live-flow-status-label">Live Flow: {liveFlowUiStatus.label}</span>
-        </span>
-      )}
     </div>
   );
 }

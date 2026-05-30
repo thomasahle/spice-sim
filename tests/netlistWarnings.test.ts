@@ -71,6 +71,46 @@ test("subcircuit instances can export more than eight pins", () => {
   assert.match(netlist, /@VLFX1P12\[i\]/);
 });
 
+test("connected subcircuit pins are not flagged as single-terminal floating nets", () => {
+  const doc: CircuitDoc = {
+    activePageId: "main",
+    directives: "",
+    analysis: { kind: "op" },
+    pages: [
+      {
+        id: "main",
+        name: "main",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "x1", kind: "SUBX", x: 0, y: 0, rotation: 0, value: "rc_stage", params: { npins: "2", w: "4", h: "2.5", pinSides: "LR" } },
+          { id: "label-in", kind: "LABEL", x: -2.6, y: 0, rotation: 0, value: "in" },
+          { id: "label-out", kind: "LABEL", x: 2.6, y: 0, rotation: 0, value: "out" },
+        ],
+      },
+      {
+        id: "stage",
+        name: "rc_stage",
+        wires: [],
+        probes: [],
+        components: [
+          { id: "port-in", kind: "LABEL", x: -2, y: 0, rotation: 0, value: "in", params: { port: "1", portOrder: "1" } },
+          { id: "port-out", kind: "LABEL", x: 2, y: 0, rotation: 0, value: "out", params: { port: "1", portOrder: "2" } },
+          { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" },
+        ],
+      },
+    ],
+  };
+
+  const result = buildNetlist(doc);
+  assert.deepEqual(result.floatingPins, []);
+  assert.equal(
+    result.warnings.some((warning) => /only one terminal/.test(warning)),
+    false,
+    `connected subcircuit pins should not suppress Live Flow: ${JSON.stringify(result.warnings)}`,
+  );
+});
+
 test("capacitors can emit initial conditions", () => {
   const doc: CircuitDoc = {
     activePageId: "main",

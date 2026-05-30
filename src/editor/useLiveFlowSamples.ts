@@ -1,9 +1,9 @@
 // Live-flow current sampling at the current playback time: per-wire signed
 // + normalized currents (drives the on-canvas flow arrows), per-component
 // currents (drives the source-symbol glyphs), and the Live Flow UI status
-// (the badge in the canvas HUD). Pulled out of Editor.tsx as one cohesive
-// hook; the three memos share heavy ngspice trace lookups and depend on
-// the same handful of inputs.
+// (the PlayBar badge). Pulled out of Editor.tsx as one cohesive hook; the
+// three memos share heavy ngspice trace lookups and depend on the same
+// handful of inputs.
 
 import { useMemo } from "react";
 import { findTimeIndex } from "./simSampleTime.ts";
@@ -31,6 +31,7 @@ type PinAnnotations = ReturnType<typeof buildNetlist>;
 
 interface UseLiveFlowSamplesInput {
   liveFlow: boolean;
+  animateLiveFlow: boolean;
   simResult: SimResult | null;
   isTransient: boolean;
   playTime: number;
@@ -43,6 +44,7 @@ interface UseLiveFlowSamplesInput {
 
 export function useLiveFlowSamples({
   liveFlow,
+  animateLiveFlow,
   simResult,
   isTransient,
   playTime,
@@ -58,7 +60,7 @@ export function useLiveFlowSamples({
 } {
   const wireFlowSamples = useMemo(() => {
     const out = new Map<string, { signedCurrent: number; normalizedCurrent: number; source: LiveFlowSampleSource }>();
-    if (!liveFlow || !simResult || !isTransient) return out;
+    if (!animateLiveFlow || !simResult || !isTransient) return out;
     const scale = simResult.vectors.find((v) => v.is_scale);
     if (!scale) return out;
     const idx = findTimeIndex(scale.data, playTime);
@@ -154,11 +156,11 @@ export function useLiveFlowSamples({
       raw.set(w.id, { current: sample.signedCurrent, source: sample.source });
     }
     return normalizeLiveFlowSamples(raw);
-  }, [liveFlow, simResult, playTime, page.components, page.wires, pinAnnotations, isTransient]);
+  }, [animateLiveFlow, simResult, playTime, page.components, page.wires, pinAnnotations, isTransient]);
 
   const componentFlowSamples = useMemo(() => {
     const raw = new Map<string, { current: number; source: LiveFlowSampleSource }>();
-    if (!liveFlow || !simResult || !isTransient) return new Map<string, LiveFlowSample>();
+    if (!animateLiveFlow || !simResult || !isTransient) return new Map<string, LiveFlowSample>();
     const scale = simResult.vectors.find((v) => v.is_scale);
     if (!scale) return new Map<string, LiveFlowSample>();
     const idx = findTimeIndex(scale.data, playTime);
@@ -246,7 +248,7 @@ export function useLiveFlowSamples({
       raw,
       Array.from(wireFlowSamples.values(), (sample) => sample.signedCurrent),
     );
-  }, [liveFlow, simResult, playTime, page.components, page.wires, pinAnnotations.refdes, isTransient, wireFlowSamples]);
+  }, [animateLiveFlow, simResult, playTime, page.components, page.wires, pinAnnotations.refdes, isTransient, wireFlowSamples]);
 
   const liveFlowUiStatus = useMemo(() => {
     let activeWireCount = 0;

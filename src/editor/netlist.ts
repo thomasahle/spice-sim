@@ -898,7 +898,12 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
     // potential, so ngspice solves it fine. Common for sense/test points
     // (e.g. a source whose output is only read by a B-source expression).
     // Flagging those is a false positive that also suppresses Live Flow.
-    if (cp.kind === "V" || cp.kind === "B") continue;
+    //
+    // A connected subcircuit pin is also allowed to be the only root-level
+    // terminal on a net: the other electrically meaningful terminals may be
+    // inside the referenced schematic page. Bare/unconnected SUBX pins are
+    // still caught by the per-pin check above before labels can mask them.
+    if (cp.kind === "V" || cp.kind === "B" || cp.kind === "SUBX") continue;
     const ref = refdes.get(cp.compId) ?? cp.compId;
     const label = pinLabelForKind(cp.kind, cp.pinIdx);
     const displayPin = label ? `${label} pin` : `pin ${cp.pinIdx + 1}`;

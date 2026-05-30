@@ -6091,6 +6091,7 @@ export function Editor() {
   // visual speed, opacity, and direction.
   const { wireFlowSamples, componentFlowSamples, liveFlowUiStatus } = useLiveFlowSamples({
     liveFlow,
+    animateLiveFlow: liveActive,
     simResult,
     isTransient,
     playTime,
@@ -7855,7 +7856,7 @@ export function Editor() {
                   selected={sel}
                   hovered={hovered}
                   floating={floating}
-                  liveActive={liveFlow}
+                  liveActive={liveActive}
                   flowSample={componentFlowSamples.get(c.id)}
                   tool={tool}
                   activeConnectionGesture={activeConnectionGesture}
@@ -8064,8 +8065,6 @@ export function Editor() {
           autoRunUi={autoRunUi}
           zoom={zoom}
           onFit={fitToContent}
-          isTransient={isTransient}
-          liveFlowUiStatus={liveFlowUiStatus}
         />
         </div>
 
