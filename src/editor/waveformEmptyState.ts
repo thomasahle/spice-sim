@@ -1,4 +1,5 @@
 import type { SimVector } from "../sim/api";
+import { stripRunPrefix } from "./traceNames.ts";
 
 export interface WaveformEmptyState {
   title: string;
@@ -53,9 +54,9 @@ export function waveformTraceListEmptyMessage(
     return "No traces returned. Add a probe or run an analysis that produces node vectors.";
   }
   if (!showInternal && userTraceCount === 0) {
-    return "Only internal generated vectors are available. Turn on Internal to inspect them.";
+    return "Only internal generated vectors are available. Open Debug traces to inspect them.";
   }
-  return "No visible traces. Use Show all to restore the plot.";
+  return "No visible traces. Use Reset to restore visible traces.";
 }
 
 export interface WaveformTraceBuckets<T> {
@@ -80,8 +81,16 @@ export function waveformTraceBuckets<T extends Pick<SimVector, "name" | "is_scal
 }
 
 export function isInternalTraceName(name: string): boolean {
-  const n = name.toLowerCase();
-  return n.startsWith("@") || n.includes(".") || /^x\d+\./.test(n) || /^e\.x\d+\./.test(n);
+  const n = stripRunPrefix(name.toLowerCase());
+  const voltageMatch = /^v\((.*)\)$/.exec(n);
+  const nodeName = voltageMatch?.[1] ?? n;
+  return (
+    n.startsWith("@") ||
+    n.includes(".") ||
+    /^x\d+\./.test(n) ||
+    /^e\.x\d+\./.test(n) ||
+    /^n\d+$/.test(nodeName)
+  );
 }
 
 function isOperatingPointPlot(plot: string): boolean {

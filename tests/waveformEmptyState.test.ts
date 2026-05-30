@@ -40,14 +40,14 @@ test("trace list empty state distinguishes hidden internal traces", () => {
       { name: "time", is_scale: true },
       { name: "@m1[id]", is_scale: false },
     ], false),
-    "Only internal generated vectors are available. Turn on Internal to inspect them.",
+    "Only internal generated vectors are available. Open Debug traces to inspect them.",
   );
   assert.equal(
     waveformTraceListEmptyMessage([
       { name: "time", is_scale: true },
       { name: "v(out)", is_scale: false },
     ], false),
-    "No visible traces. Use Show all to restore the plot.",
+    "No visible traces. Use Reset to restore visible traces.",
   );
 });
 
@@ -55,17 +55,22 @@ test("trace buckets hide internal traces until the Internal toggle is enabled", 
   const vectors = [
     { name: "time", is_scale: true },
     { name: "v(out)", is_scale: false },
+    { name: "v(n1)", is_scale: false },
+    { name: "tran2.v(n2)", is_scale: false },
+    { name: "tran2.v(step_out)", is_scale: false },
+    { name: "tran2.i(@r1[i])", is_scale: false },
     { name: "@m1[id]", is_scale: false },
+    { name: "tran2.@m1[id]", is_scale: false },
     { name: "x1.u", is_scale: false },
   ];
 
   assert.deepEqual(
     waveformTraceBuckets(vectors, false).visibleTraces.map((trace) => trace.name),
-    ["v(out)"],
+    ["v(out)", "tran2.v(step_out)", "tran2.i(@r1[i])"],
   );
   assert.deepEqual(
     waveformTraceBuckets(vectors, true).visibleTraces.map((trace) => trace.name),
-    ["v(out)", "@m1[id]", "x1.u"],
+    ["v(out)", "v(n1)", "tran2.v(n2)", "tran2.v(step_out)", "tran2.i(@r1[i])", "@m1[id]", "tran2.@m1[id]", "x1.u"],
   );
-  assert.equal(waveformTraceBuckets(vectors, false).hiddenInternalCount, 2);
+  assert.equal(waveformTraceBuckets(vectors, false).hiddenInternalCount, 5);
 });

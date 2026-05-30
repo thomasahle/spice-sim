@@ -30,7 +30,6 @@ const NET_LABEL_STEM = 0.42;
 const NET_LABEL_LONG_STEM = 1.35;
 const NET_LABEL_CHIP_H = 0.88;
 const NET_LABEL_SCRIPT_CHIP_H = 1.6;
-const NET_LABEL_TEXT_BASELINE = 0.67;
 
 export function valueLabelOffset(
   component: CircuitComponent,
@@ -59,8 +58,23 @@ export function valueLabelBounds(
   component: CircuitComponent,
   offset: LabelOffset,
   text: string,
+  renderedFontSize?: number,
 ): Bounds {
-  return labelBounds(component, offset, text);
+  return labelBounds(component, offset, text, renderedFontSize);
+}
+
+export function componentUserLabelBounds(component: CircuitComponent, label: string): Bounds {
+  const visual = componentVisualBoundsFor(component, 0.08);
+  const width = Math.max(1.6, Math.min(5.8, estimateInlineMathTextWidth(label || "label") * 0.38 + 0.72));
+  const height = 0.7;
+  const centerX = (visual.x1 + visual.x2) / 2;
+  const y1 = visual.y1 - height - 0.22;
+  return {
+    x1: centerX - width / 2,
+    y1,
+    x2: centerX + width / 2,
+    y2: y1 + height,
+  };
 }
 
 export function netLabelLayout(
@@ -234,6 +248,10 @@ function twoTerminalPinsAreVertical(c: CircuitComponent): boolean {
 
 function labelOverlapScore(component: CircuitComponent, page: SchematicPage, bounds: Bounds): number {
   let score = overlapArea(bounds, componentVisualBoundsFor(component)) * selfOverlapWeight(component);
+  const componentLabel = component.label?.trim();
+  if (componentLabel) {
+    score += overlapArea(bounds, componentUserLabelBounds(component, componentLabel)) * 220;
+  }
   if (component.kind === "V" || component.kind === "I") {
     score += overlapArea(bounds, componentVisualBoundsFor(component, 0.12)) * 120;
   }
@@ -248,6 +266,10 @@ function labelOverlapScore(component: CircuitComponent, page: SchematicPage, bou
     const area = overlapArea(bounds, componentObstacleBounds(other));
     score += area * 30;
     if (!componentUsesCompactLabelModel(component) && area > 0.08) score += 95;
+    const otherLabel = other.label?.trim();
+    if (otherLabel) {
+      score += overlapArea(bounds, componentUserLabelBounds(other, otherLabel)) * 80;
+    }
   }
   for (const wire of page.wires) {
     if (!wireIntersectsRect(wire.points, bounds)) continue;
@@ -320,13 +342,17 @@ function makeNetLabelLayout(
     chipW,
     chipH,
     textX: chipX + chipW / 2,
-    textY: chipY + NET_LABEL_TEXT_BASELINE,
+    textY: chipY + chipH / 2,
     bounds: { x1: chipX, y1: chipY, x2: chipX + chipW, y2: chipY + chipH },
   };
 }
 
 function netLabelWidth(text: string): number {
-  return Math.max(1.55, estimateInlineMathTextWidth(text) * 0.6 + 0.72);
+  // KaTeX text-mode labels such as "bias+" render wider than the light
+  // source-estimate used for normal value labels. Give net chips enough
+  // horizontal room so the rendered foreignObject never visually escapes the
+  // chip when centered.
+  return Math.max(1.8, estimateInlineMathTextWidth(text) * 0.82 + 1.05);
 }
 
 function netLabelHeight(text: string): number {
@@ -341,7 +367,10 @@ function netLabelOverlapScore(
   let score = 0;
   for (const other of page.components) {
     if (other.id === component.id) continue;
-    score += overlapArea(layout.bounds, componentObstacleBounds(other)) * 70;
+    const obstacle = componentObstacleBounds(other);
+    if (rectsIntersect(layout.bounds, obstacle)) {
+      score += 90 + overlapArea(layout.bounds, obstacle) * 70;
+    }
   }
   for (const wire of page.wires) {
     if (wireIntersectsRect(wire.points, layout.bounds)) score += 120;
@@ -402,14 +431,18 @@ function offsetDistance(a: LabelOffset, b: LabelOffset): number {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
 }
 
-function labelBounds(c: CircuitComponent, offset: LabelOffset, text: string): Bounds {
+function labelBounds(c: CircuitComponent, offset: LabelOffset, text: string, renderedFontSize?: number): Bounds {
   // Match the rendered canvas label more closely. SVG text is not measurable
   // during pure layout tests, so use a deliberately conservative width; a
   // too-small model is what causes dense labels to visually collide.
-  const width =
+  const placementWidth =
     componentUsesCompactLabelModel(c)
       ? Math.max(0.95, estimateInlineMathTextWidth(text) * 0.41 + 0.42)
       : Math.max(0.95, estimateInlineMathTextWidth(text) * 0.44 + 0.44);
+  const renderedWidth = renderedFontSize == null
+    ? 0
+    : estimateInlineMathTextWidth(text) * renderedFontSize * 0.72 + renderedFontSize * 0.78;
+  const width = Math.max(placementWidth, renderedWidth);
   const height = 0.92;
   const baseline = c.y + offset.y;
   const y1 = baseline - height;

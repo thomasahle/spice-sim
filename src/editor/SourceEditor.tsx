@@ -13,10 +13,9 @@ import {
   cloneElement,
   isValidElement,
   useMemo,
-  useRef,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
 } from "react";
+import * as Toggle from "@radix-ui/react-toggle";
 import { sourcePresetValue, type SourcePreset } from "./sourceValues";
 import { ValueWithUnit } from "./ValueWithUnit";
 import { UNIT_FAMILIES, type UnitFamily } from "./valueUnits";
@@ -192,7 +191,6 @@ export function serializeSource(p: Parsed): string {
 }
 
 export function SourceEditor({ value, sourceKind = "V", onChange }: Props) {
-  const typeGroupRef = useRef<HTMLDivElement | null>(null);
   const parsed = useMemo(() => parseSource(value), [value]);
   const isCurrentSource = sourceKind === "I";
   const dcLabel = isCurrentSource ? "Current" : "Voltage";
@@ -216,42 +214,9 @@ export function SourceEditor({ value, sourceKind = "V", onChange }: Props) {
     onChange(serializeSource(next));
   }
 
-  function focusTypeButton(type: SourceType) {
-    window.setTimeout(() => {
-      typeGroupRef.current
-        ?.querySelector<HTMLButtonElement>(`button[data-source-type="${type}"]`)
-        ?.focus();
-    }, 0);
-  }
-
-  function onTypeKeyDown(e: ReactKeyboardEvent<HTMLButtonElement>) {
-    const index = TYPE_OPTIONS.findIndex((o) => o.value === parsed.type);
-    if (index < 0) return;
-    let nextIndex: number;
-    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-      nextIndex = (index + 1) % TYPE_OPTIONS.length;
-    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-      nextIndex = (index - 1 + TYPE_OPTIONS.length) % TYPE_OPTIONS.length;
-    } else if (e.key === "Home") {
-      nextIndex = 0;
-    } else if (e.key === "End") {
-      nextIndex = TYPE_OPTIONS.length - 1;
-    } else {
-      return;
-    }
-
-    e.preventDefault();
-    e.stopPropagation();
-    const next = TYPE_OPTIONS[nextIndex].value;
-    setType(next);
-    focusTypeButton(next);
-  }
-
   function update<K extends keyof Parsed>(field: K, mut: (cur: NonNullable<Parsed[K]>) => Parsed[K]) {
     const next: Parsed = { ...parsed };
-    (next as unknown as Record<string, unknown>)[field as string] = mut(
-      parsed[field] as NonNullable<Parsed[K]>,
-    );
+    next[field] = mut(parsed[field] as NonNullable<Parsed[K]>);
     onChange(serializeSource(next));
   }
 
@@ -259,26 +224,22 @@ export function SourceEditor({ value, sourceKind = "V", onChange }: Props) {
     <div className="src-editor">
       <div className="src-type-row">
         <span className="form-label">Waveform</span>
-        <div
-          ref={typeGroupRef}
-          className="src-type-segments"
-          role="group"
-          aria-label="Source waveform"
-        >
+        <div className="src-type-segments" role="group" aria-label="Source waveform">
           {TYPE_OPTIONS.map((o) => (
-            <button
+            <Toggle.Root
               key={o.value}
               type="button"
               data-source-type={o.value}
-              className={`src-type-btn ${parsed.type === o.value ? "active" : ""}`}
-              tabIndex={parsed.type === o.value ? 0 : -1}
-              onKeyDown={onTypeKeyDown}
-              onClick={() => setType(o.value)}
-              aria-pressed={parsed.type === o.value}
+              className="src-type-btn"
+              pressed={parsed.type === o.value}
+              onPressedChange={(pressed) => {
+                if (pressed) setType(o.value);
+              }}
+              aria-label={`${o.label} waveform`}
               title={sourceTypeTitle(o.value)}
             >
               {o.label}
-            </button>
+            </Toggle.Root>
           ))}
         </div>
       </div>

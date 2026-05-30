@@ -19,13 +19,34 @@ export function traceDisplayName(
   const lower = name.toLowerCase();
   const voltageMatch = lower.match(/^v\((.+)\)$/);
   if (voltageMatch) return `V(${voltageMatch[1]})`;
+  const explicitCurrentMatch = lower.match(/^i\((.+)\)$/);
+  if (explicitCurrentMatch) {
+    const dq = matchDeviceQuantity(explicitCurrentMatch[1]);
+    if (dq) return deviceQuantityDisplayName(dq.refdes, dq.quantity);
+    return `I(${formatRefdesPath(explicitCurrentMatch[1])})`;
+  }
   const branchMatch = lower.match(/^(.+)#branch$/);
   if (branchMatch) return `I(${formatRefdesPath(branchMatch[1])})`;
   if (/^n\d+$/.test(lower)) return `V(${lower})`;
   if (/^[a-z_][a-z0-9_:$.-]*$/i.test(name) && !name.includes("#")) return `V(${name})`;
-  const deviceQuantity = lower.match(/^@([^\][\s]+)\[([a-z][a-z0-9_]*)\]$/);
-  if (deviceQuantity) return deviceQuantityDisplayName(deviceQuantity[1], deviceQuantity[2]);
+  const dq = matchDeviceQuantity(lower);
+  if (dq) return deviceQuantityDisplayName(dq.refdes, dq.quantity);
   return name;
+}
+
+/** Strip a stepped-run prefix (e.g. "tran1.") from an analysis vector name.
+ *  Callers typically lowercase first; the match is case-insensitive anyway. */
+export function stripRunPrefix(name: string): string {
+  return name.replace(/^(op|tran|dc|ac|noise)\d+\./i, "");
+}
+
+/** Parse a device-quantity vector like "@r1[i]" or "@m1[gds]" into its
+ *  refdes and quantity, or null if `name` is not in that form. */
+export function matchDeviceQuantity(
+  name: string,
+): { refdes: string; quantity: string } | null {
+  const m = name.match(/^@([^\][\s]+)\[([a-z][a-z0-9_]*)\]$/);
+  return m ? { refdes: m[1], quantity: m[2] } : null;
 }
 
 function deviceQuantityDisplayName(refdes: string, quantity: string): string {
@@ -84,7 +105,7 @@ function formatRefdesPath(refdes: string): string {
     .join(".");
 }
 
-function splitRunQualifiedTrace(name: string): { runNumber: number; inner: string } | null {
+export function splitRunQualifiedTrace(name: string): { runNumber: number; inner: string } | null {
   const match = name.match(/^(op|tran|dc|ac|noise)(\d+)\.(.+)$/i);
   if (!match) return null;
   return {

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    # Pushes to main are already gated by deploy-pages.yml (which now runs
+    # lint + unit tests + type-checking build). Run CI on every other branch.
+    branches-ignore: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Type-check
+        run: npx tsc -b
+      - name: Unit tests
+        run: npm test
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: browser-actions/setup-chrome@v1
+        id: setup-chrome
+      - name: Run e2e against the dev server
+        env:
+          # puppeteer-core needs an explicit Chrome binary (defaults to a macOS
+          # path otherwise — see tests/e2e/_setup.mjs).
+          SPICESIM_E2E_CHROME: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: |
+          npm run dev &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:5173 >/dev/null && break
+            sleep 1
+          done
+          npm run test:e2e

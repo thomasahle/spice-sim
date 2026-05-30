@@ -1,4 +1,5 @@
 import { normalizePoint } from "./geometry.ts";
+import type { ComponentKind } from "./model.ts";
 
 export interface CanvasPoint {
   x: number;
@@ -24,6 +25,7 @@ export function canvasDragDelta(
 }
 
 export const CANVAS_DRAG_START_THRESHOLD = 0.08;
+export const CANVAS_PLACEMENT_INSERT_THRESHOLD = 0.35;
 
 export function canvasDragDeltaAfterThreshold(
   start: CanvasPoint,
@@ -44,6 +46,7 @@ export interface CanvasInteractionActivity {
   placementDraft?: unknown | null;
   marquee?: unknown | null;
   panning?: unknown | null;
+  textEdit?: unknown | null;
   wireDraft?: unknown | null;
   wireGesture?: unknown | null;
 }
@@ -58,6 +61,7 @@ export function hasActiveCanvasInteraction(activity: CanvasInteractionActivity):
       activity.placementDraft ||
       activity.marquee ||
       activity.panning ||
+      activity.textEdit ||
       activity.wireDraft ||
       activity.wireGesture,
   );
@@ -158,4 +162,20 @@ export function pinTargetTone({
 
 export function shouldShowPinTargets(state: PinTargetVisibilityState): boolean {
   return pinTargetTone(state) !== "hidden";
+}
+
+export function placementCanInsertInline(
+  pinCount: number,
+  placementLength: number,
+  threshold = CANVAS_PLACEMENT_INSERT_THRESHOLD,
+): boolean {
+  return pinCount === 2 && placementLength >= threshold;
+}
+
+export function placementShouldBeginTextEdit(kind: ComponentKind): boolean {
+  return kind === "LABEL" || kind === "NOTE";
+}
+
+export function placementShouldSnapToConnections(pinCount: number): boolean {
+  return pinCount > 0;
 }

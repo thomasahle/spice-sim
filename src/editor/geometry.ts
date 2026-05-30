@@ -246,7 +246,7 @@ function componentVisualBounds(kind: ComponentKind): Bounds {
     case "V":
     case "B":
     case "I":
-      return { x1: -1.55, y1: -2, x2: 1.55, y2: 2 };
+      return { x1: -1.25, y1: -2, x2: 1.25, y2: 2 };
     case "C":
       return { x1: -1.02, y1: -2, x2: 1.02, y2: 2 };
     case "L":
@@ -296,7 +296,6 @@ export function noteTextLines(value: string): string[] {
       if (environmentText.includes(environmentEnd)) {
         const environmentRows = displayMathTextLines(environmentText);
         wrapped.push(...environmentRows);
-        wrapped.push("");
       } else {
         wrapped.push(...wrapNoteLine(line, NOTE_WRAP_RENDERED_WIDTH));
       }
@@ -336,7 +335,7 @@ export function noteRenderItems(value: string): NoteRenderItem[] {
         environmentText += `\n${rawLines[lineIndex].trimEnd()}`;
       }
       items.push({ text: environmentText, row });
-      row += Math.max(1.65, displayMathTextLines(environmentText).length * 1.2 + 0.45);
+      row += noteDisplayMathRowSpan(environmentText);
       continue;
     }
     for (const wrapped of wrapNoteLine(line, NOTE_WRAP_RENDERED_WIDTH)) {
@@ -368,6 +367,10 @@ export function noteComponentHeight(c: CircuitComponent, lines = noteTextLines(c
 
 const NOTE_WRAP_RENDERED_WIDTH = 12.8;
 export const NOTE_RENDER_ROW_STEP = 0.88;
+
+function noteDisplayMathRowSpan(environmentText: string): number {
+  return Math.max(1.55, displayMathTextLines(environmentText).length * 0.95 + 0.1);
+}
 
 function wrapNoteLine(line: string, maxRenderedWidth: number): string[] {
   if (estimateInlineMathTextWidth(line) <= maxRenderedWidth) return [line];

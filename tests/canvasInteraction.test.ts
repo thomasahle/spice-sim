@@ -3,10 +3,14 @@ import test from "node:test";
 
 import {
   CANVAS_DRAG_START_THRESHOLD,
+  CANVAS_PLACEMENT_INSERT_THRESHOLD,
   canvasDragDelta,
   canvasDragDeltaAfterThreshold,
   hasActiveCanvasInteraction,
   movedBeyondThreshold,
+  placementCanInsertInline,
+  placementShouldBeginTextEdit,
+  placementShouldSnapToConnections,
   pinTargetTone,
   pointerSelectionHit,
   selectPointerIntent,
@@ -85,6 +89,12 @@ test("selection hit priority comes from canvas geometry before DOM fallback", ()
   assert.equal(pointerSelectionHit(null, null), null);
 });
 
+test("selection hit can use probe DOM fallback for label-chip clicks", () => {
+  const probeFallback = { id: "probe1", kind: "probe" };
+
+  assert.equal(pointerSelectionHit(null, probeFallback), probeFallback);
+});
+
 test("select intent keeps component body drags separate from terminal drags", () => {
   assert.equal(
     selectPointerIntent({
@@ -140,8 +150,27 @@ test("canvas activity detection pauses background work during live gestures", ()
   assert.equal(hasActiveCanvasInteraction({}), false);
   assert.equal(hasActiveCanvasInteraction({ drag: { committed: false } }), true);
   assert.equal(hasActiveCanvasInteraction({ subxResize: { committed: false } }), true);
+  assert.equal(hasActiveCanvasInteraction({ textEdit: { componentId: "label1", kind: "LABEL" } }), true);
   assert.equal(hasActiveCanvasInteraction({ wireDraft: [[0, 0]] }), true);
   assert.equal(hasActiveCanvasInteraction({ panning: { x: 10, y: 20 } }), true);
+});
+
+test("placement rules keep insert-by-drag behavior explicit", () => {
+  assert.equal(CANVAS_PLACEMENT_INSERT_THRESHOLD, 0.35);
+  assert.equal(placementCanInsertInline(2, 0.34), false);
+  assert.equal(placementCanInsertInline(2, 0.35), true);
+  assert.equal(placementCanInsertInline(1, 2), false);
+  assert.equal(placementCanInsertInline(3, 2), false);
+});
+
+test("placement rules snap only electrical components and open text editors for canvas text", () => {
+  assert.equal(placementShouldSnapToConnections(0), false);
+  assert.equal(placementShouldSnapToConnections(1), true);
+  assert.equal(placementShouldSnapToConnections(2), true);
+  assert.equal(placementShouldBeginTextEdit("LABEL"), true);
+  assert.equal(placementShouldBeginTextEdit("NOTE"), true);
+  assert.equal(placementShouldBeginTextEdit("GND"), false);
+  assert.equal(placementShouldBeginTextEdit("R"), false);
 });
 
 test("pin targets are visible but neutral while wiring", () => {

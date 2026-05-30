@@ -3,8 +3,8 @@
 // what a component does, what its value format looks like, and what it's
 // typically used for — without leaving the schematic.
 
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import * as Popover from "@radix-ui/react-popover";
+import { useState } from "react";
 import type { ComponentKind } from "./model";
 
 const COMPONENT_HELP: Partial<
@@ -302,104 +302,43 @@ const COMPONENT_HELP: Partial<
 
 export function ComponentHelp({ kind }: { kind: ComponentKind }) {
   const [open, setOpen] = useState(false);
-  const btnRef = useRef<HTMLButtonElement | null>(null);
-  const popRef = useRef<HTMLDivElement | null>(null);
-  const closeRef = useRef<HTMLButtonElement | null>(null);
-  const prevFocusRef = useRef<HTMLElement | null>(null);
-  // Anchor coords for the portalled popover. Recomputed on open + on resize
-  // so it tracks the (?) button no matter where the Inspector scrolls.
-  const [pos, setPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
-
-  useEffect(() => {
-    if (!open) return;
-    function recompute() {
-      const r = btnRef.current?.getBoundingClientRect();
-      if (!r) return;
-      setPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
-    }
-    recompute();
-    window.addEventListener("resize", recompute);
-    window.addEventListener("scroll", recompute, true);
-    return () => {
-      window.removeEventListener("resize", recompute);
-      window.removeEventListener("scroll", recompute, true);
-    };
-  }, [open]);
-
-  // Close on outside click + Escape.
-  useEffect(() => {
-    if (!open) return;
-    prevFocusRef.current = document.activeElement as HTMLElement | null;
-    const focusTimer = window.setTimeout(() => closeRef.current?.focus(), 0);
-    function onDown(e: MouseEvent) {
-      const t = e.target as Node | null;
-      if (!t) return;
-      if (popRef.current?.contains(t)) return;
-      if (btnRef.current?.contains(t)) return;
-      setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        setOpen(false);
-      }
-    }
-    // defer to avoid the opening click being interpreted as outside click
-    const t = setTimeout(() => document.addEventListener("mousedown", onDown), 0);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      clearTimeout(t);
-      window.clearTimeout(focusTimer);
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-      prevFocusRef.current?.focus?.();
-    };
-  }, [open]);
 
   const entry = COMPONENT_HELP[kind];
   if (!entry) return null;
   return (
-    <>
-      <button
-        ref={btnRef}
-        type="button"
-        className="help-toggle"
-        aria-label={`Help: ${entry.title}`}
-        aria-expanded={open}
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((o) => !o);
-        }}
-        title={`What is a ${entry.title.toLowerCase()}?`}
-      >
-        ?
-      </button>
-      {open &&
-        createPortal(
-          <div
-            ref={popRef}
-            className="help-popover"
-            role="dialog"
-            aria-modal="false"
-            aria-label={`${entry.title} help`}
-            style={{ top: pos.top, right: pos.right }}
-          >
-            <div className="help-popover-head">
-              <span className="help-popover-title">{entry.title}</span>
-              <button
-                ref={closeRef}
-                type="button"
-                className="help-popover-close"
-                onClick={() => setOpen(false)}
-                aria-label="Close help"
-              >
-                ×
-              </button>
-            </div>
-            <div className="help-popover-body">{entry.body}</div>
-          </div>,
-          document.body,
-        )}
-    </>
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className="help-toggle"
+          aria-label={`Help: ${entry.title}`}
+          onClick={(e) => e.stopPropagation()}
+          title={`What is a ${entry.title.toLowerCase()}?`}
+        >
+          ?
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          className="help-popover"
+          side="bottom"
+          align="end"
+          sideOffset={6}
+          collisionPadding={8}
+          aria-label={`${entry.title} help`}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="help-popover-head">
+            <span className="help-popover-title">{entry.title}</span>
+            <Popover.Close className="help-popover-close" aria-label="Close help">
+              ×
+            </Popover.Close>
+          </div>
+          <div className="help-popover-body">{entry.body}</div>
+          <Popover.Arrow className="help-popover-arrow" width={12} height={6} />
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }

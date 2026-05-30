@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { defaultXyTraceNames, nearestXySample, pairedXySamples, voltageTraceNames } from "../src/editor/xyPlot.ts";
+import {
+  currentTraceNames,
+  defaultXyTraceNames,
+  nearestXySample,
+  pairedXySamples,
+  selectableXyTraceNames,
+  voltageTraceNames,
+} from "../src/editor/xyPlot.ts";
 
 test("defaultXyTraceNames prefers two voltage traces over branch currents", () => {
   assert.deepEqual(defaultXyTraceNames(["v1#branch", "v(n2)", "v(out)"]), {
@@ -31,8 +38,42 @@ test("defaultXyTraceNames falls back to the first two traces when fewer than two
 
 test("voltageTraceNames filters branch currents and explicit current traces", () => {
   assert.deepEqual(
-    voltageTraceNames(["v1#branch", "i(load)", "v(out)", "out", "@m1[id]"]),
+    voltageTraceNames(["v1#branch", "i(load)", "i(@r1[i])", "v(out)", "out", "@m1[id]"]),
     ["v(out)", "out"],
+  );
+});
+
+test("currentTraceNames includes native branch and wrapped savecurrents vectors", () => {
+  assert.deepEqual(
+    currentTraceNames(["time", "v(out)", "v1#branch", "i(v1)", "i(@r1[i])", "@m1[id]", "@m1[gm]"]),
+    ["v1#branch", "i(v1)", "i(@r1[i])", "@m1[id]"],
+  );
+});
+
+test("selectableXyTraceNames leads with user-labeled voltages, then offers currents", () => {
+  assert.deepEqual(
+    selectableXyTraceNames(
+      ["v(n1)", "v(out)", "i(@r1[i])", "v(n2)", "v(in)", "v(x1.u)"],
+      ["v(in)", "v(out)"],
+    ),
+    // user voltages first (default stays V-vs-V), current appended so an
+    // I–V curve is still selectable
+    ["v(out)", "v(in)", "i(@r1[i])"],
+  );
+});
+
+test("selectableXyTraceNames hides internal *nodes* but still offers currents", () => {
+  assert.deepEqual(
+    selectableXyTraceNames(["v(n1)", "v(out)", "v(in)", "i(@r1[i])", "v(x1.u)"], []),
+    ["v(out)", "v(in)", "i(@r1[i])"],
+  );
+  assert.deepEqual(
+    selectableXyTraceNames(["v(x1.u)", "v(x1.h)", "i(@r1[i])"], []),
+    ["v(x1.u)", "v(x1.h)", "i(@r1[i])"],
+  );
+  assert.deepEqual(
+    selectableXyTraceNames(["i(@r1[i])", "i(@c1[i])"], []),
+    ["i(@r1[i])", "i(@c1[i])"],
   );
 });
 

@@ -5,6 +5,8 @@ import {
   boundsFromPoints,
   componentBoundsFor,
   componentVisualBoundsFor,
+  noteRenderItems,
+  noteRenderLines,
   noteTextLines,
   noteWidth,
   pointOnPolylineBody,
@@ -170,8 +172,43 @@ test("note text wrapping preserves pasted math environments", () => {
   );
 
   assert.deepEqual(lines, [
-    "h = \\begin{cases}u, & u > 0 \\\\ \\alpha u, & u \\le 0\\end{cases}",
-    "\\begin{aligned}I_u &= I_{up} - I_{down} \\\\ h &\\approx \\max(0,u)\\end{aligned}",
+    "u,   u > 0",
+    "\\alpha u,   u \\le 0",
+    "I_u  = I_{up} - I_{down}",
+    "h  \\approx \\max(0,u)",
+  ]);
+});
+
+test("note text wrapping expands full-line pasted cases environments", () => {
+  assert.deepEqual(noteTextLines("\\begin{cases*}u, & if $u>0$ \\\\ \\alpha u, & otherwise\\end{cases*}"), [
+    "u,   if u>0",
+    "\\alpha u,   otherwise",
+  ]);
+});
+
+test("note text wrapping keeps multi-line math environments together", () => {
+  assert.deepEqual(
+    noteTextLines("Equation notes:\n\\begin{cases*}\nu, & if $u>0$ \\\\\n\\alpha u, & otherwise\n\\end{cases*}\n\\left\\lVert W \\right\\rVert_2 + \\operatorname{sgn}(x)"),
+    [
+      "Equation notes:",
+      "u,   if u>0",
+      "\\alpha u,   otherwise",
+      "\\left\\lVert W \\right\\rVert_2 + \\operatorname{sgn}(x)",
+    ],
+  );
+});
+
+test("note render lines keep one KaTeX environment per pasted block", () => {
+  const environment = "\\begin{cases*}\nu, & if $u>0$ \\\\\n\\alpha u, & otherwise\n\\end{cases*}";
+  assert.deepEqual(noteRenderLines(`Equation notes:\n${environment}\nV_{TH}`), [
+    "Equation notes:",
+    environment,
+    "V_{TH}",
+  ]);
+  assert.deepEqual(noteRenderItems(`Equation notes:\n${environment}\nV_{TH}`), [
+    { text: "Equation notes:", row: 0 },
+    { text: environment, row: 1 },
+    { text: "V_{TH}", row: 3 },
   ]);
 });
 

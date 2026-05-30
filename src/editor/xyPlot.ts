@@ -1,3 +1,5 @@
+import { isInternalTraceName } from "./waveformEmptyState.ts";
+
 export interface XySample {
   index: number;
   x: number;
@@ -15,6 +17,41 @@ export function defaultXyTraceNames(traceNames: string[]): { xName: string; yNam
 
 export function voltageTraceNames(traceNames: string[]): string[] {
   return traceNames.filter(isVoltageTraceName);
+}
+
+export function currentTraceNames(traceNames: string[]): string[] {
+  return traceNames.filter(isCurrentTraceName);
+}
+
+export function selectableXyTraceNames(
+  traceNames: string[],
+  userTraceNames: Iterable<string> = [],
+): string[] {
+  const userTraceNameSet = new Set(userTraceNames);
+  const nonCurrentNames = traceNames.filter((name) => !isCurrentTraceName(name));
+
+  // Choose the cleanest *voltage* set to lead with, so the default
+  // selection stays voltage-vs-voltage. Currents are appended afterward
+  // (below) so I–V / transfer curves (e.g. Id vs Vgs) can still be
+  // plotted — previously currents were filtered out entirely whenever
+  // two voltages existed, which made those curves impossible.
+  const userVoltageNames = voltageTraceNames(nonCurrentNames.filter((name) => userTraceNameSet.has(name)));
+  const publicVoltageNames = voltageTraceNames(nonCurrentNames.filter((name) => !isInternalTraceName(name)));
+  const allVoltageNames = voltageTraceNames(nonCurrentNames);
+  let voltages: string[];
+  if (userVoltageNames.length >= 2) voltages = userVoltageNames;
+  else if (publicVoltageNames.length >= 2) voltages = publicVoltageNames;
+  else if (allVoltageNames.length >= 2) voltages = allVoltageNames;
+  else {
+    const userNames = traceNames.filter((name) => userTraceNameSet.has(name));
+    voltages = userNames.length >= 2 ? userNames : allVoltageNames;
+  }
+
+  // Append currents (after voltages), de-duped, preserving order.
+  const ordered = [...voltages, ...currentTraceNames(traceNames)];
+  const seen = new Set<string>();
+  const result = ordered.filter((name) => (seen.has(name) ? false : (seen.add(name), true)));
+  return result.length >= 2 ? result : traceNames;
 }
 
 export function pairedXySamples(xData: number[], yData: number[]): XySample[] {
@@ -53,10 +90,17 @@ function isVoltageTraceName(name: string): boolean {
   const normalized = name.trim().toLowerCase();
   return (
     normalized.startsWith("v(") ||
-    (!normalized.startsWith("@") &&
-      !normalized.startsWith("i(") &&
-      !normalized.endsWith("#branch") &&
-      !normalized.includes("#branch"))
+    (!isCurrentTraceName(normalized) && !normalized.startsWith("@"))
+  );
+}
+
+function isCurrentTraceName(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  return (
+    normalized.startsWith("i(") ||
+    normalized.endsWith("#branch") ||
+    normalized.includes("#branch") ||
+    /^@[^\][\s]+\[(?:i|id|is|ic|ie|ib)\]$/.test(normalized)
   );
 }
 

@@ -5,9 +5,12 @@ import {
   useRef,
   useState,
   useEffect,
-  type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
 } from "react";
+import * as Popover from "@radix-ui/react-popover";
+import * as Tabs from "@radix-ui/react-tabs";
+import * as Tooltip from "@radix-ui/react-tooltip";
+import * as Toggle from "@radix-ui/react-toggle";
 import type { Measurement, SimVector } from "../sim/api";
 import { exportSvg } from "../sim/files";
 import { formatMeasurementAxisValue } from "./measurementFormatting";
@@ -23,17 +26,24 @@ import {
   waveformTabUnavailableReason,
   type ViewTab,
 } from "./waveformTabs";
-import { defaultXyTraceNames, nearestXySample, pairedXySamples, voltageTraceNames, type XySample } from "./xyPlot";
+import {
+  currentTraceNames,
+  defaultXyTraceNames,
+  nearestXySample,
+  pairedXySamples,
+  selectableXyTraceNames,
+  type XySample,
+} from "./xyPlot";
 import { axisUnitFromLabel } from "./waveformAxis";
 import { traceAxisLabel, traceValueUnit } from "./traceUnits";
 import { computeSweepMetrics } from "./dcSweepMetrics";
 import { orderedPlotPathsForHighlight, tracePathRenderStyles } from "./waveformTraceStyles";
-import { waveformTraceBuckets, waveformTraceListEmptyMessage } from "./waveformEmptyState";
+import { isInternalTraceName, waveformTraceListEmptyMessage } from "./waveformEmptyState";
 import { computeMetrics, type TraceMetrics } from "./waveformMetrics";
 import { computeFFT, nextPow2, resampleUniform } from "./waveformFft";
-import { compactInlineMathText } from "./mathText";
 import { InlineMathText } from "./mathTextHtml";
-import { inlineMathTspans, SvgInlineMathText } from "./mathTextSvg";
+import { SvgInlineMathText } from "./mathTextSvg";
+import { SegmentedControl, SelectField } from "./RadixControls";
 export { computeMetrics, type TraceMetrics } from "./waveformMetrics";
 
 type YMode = "linear" | "db";
@@ -51,6 +61,7 @@ interface Props {
   plot: string;
   vectors: SimVector[];
   selectedTraces: Set<string>;
+  userTraceNames?: Set<string>;
   traceAliases?: Map<string, string>;
   runLabels?: Map<number, string>;
   xAxisLabel?: string;
@@ -75,6 +86,53 @@ const TRACE_COLORS = [
   "#ff375f",
 ];
 
+const AC_SCALE_OPTIONS = [
+  { value: "linear", label: "Linear", title: "Linear amplitude (raw magnitude)" },
+  { value: "db", label: "dB", title: "Decibels: 20·log10(|H|) — Bode-style amplitude axis" },
+];
+
+const TRANSIENT_MODE_OPTIONS = [
+  { value: "time", label: "Time", title: "Time-domain trace" },
+  { value: "fft", label: "FFT", title: "Magnitude spectrum (FFT, Hann window)" },
+];
+
+function TraceGroupToggle({
+  pressed,
+  onPressedChange,
+  label,
+  count,
+  tooltip,
+  ariaLabel,
+}: {
+  pressed: boolean;
+  onPressedChange: (pressed: boolean) => void;
+  label: string;
+  count: number;
+  tooltip: string;
+  ariaLabel: string;
+}) {
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger asChild>
+        <Toggle.Root
+          className="wf-internal-toggle"
+          pressed={pressed}
+          onPressedChange={onPressedChange}
+          aria-label={ariaLabel}
+        >
+          <span>{label}</span>
+          <span className="wf-filter-count">{pressed ? "On" : count}</span>
+        </Toggle.Root>
+      </Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content className="tool-tip wf-filter-tooltip" side="top" align="center" sideOffset={8}>
+          <span className="tool-tip-desc">{tooltip}</span>
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
+
 /**
  * Stable per-trace color: maps a trace's index in the FULL trace list
  * to a palette entry. Both the legend swatch and the plotted line use
@@ -94,6 +152,7 @@ export function WaveformViewer({
   plot,
   vectors,
   selectedTraces,
+  userTraceNames,
   traceAliases,
   runLabels,
   xAxisLabel,
@@ -116,6 +175,7 @@ export function WaveformViewer({
   const [cursorBx, setCursorBx] = useState<number | null>(null);
   const [showFft, setShowFft] = useState(false);
   const [showInternal, setShowInternal] = useState(false);
+  const [showCurrents, setShowCurrents] = useState(false);
   const [xyXName, setXyXName] = useState("");
   const [xyYName, setXyYName] = useState("");
   const [exportStatus, setExportStatus] = useState("");
@@ -133,11 +193,43 @@ export function WaveformViewer({
   }, []);
 
   const rawScale = vectors.find((v) => v.is_scale);
-  const {
-    rawTraces,
-    visibleTraces: baseTraces,
-    hiddenInternalCount,
-  } = waveformTraceBuckets(vectors, showInternal);
+  const rawTraces = useMemo(() => vectors.filter((v) => !v.is_scale), [vectors]);
+  const userTraceNameSet = useMemo(() => userTraceNames ?? new Set<string>(), [userTraceNames]);
+  const currentNameSet = useMemo(
+    () => new Set(currentTraceNames(rawTraces.map((t) => t.name))),
+    [rawTraces],
+  );
+  const hasExplicitUserTraces = userTraceNameSet.size > 0;
+  const baseTraces = useMemo(
+    () =>
+      rawTraces.filter((trace) => {
+        if (selectedTraces.has(trace.name)) return true;
+        const isCurrent = currentNameSet.has(trace.name);
+        if (isCurrent) return showCurrents;
+        if (hasExplicitUserTraces) {
+          return userTraceNameSet.has(trace.name) || showInternal;
+        }
+        return showInternal || !isInternalTraceName(trace.name);
+      }),
+    [
+      currentNameSet,
+      hasExplicitUserTraces,
+      rawTraces,
+      selectedTraces,
+      showCurrents,
+      showInternal,
+      userTraceNameSet,
+    ],
+  );
+  const hiddenInternalCount = rawTraces.filter((trace) => {
+    if (currentNameSet.has(trace.name)) return false;
+    if (hasExplicitUserTraces) return !userTraceNameSet.has(trace.name);
+    return isInternalTraceName(trace.name);
+  }).length;
+  const hiddenCurrentCount = rawTraces.filter((trace) => currentNameSet.has(trace.name)).length;
+  const optionalTraceCount = hiddenInternalCount + hiddenCurrentCount;
+  const optionalTraceEnabledCount =
+    (showInternal ? hiddenInternalCount : 0) + (showCurrents ? hiddenCurrentCount : 0);
   // Stable color per trace name — based on position in the full (unfiltered)
   // trace list so swatch and plotted line always agree.
   const colorMap = useMemo(() => buildColorMap(rawTraces), [rawTraces]);
@@ -169,13 +261,17 @@ export function WaveformViewer({
   const visibleTraces = traces.filter((t) =>
     selectedTraces.size === 0 || !hasSelectedVisibleTrace ? true : selectedTraces.has(t.name),
   );
-  const xyTraces = visibleTraces.length >= 2 ? visibleTraces : traces;
-  const xyAvailable = xyTraces.length >= 2;
-  const xyTraceKey = xyTraces.map((t) => t.name).join("\u0000");
+  const selectedVisibleTraceCount = traces.filter((trace) => selectedTraces.has(trace.name)).length;
   const xyTraceNames = useMemo(
-    () => (xyTraceKey ? xyTraceKey.split("\u0000") : []),
-    [xyTraceKey],
+    () => selectableXyTraceNames(rawTraces.map((trace) => trace.name), userTraceNameSet),
+    [rawTraces, userTraceNameSet],
   );
+  const xyNameSet = useMemo(() => new Set(xyTraceNames), [xyTraceNames]);
+  const xyTraces = useMemo(
+    () => rawTraces.filter((trace) => xyNameSet.has(trace.name)),
+    [rawTraces, xyNameSet],
+  );
+  const xyAvailable = xyTraces.length >= 2;
   const shown = visibleTraces.map((t) =>
       yMode === "db"
         ? {
@@ -186,12 +282,10 @@ export function WaveformViewer({
           }
         : t,
   );
-  const traceFilterActive = selectedTraces.size > 0 && hasSelectedVisibleTrace;
-  const voltageNames = useMemo(() => voltageTraceNames(traces.map((t) => t.name)), [traces]);
-  const voltageFilterActive =
-    voltageNames.length > 0 &&
-    voltageNames.length === visibleTraces.length &&
-    voltageNames.every((name) => visibleTraces.some((trace) => trace.name === name));
+  const traceFilterActive =
+    selectedTraces.size > 0 &&
+    selectedVisibleTraceCount > 0 &&
+    selectedVisibleTraceCount < traces.length;
 
   useEffect(() => {
     if (xyTraceNames.length === 0) return;
@@ -285,30 +379,6 @@ export function WaveformViewer({
     setTab((active) => fallbackWaveformTab(active, { plot, xyAvailable }));
   }, [plot, xyAvailable]);
 
-  function setFocusedTab(kind: ViewTab) {
-    setTab(kind);
-    window.setTimeout(() => {
-      paneRef.current
-        ?.querySelector<HTMLButtonElement>(`button[data-waveform-tab="${kind}"]`)
-        ?.focus();
-    }, 0);
-  }
-
-  function onViewTabKeyDown(e: ReactKeyboardEvent<HTMLButtonElement>) {
-    const enabledTabs = VIEW_TABS.filter((t) => isViewTabEnabled(t.kind));
-    const index = enabledTabs.findIndex((t) => t.kind === tab);
-    if (index < 0) return;
-    let nextIndex: number;
-    if (e.key === "ArrowRight") nextIndex = (index + 1) % enabledTabs.length;
-    else if (e.key === "ArrowLeft") nextIndex = (index - 1 + enabledTabs.length) % enabledTabs.length;
-    else if (e.key === "Home") nextIndex = 0;
-    else if (e.key === "End") nextIndex = enabledTabs.length - 1;
-    else return;
-
-    e.preventDefault();
-    setFocusedTab(enabledTabs[nextIndex].kind);
-  }
-
   async function exportActivePlotSvg() {
     const svg = paneRef.current?.querySelector<SVGSVGElement>(
       ".wf-canvas-wrap > svg, .wf-xy-svg, .wf-bode-svg",
@@ -352,80 +422,45 @@ export function WaveformViewer({
   return (
     <div ref={paneRef} className="wf-pane">
       <div className="wf-header">
-        <div className="wf-tabs" role="tablist" aria-label="Waveform views">
+        <Tabs.Root value={tab} onValueChange={(value) => setTab(value as ViewTab)}>
+        <Tabs.List className="wf-tabs" aria-label="Waveform views">
           {VIEW_TABS.map((viewTab) => {
             const enabled = isViewTabEnabled(viewTab.kind);
             return (
-              <button
+              <Tabs.Trigger
                 key={viewTab.kind}
-                role="tab"
-                aria-selected={enabled && tab === viewTab.kind}
-                aria-disabled={!enabled}
-                tabIndex={enabled && tab === viewTab.kind ? 0 : -1}
+                value={viewTab.kind}
+                disabled={!enabled}
                 data-waveform-tab={viewTab.kind}
                 aria-label={enabled ? viewTab.label : `${viewTab.label} unavailable: ${viewTabTitle(viewTab.kind)}`}
                 className={`wf-tab ${tab === viewTab.kind ? "active" : ""} ${!enabled ? "dim" : ""}`}
-                onKeyDown={onViewTabKeyDown}
                 onClick={() => {
                   if (enabled) setTab(viewTab.kind);
                 }}
                 title={viewTabTitle(viewTab.kind)}
               >
                 {viewTab.label}
-              </button>
+              </Tabs.Trigger>
             );
           })}
-        </div>
+        </Tabs.List>
+        </Tabs.Root>
         <span className="wf-plot-tag" title={`ngspice plot: ${plot}`}>{plotBadge(plot)}</span>
         {isAc && tab === "viewer" && (
-          <div className="seg" role="group" aria-label="AC plot scale">
-            <button
-              className={`seg-btn ${yMode === "linear" ? "active" : ""}`}
-              aria-pressed={yMode === "linear"}
-              onClick={() => setYMode("linear")}
-              title="Linear amplitude (raw magnitude)"
-            >
-              Linear
-            </button>
-            <button
-              className={`seg-btn ${yMode === "db" ? "active" : ""}`}
-              aria-pressed={yMode === "db"}
-              onClick={() => setYMode("db")}
-              title="Decibels: 20·log10(|H|) — Bode-style amplitude axis"
-            >
-              dB
-            </button>
-          </div>
+          <SegmentedControl
+            value={yMode}
+            onValueChange={(value) => setYMode(value as YMode)}
+            options={AC_SCALE_OPTIONS}
+            ariaLabel="AC plot scale"
+          />
         )}
         {isTran && tab === "viewer" && (
-          <div className="seg" role="group" aria-label="Transient plot mode">
-            <button
-              className={`seg-btn ${!showFft ? "active" : ""}`}
-              aria-pressed={!showFft}
-              onClick={() => setShowFft(false)}
-              title="Time-domain trace"
-            >
-              Time
-            </button>
-            <button
-              className={`seg-btn ${showFft ? "active" : ""}`}
-              aria-pressed={showFft}
-              onClick={() => setShowFft(true)}
-              title="Magnitude spectrum (FFT, Hann window)"
-            >
-              FFT
-            </button>
-          </div>
-        )}
-        {hiddenInternalCount > 0 && (
-          <button
-            className={`wf-internal-toggle ${showInternal ? "active" : ""}`}
-            aria-pressed={showInternal}
-            onClick={() => setShowInternal((v) => !v)}
-            title={showInternal ? "Hide generated subcircuit/internal vectors" : "Show generated subcircuit/internal vectors"}
-          >
-            Internal {showInternal ? "On" : hiddenInternalCount}
-          </button>
+          <SegmentedControl
+            value={showFft ? "fft" : "time"}
+            onValueChange={(value) => setShowFft(value === "fft")}
+            options={TRANSIENT_MODE_OPTIONS}
+            ariaLabel="Transient plot mode"
+          />
         )}
         <div className="wf-header-spacer" />
         {exportStatus && <span className="wf-export-status">{exportStatus}</span>}
@@ -561,30 +596,75 @@ export function WaveformViewer({
               </ul>
             )}
             <div className="wf-trace-actions">
-              <span>
-                {visibleTraces.length}/{traces.length} visible
+              <span title={`${rawTraces.length} simulator vectors available before trace-group filtering`}>
+                {traceFilterActive
+                  ? `${visibleTraces.length}/${traces.length} visible`
+                  : `${visibleTraces.length} visible`}
               </span>
-              <button
-                className={`wf-trace-action ${traceFilterActive ? "primary" : ""}`}
-                onClick={onShowAllTraces}
-                disabled={!traceFilterActive}
-                title={traceFilterActive ? "Show every available trace" : "All traces are visible"}
-              >
-                Show all
-              </button>
-              <button
-                className={`wf-trace-action ${voltageFilterActive ? "primary" : ""}`}
-                onClick={() => onSetVisibleTraces(new Set(voltageNames))}
-                disabled={voltageNames.length === 0 || voltageFilterActive}
-                title={
-                  voltageFilterActive
-                    ? "Only voltage traces are visible"
-                    : "Show voltage traces and hide branch currents"
-                }
-              >
-                Voltages
-              </button>
+              {traceFilterActive && (
+                <button
+                  className="wf-trace-action primary"
+                  onClick={onShowAllTraces}
+                  title="Show every trace in the currently enabled trace groups"
+                >
+                  Reset
+                </button>
+              )}
             </div>
+            {optionalTraceCount > 0 && (
+              <Tooltip.Provider delayDuration={260} skipDelayDuration={120}>
+                <Popover.Root>
+                  <Popover.Trigger asChild>
+                    <button
+                      className={`wf-debug-trace-trigger ${optionalTraceEnabledCount > 0 ? "active" : ""}`}
+                      aria-label="Show more traces (internal nodes and currents)"
+                      title="Show generated node-voltage and current-vector traces"
+                    >
+                      <span>+ More traces</span>
+                      <span className="wf-filter-count">
+                        {optionalTraceEnabledCount > 0 ? `${optionalTraceEnabledCount}/${optionalTraceCount}` : optionalTraceCount}
+                      </span>
+                    </button>
+                  </Popover.Trigger>
+                  <Popover.Portal>
+                    <Popover.Content
+                      className="wf-trace-filter-popover"
+                      side="right"
+                      align="start"
+                      sideOffset={8}
+                      collisionPadding={12}
+                    >
+                      <div className="wf-trace-filters" role="group" aria-label="Trace groups">
+                        <span className="wf-filter-label">Hidden traces</span>
+                        <span className="wf-filter-note">
+                          Named probes and net labels are shown by default. Turn these on only when you need generated node voltages or ngspice current vectors.
+                        </span>
+                        {hiddenInternalCount > 0 && (
+                          <TraceGroupToggle
+                            pressed={showInternal}
+                            onPressedChange={setShowInternal}
+                            label="Internal nodes"
+                            count={hiddenInternalCount}
+                            ariaLabel={showInternal ? "Hide internal node traces" : "Show internal node traces"}
+                            tooltip="Unlabeled node voltages created by the schematic netlister. They are useful for debugging, but hidden by default because their names are implementation details."
+                          />
+                        )}
+                        {hiddenCurrentCount > 0 && (
+                          <TraceGroupToggle
+                            pressed={showCurrents}
+                            onPressedChange={setShowCurrents}
+                            label="Currents"
+                            count={hiddenCurrentCount}
+                            ariaLabel={showCurrents ? "Hide current traces" : "Show current traces"}
+                            tooltip="Branch and device current vectors reported by ngspice. Enable them when you want current traces in the scope."
+                          />
+                        )}
+                      </div>
+                    </Popover.Content>
+                  </Popover.Portal>
+                </Popover.Root>
+              </Tooltip.Provider>
+            )}
           </div>
           <div ref={containerRef} className="wf-canvas-wrap">
         <svg
@@ -1081,6 +1161,16 @@ function XyPane({
   const plotSize = useMeasuredSize(plotRef, { w: 800, h: 220 });
   const xTrace = traces.find((t) => t.name === xName) ?? traces[0];
   const yTrace = traces.find((t) => t.name === yName) ?? traces[1] ?? traces[0];
+  // Distinct raw vectors can share one display name (e.g. ngspice exposes a
+  // source branch current as both "v1#branch" and "i(v1)", both shown as
+  // "I(V1)"). Collapse those so the axis dropdowns don't list a label twice.
+  const seenTraceLabels = new Set<string>();
+  const traceOptions = traces
+    .map((trace) => ({
+      value: trace.name,
+      label: traceDisplayName(trace.name, traceAliases, runLabels),
+    }))
+    .filter((opt) => (seenTraceLabels.has(opt.label) ? false : (seenTraceLabels.add(opt.label), true)));
   if (!xTrace || !yTrace || traces.length < 2) {
     return (
       <div className="wf-info-pane">
@@ -1092,17 +1182,14 @@ function XyPane({
   return (
     <div className="wf-xy-pane">
       <div className="wf-xy-toolbar" role="group" aria-label="X/Y trace selection">
-        <label>
+        <label className="wf-xy-field">
           <span>X</span>
-          <select
+          <SelectField
             value={xTrace.name}
-            onChange={(e) => onXName(e.target.value)}
-            aria-label="X trace"
-          >
-            {traces.map((t) => (
-              <option key={t.name} value={t.name}>{traceDisplayName(t.name, traceAliases, runLabels)}</option>
-            ))}
-          </select>
+            onValueChange={onXName}
+            options={traceOptions}
+            ariaLabel="X trace"
+          />
         </label>
         <button
           type="button"
@@ -1122,17 +1209,14 @@ function XyPane({
             <path d="M8 9l-3 3 3 3" />
           </svg>
         </button>
-        <label>
+        <label className="wf-xy-field">
           <span>Y</span>
-          <select
+          <SelectField
             value={yTrace.name}
-            onChange={(e) => onYName(e.target.value)}
-            aria-label="Y trace"
-          >
-            {traces.map((t) => (
-              <option key={t.name} value={t.name}>{traceDisplayName(t.name, traceAliases, runLabels)}</option>
-            ))}
-          </select>
+            onValueChange={onYName}
+            options={traceOptions}
+            ariaLabel="Y trace"
+          />
         </label>
         <span className="wf-xy-hint" aria-live="polite">
           {Math.min(xTrace.data.length, yTrace.data.length)} paired samples
@@ -1562,13 +1646,18 @@ function BodePlot({
             <tspan>{formatMeasurementAxisValue(hoverFrequency, "Hz")}</tspan>
           </text>
           {hoverRows.map((row, i) => (
-            <text key={row.rawName} x={8} y={31 + i * 16}>
-              <tspan fill={colorMap.get(row.rawName) ?? TRACE_COLORS[0]}>● </tspan>
-              <tspan className="wf-bode-readout-key">
-                {inlineMathTspans(compactInlineMathText(row.name, 18), 10)}{" "}
-              </tspan>
-              <tspan>{formatBodeReadoutValue(row.value, unit)}</tspan>
-            </text>
+            <g key={row.rawName} transform={`translate(8 ${31 + i * 16})`}>
+              <text x={0} y={0} fill={colorMap.get(row.rawName) ?? TRACE_COLORS[0]}>●</text>
+              <SvgInlineMathText
+                x={13}
+                y={0}
+                text={row.name}
+                fontSize={10}
+                className="wf-bode-readout-key"
+                maxWidth={74}
+              />
+              <text x={94} y={0}>{formatBodeReadoutValue(row.value, unit)}</text>
+            </g>
           ))}
         </g>
       )}

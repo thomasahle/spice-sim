@@ -36,9 +36,12 @@ test("named trace lookup matches branch currents inside stepped plots", () => {
   const vectors: SimVector[] = [
     { name: "tran1.v1#branch", is_scale: false, data: [1] },
     { name: "tran2.v1#branch", is_scale: false, data: [2] },
+    { name: "tran1.i(@r1[i])", is_scale: false, data: [3] },
+    { name: "tran2.i(@r1[i])", is_scale: false, data: [4] },
   ];
 
   assert.deepEqual(findNamedTrace(vectors, ["v1#branch"], "tran2")?.data, [2]);
+  assert.deepEqual(findNamedTrace(vectors, ["i(@r1[i])", "@r1[i]"], "tran2")?.data, [4]);
 });
 
 test("latest node voltages prefer the current stepped plot", () => {

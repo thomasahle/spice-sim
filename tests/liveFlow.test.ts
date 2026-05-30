@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  LIVE_FLOW_SAMPLE_SOURCES,
   LIVE_FLOW_MIN_ABSOLUTE_CURRENT,
   LIVE_FLOW_MIN_MAGNITUDE,
-  estimatePassiveLiveFlowCurrent,
   formatLiveFlowCurrent,
   liveFlowAbsoluteIntensity,
+  liveFlowAnimationStyle,
   liveFlowCurrentTraceCandidates,
+  isLiveFlowSampleSource,
   liveFlowReadoutArrow,
   liveFlowReadoutBounds,
   liveFlowPhaseForId,
@@ -15,16 +17,24 @@ import {
   liveFlowReadoutSourceClass,
   liveFlowReadoutText,
   liveFlowReadoutWidth,
+  liveFlowRequiresTerminalCurrent,
   liveFlowStatus,
+  liveFlowTerminalCurrentTraceCandidates,
   liveFlowVisual,
   liveFlowVisualFromSignedCurrent,
   liveFlowVisualFromSample,
   liveFlowWireHasVisibleLength,
+  liveFlowWireObstacleBounds,
+  normalizeLiveFlowSamples,
   wireFlowAttachmentForPoint,
   wireFlowSampleFromCandidates,
   wireFlowSignedCurrentAlongPolyline,
   wireFlowSignedCurrent,
 } from "../src/editor/liveFlow.ts";
+import {
+  SOURCE_BODY_FLOW_CLIP_RADIUS,
+  componentLiveFlowPaths,
+} from "../src/editor/componentLiveFlowPaths.ts";
 
 function nearlyEqual(actual: number, expected: number) {
   assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} !== ${expected}`);
@@ -66,9 +76,72 @@ test("liveFlowVisual suppresses numerical-noise currents", () => {
     liveFlowVisualFromSample({
       signedCurrent: LIVE_FLOW_MIN_ABSOLUTE_CURRENT / 2,
       normalizedCurrent: 1,
+      source: "ngspice",
     }).active,
     false,
   );
+});
+
+test("liveFlowVisualFromSample requires explicit ngspice provenance", () => {
+  assert.equal(
+    liveFlowVisualFromSample({
+      signedCurrent: 1e-3,
+      normalizedCurrent: 1,
+    }).active,
+    false,
+  );
+  assert.equal(
+    liveFlowVisualFromSample({
+      signedCurrent: 1e-3,
+      normalizedCurrent: 1,
+      source: "ngspice",
+    }).active,
+    true,
+  );
+});
+
+test("Live Flow exposes ngspice as the only animating current provenance", () => {
+  assert.deepEqual(LIVE_FLOW_SAMPLE_SOURCES, ["ngspice"]);
+  assert.equal(isLiveFlowSampleSource("ngspice"), true);
+  assert.equal(isLiveFlowSampleSource("estimated"), false);
+  assert.equal(isLiveFlowSampleSource(undefined), false);
+});
+
+test("voltage-source body flow uses two clipped side lanes, not the circular outline", () => {
+  const paths = componentLiveFlowPaths({
+    id: "v1",
+    kind: "V",
+    x: 0,
+    y: 0,
+    rotation: 0,
+    value: "PULSE(0 5)",
+  });
+
+  assert.deepEqual(paths, [
+    "M -0.52 -0.62 L -0.52 0.62",
+    "M 0.52 -0.62 L 0.52 0.62",
+  ]);
+  assert.ok(paths.every((path) => !/[ACQ]/.test(path)), "source flow should not animate around the circle");
+  assert.equal(SOURCE_BODY_FLOW_CLIP_RADIUS, 1.2);
+});
+
+test("current-like source body flow stays inside the source circle", () => {
+  for (const kind of ["I", "B"] as const) {
+    const paths = componentLiveFlowPaths({
+      id: kind.toLowerCase(),
+      kind,
+      x: 0,
+      y: 0,
+      rotation: 0,
+      value: "",
+    });
+
+    assert.deepEqual(paths, [
+      "M -0.32 -0.6 L -0.32 0.6",
+      "M 0.32 -0.6 L 0.32 0.6",
+    ]);
+    assert.ok(paths.every((path) => !/[ACQ]/.test(path)), `${kind} flow should not animate around the circle`);
+  }
 });
 
 test("liveFlowVisual damps tiny visible currents instead of rendering them full strength", () => {
@@ -89,6 +162,49 @@ test("liveFlowVisual keeps meaningful absolute currents visible beside larger br
   assert.equal(oneMicroampBesideLargeBranch.active, true);
   assert.ok(oneMicroampBesideLargeBranch.magnitude > LIVE_FLOW_MIN_MAGNITUDE);
   assert.equal(onePicoampBesideLargeBranch.active, false);
+});
+
+test("normalizeLiveFlowSamples can share a scale with existing wire samples", () => {
+  const normalized = normalizeLiveFlowSamples(
+    new Map([
+      ["component-body", { current: 2e-6, source: "ngspice" }],
+    ]),
+    [10e-6],
+  );
+
+  assert.equal(normalized.get("component-body")?.signedCurrent, 2e-6);
+  assert.equal(normalized.get("component-body")?.source, "ngspice");
+  nearlyEqual(normalized.get("component-body")?.normalizedCurrent ?? Number.NaN, 0.2);
+});
+
+test("normalizeLiveFlowSamples ignores non-finite raw currents when scaling", () => {
+  const normalized = normalizeLiveFlowSamples(
+    new Map([
+      ["bad", { current: Number.NaN, source: "ngspice" }],
+      ["good", { current: -4e-6, source: "ngspice" }],
+    ]),
+    [Number.POSITIVE_INFINITY, 8e-6],
+  );
+
+  assert.equal(normalized.has("bad"), false);
+  assert.equal(normalized.get("good")?.signedCurrent, -4e-6);
+  nearlyEqual(normalized.get("good")?.normalizedCurrent ?? Number.NaN, -0.5);
+});
+
+test("normalizeLiveFlowSamples rejects non-ngspice provenance at runtime", () => {
+  const normalized = normalizeLiveFlowSamples(
+    new Map([
+      ["fallback", { current: 1e-3, source: "estimated" }],
+      ["missing", { current: 2e-3 }],
+      ["good", { current: 4e-3, source: "ngspice" }],
+    ]),
+  );
+
+  assert.equal(normalized.has("fallback"), false);
+  assert.equal(normalized.has("missing"), false);
+  assert.equal(normalized.get("good")?.source, "ngspice");
+  assert.equal(normalized.get("good")?.signedCurrent, 4e-3);
+  nearlyEqual(normalized.get("good")?.normalizedCurrent ?? Number.NaN, 1);
 });
 
 test("liveFlowAbsoluteIntensity maps current magnitude logarithmically", () => {
@@ -117,6 +233,24 @@ test("liveFlowPhaseForId gives stable per-wire animation offsets", () => {
   assert.ok(liveFlowPhaseForId("w1") < 0.72);
 });
 
+test("liveFlowAnimationStyle emits unitless SVG lengths for animatable dash offsets", () => {
+  const flow = liveFlowVisualFromSignedCurrent(0.75, 1e-3);
+  const style = liveFlowAnimationStyle(flow, 0.238);
+
+  assert.match(style["--flow-duration"], /s$/);
+  assert.doesNotMatch(style["--flow-cycle"], /px$/);
+  assert.doesNotMatch(style["--flow-dash"], /px$/);
+  assert.doesNotMatch(style["--flow-gap"], /px$/);
+  assert.doesNotMatch(style["--flow-offset"], /px$/);
+  assert.ok(parseFloat(style["--flow-duration"]) > 0);
+  assert.ok(parseFloat(style["--flow-cycle"]) > 0);
+  assert.ok(parseFloat(style["--flow-dash"]) > 0);
+  assert.ok(parseFloat(style["--flow-gap"]) > 0);
+  assert.equal(parseFloat(style["--flow-offset"]), 0.238);
+  assert.ok(parseFloat(style["--flow-cycle"]) > parseFloat(style["--flow-dash"]));
+  assert.equal(style.opacity, flow.opacity);
+});
+
 test("formatLiveFlowCurrent keeps hover and status readouts compact", () => {
   assert.equal(formatLiveFlowCurrent(undefined), "unknown current");
   assert.equal(formatLiveFlowCurrent(0), "0 A");
@@ -129,9 +263,18 @@ test("formatLiveFlowCurrent keeps hover and status readouts compact", () => {
 
 test("liveFlowReadoutText avoids directional arrows when flow is below threshold", () => {
   assert.deepEqual(liveFlowReadoutText(undefined, false), {
-    label: "Not sampled",
+    label: "No ngspice sample",
     detail: null,
-    title: "No branch-current or passive-estimate sample is available for this wire at the selected transient time.",
+    title: "No ngspice current-vector sample is available for this wire at the selected transient time.",
+    showArrow: false,
+  });
+  assert.deepEqual(liveFlowReadoutText({
+    signedCurrent: 1e-3,
+    normalizedCurrent: 1,
+  }, true), {
+    label: "No ngspice sample",
+    detail: null,
+    title: "No ngspice current-vector sample is available for this wire at the selected transient time.",
     showArrow: false,
   });
 
@@ -141,47 +284,31 @@ test("liveFlowReadoutText avoids directional arrows when flow is below threshold
     source: "ngspice",
   }, false);
   assert.equal(inactive.label, "9.00 nA");
-  assert.equal(inactive.detail, "below range");
+  assert.equal(inactive.detail, "ngspice · low");
   assert.equal(inactive.showArrow, false);
   assert.match(inactive.title, /below the 10\.0 nA display threshold/);
-  assert.match(inactive.title, /measured from simulated branch current/);
+  assert.match(inactive.title, /sampled from ngspice current vectors/);
 
-  const activeEstimated = liveFlowReadoutText({
-    signedCurrent: -2e-6,
-    normalizedCurrent: -0.2,
-    source: "estimated",
-  }, true);
-  assert.equal(activeEstimated.label, "-2.00 µA");
-  assert.equal(activeEstimated.detail, null);
-  assert.equal(activeEstimated.showArrow, true);
-  assert.match(activeEstimated.title, /estimated from node voltages/);
-
-  const activeMeasured = liveFlowReadoutText({
+  const activeNgspice = liveFlowReadoutText({
     signedCurrent: 1.5e-3,
     normalizedCurrent: 0.8,
     source: "ngspice",
   }, true);
-  assert.equal(activeMeasured.label, "1.50 mA");
-  assert.equal(activeMeasured.detail, null);
-  assert.match(activeMeasured.title, /measured from simulated branch current/);
+  assert.equal(activeNgspice.label, "1.50 mA");
+  assert.equal(activeNgspice.detail, "ngspice");
+  assert.match(activeNgspice.title, /sampled from ngspice current vectors/);
 });
 
-test("liveFlowReadoutSourceClass distinguishes missing, measured, and estimated data", () => {
-  assert.equal(liveFlowReadoutSourceClass(undefined), "missing");
-  assert.equal(liveFlowReadoutSourceClass({ source: "ngspice" }), "measured");
-  assert.equal(liveFlowReadoutSourceClass({ source: "estimated" }), "estimated");
+test("liveFlowReadoutSourceClass distinguishes unsampled and ngspice current vectors", () => {
+  assert.equal(liveFlowReadoutSourceClass(undefined), "unsampled");
+  assert.equal(liveFlowReadoutSourceClass({ source: "ngspice" }), "ngspice");
 });
 
 test("liveFlowReadoutWidth keeps active current chips compact", () => {
-  const measured = liveFlowReadoutText({
+  const ngspice = liveFlowReadoutText({
     signedCurrent: 5e-3,
     normalizedCurrent: 1,
     source: "ngspice",
-  }, true);
-  const estimated = liveFlowReadoutText({
-    signedCurrent: 5e-3,
-    normalizedCurrent: 1,
-    source: "estimated",
   }, true);
   const inactive = liveFlowReadoutText({
     signedCurrent: 9e-9,
@@ -189,10 +316,8 @@ test("liveFlowReadoutWidth keeps active current chips compact", () => {
     source: "ngspice",
   }, false);
 
-  assert.ok(liveFlowReadoutWidth(measured) >= 2);
-  assert.ok(liveFlowReadoutWidth(estimated) >= 2);
-  assert.ok(liveFlowReadoutWidth(measured) <= 3);
-  assert.ok(liveFlowReadoutWidth(estimated) <= 3);
+  assert.ok(liveFlowReadoutWidth(ngspice) >= 2);
+  assert.ok(liveFlowReadoutWidth(ngspice) <= 3.8);
   assert.ok(liveFlowReadoutWidth(inactive) >= 3);
   assert.ok(liveFlowReadoutWidth({
     label: "123456789012345678901234567890",
@@ -231,7 +356,14 @@ test("wireFlowSignedCurrentAlongPolyline is independent of wire point order", ()
   assert.equal(wireFlowSignedCurrentAlongPolyline(2, 1, 3, true), null);
 });
 
-test("wireFlowSampleFromCandidates ignores unusable pins and prefers measured ties", () => {
+test("wireFlowSignedCurrentAlongPolyline maps terminal currents into wire direction", () => {
+  assert.equal(wireFlowSignedCurrentAlongPolyline(2, 0, 3, true, "terminal"), -2);
+  assert.equal(wireFlowSignedCurrentAlongPolyline(2, 0, 3, false, "terminal"), 2);
+  assert.equal(wireFlowSignedCurrentAlongPolyline(-2, 2, 3, true, "terminal"), 2);
+  assert.equal(wireFlowSignedCurrentAlongPolyline(Number.NaN, 0, 3, true, "terminal"), null);
+});
+
+test("wireFlowSampleFromCandidates ignores unusable pins and uses nearest simulator current", () => {
   assert.deepEqual(
     wireFlowSampleFromCandidates([
       {
@@ -244,25 +376,25 @@ test("wireFlowSampleFromCandidates ignores unusable pins and prefers measured ti
       },
       {
         componentCurrent: 2,
-        source: "estimated",
+        source: "ngspice",
         attachedPinIndex: 0,
         pinCount: 2,
         attachedAtStart: true,
         distance: 0.02,
       },
     ]),
-    { signedCurrent: -2, source: "estimated", distance: 0.02 },
+    { signedCurrent: -2, source: "ngspice", distance: 0.02 },
   );
 
   assert.deepEqual(
     wireFlowSampleFromCandidates([
       {
         componentCurrent: 2,
-        source: "estimated",
+        source: "ngspice",
         attachedPinIndex: 0,
         pinCount: 2,
         attachedAtStart: true,
-        distance: 0,
+        distance: 0.02,
       },
       {
         componentCurrent: 3,
@@ -277,69 +409,126 @@ test("wireFlowSampleFromCandidates ignores unusable pins and prefers measured ti
   );
 });
 
+test("wireFlowSampleFromCandidates prefers real terminal current on active-device pins", () => {
+  assert.deepEqual(
+    wireFlowSampleFromCandidates([
+      {
+        componentCurrent: 5,
+        source: "ngspice",
+        attachedPinIndex: 2,
+        pinCount: 3,
+        attachedAtStart: true,
+        distance: 0.02,
+      },
+      {
+        componentCurrent: -4.8,
+        source: "ngspice",
+        attachedPinIndex: 2,
+        pinCount: 3,
+        attachedAtStart: true,
+        distance: 0,
+        currentKind: "terminal",
+      },
+    ]),
+    { signedCurrent: 4.8, source: "ngspice", distance: 0 },
+  );
+});
+
+test("wireFlowSampleFromCandidates allows explicit ngspice gate terminal currents", () => {
+  assert.deepEqual(
+    wireFlowSampleFromCandidates([
+      {
+        componentCurrent: 0.25,
+        source: "ngspice",
+        attachedPinIndex: 1,
+        pinCount: 3,
+        attachedAtStart: false,
+        distance: 0,
+        currentKind: "terminal",
+      },
+    ]),
+    { signedCurrent: 0.25, source: "ngspice", distance: 0 },
+  );
+
+  assert.equal(
+    wireFlowSampleFromCandidates([
+      {
+        componentCurrent: 0.25,
+        source: "ngspice",
+        attachedPinIndex: 1,
+        pinCount: 3,
+        attachedAtStart: false,
+        distance: 0,
+      },
+    ]),
+    null,
+  );
+});
+
 test("liveFlowCurrentTraceCandidates includes device-specific ngspice currents first", () => {
   assert.deepEqual(liveFlowCurrentTraceCandidates("R", "R1"), [
+    "i(@r1[i])",
     "@r1[i]",
     "r1#branch",
     "i(r1)",
   ]);
+  assert.deepEqual(liveFlowCurrentTraceCandidates("I", "I1").slice(0, 2), [
+    "i(@i1[current])",
+    "@i1[current]",
+  ]);
   assert.deepEqual(liveFlowCurrentTraceCandidates("NMOS", "M1").slice(0, 2), [
+    "i(@m1[id])",
     "@m1[id]",
+  ]);
+  assert.deepEqual(liveFlowCurrentTraceCandidates("NMOS", "M1").slice(2, 4), [
+    "i(@m1[is])",
     "@m1[is]",
   ]);
-  assert.deepEqual(liveFlowCurrentTraceCandidates("NPN", "Q1").slice(0, 3), [
+  assert.deepEqual(liveFlowCurrentTraceCandidates("NPN", "Q1").slice(0, 6), [
+    "i(@q1[ic])",
     "@q1[ic]",
+    "i(@q1[ie])",
     "@q1[ie]",
+    "i(@q1[ib])",
     "@q1[ib]",
   ]);
-  assert.deepEqual(liveFlowCurrentTraceCandidates("D", "D1").slice(0, 1), [
+  assert.deepEqual(liveFlowCurrentTraceCandidates("D", "D1").slice(0, 2), [
+    "i(@d1[id])",
     "@d1[id]",
   ]);
 });
 
-test("estimatePassiveLiveFlowCurrent derives resistor current from node voltages", () => {
-  assert.equal(
-    estimatePassiveLiveFlowCurrent({
-      kind: "R",
-      value: "1k",
-      pin0Voltage: 1,
-      pin1Voltage: 0,
-    }),
-    1e-3,
-  );
-  assert.equal(
-    estimatePassiveLiveFlowCurrent({
-      kind: "R",
-      value: "1Meg",
-      pin0Voltage: 1,
-      pin1Voltage: 0,
-    }),
-    1e-6,
-  );
+test("liveFlowTerminalCurrentTraceCandidates maps active-device pins to ngspice terminal vectors", () => {
+  assert.deepEqual(liveFlowTerminalCurrentTraceCandidates("NMOS", "M1", 0), [
+    "i(@m1[id])",
+    "@m1[id]",
+  ]);
+  assert.deepEqual(liveFlowTerminalCurrentTraceCandidates("NMOS", "M1", 1), [
+    "i(@m1[ig])",
+    "@m1[ig]",
+  ]);
+  assert.deepEqual(liveFlowTerminalCurrentTraceCandidates("NMOS", "M1", 2), [
+    "i(@m1[is])",
+    "@m1[is]",
+  ]);
+  assert.deepEqual(liveFlowTerminalCurrentTraceCandidates("NPN", "Q1", 1), [
+    "i(@q1[ib])",
+    "@q1[ib]",
+  ]);
+  assert.deepEqual(liveFlowTerminalCurrentTraceCandidates("PMOS4", "M2", 3), [
+    "i(@m2[ib])",
+    "@m2[ib]",
+  ]);
+  assert.deepEqual(liveFlowTerminalCurrentTraceCandidates("R", "R1", 0), []);
 });
 
-test("estimatePassiveLiveFlowCurrent derives capacitor current from voltage slope", () => {
-  assert.equal(
-    estimatePassiveLiveFlowCurrent({
-      kind: "C",
-      value: "2u",
-      pin0Voltage: 1,
-      pin1Voltage: 0,
-      previousPin0Voltage: 0.5,
-      previousPin1Voltage: 0,
-      deltaTime: 1e-3,
-    }),
-    1e-3,
-  );
-  assert.equal(
-    estimatePassiveLiveFlowCurrent({
-      kind: "C",
-      value: "2u",
-      pin0Voltage: 1,
-      pin1Voltage: 0,
-    }),
-    null,
-  );
+test("Live Flow requires terminal-specific currents for active devices", () => {
+  for (const kind of ["NPN", "PNP", "NMOS", "PMOS", "NMOS4", "PMOS4", "OPAMP"]) {
+    assert.equal(liveFlowRequiresTerminalCurrent(kind), true, kind);
+  }
+  for (const kind of ["R", "C", "L", "D", "V", "I", "B", "SUBX"]) {
+    assert.equal(liveFlowRequiresTerminalCurrent(kind), false, kind);
+  }
 });
 
 test("wireFlowAttachmentForPoint detects pins on wire endpoints and bodies", () => {
@@ -458,6 +647,29 @@ test("liveFlowReadoutPosition can use previous readouts as obstacles", () => {
   assert.notDeepEqual(second, first);
 });
 
+test("liveFlowWireObstacleBounds creates padded bounds for visible wire segments", () => {
+  assert.deepEqual(liveFlowWireObstacleBounds([[0, 0], [0, 0], [2, 0]], 0.1), [
+    { x1: -0.1, y1: -0.1, x2: 2.1, y2: 0.1 },
+  ]);
+  assert.deepEqual(liveFlowWireObstacleBounds([[1, 1]], 0.1), []);
+});
+
+test("liveFlowReadoutPosition avoids unrelated wire segment obstacles", () => {
+  assert.deepEqual(
+    liveFlowReadoutPosition([[0, 0], [10, 0]], 0.38, {
+      width: 2,
+      height: 0.64,
+      obstacles: liveFlowWireObstacleBounds([[3, -0.38], [7, -0.38]], 0.14),
+    }),
+    {
+      x: 5,
+      y: 0.38,
+      dx: 1,
+      dy: 0,
+    },
+  );
+});
+
 test("liveFlowReadoutArrow follows the actual wire tangent and flow direction", () => {
   assert.equal(liveFlowReadoutArrow({ dx: 1, dy: 0 }, 1), "→");
   assert.equal(liveFlowReadoutArrow({ dx: 1, dy: 0 }, -1), "←");
@@ -519,12 +731,13 @@ test("liveFlowStatus explains unavailable and active states", () => {
       sampledWireCount: 0,
     });
     assert.equal(status.label, "Needs transient");
-    assert.equal(status.tone, "warning");
+    assert.equal(status.show, false);
+    assert.equal(status.tone, "muted");
     assert.match(status.title, /Switch analysis to transient/);
   }
 
-  assert.equal(
-    liveFlowStatus({
+  {
+    const status = liveFlowStatus({
       enabled: true,
       hasResult: true,
       isTransient: false,
@@ -532,9 +745,11 @@ test("liveFlowStatus explains unavailable and active states", () => {
       floatingPinCount: 0,
       activeWireCount: 0,
       sampledWireCount: 0,
-    }).label,
-    "Needs transient",
-  );
+    });
+    assert.equal(status.label, "Needs transient");
+    assert.equal(status.show, false);
+    assert.equal(status.tone, "muted");
+  }
 
   assert.equal(
     liveFlowStatus({
@@ -548,8 +763,8 @@ test("liveFlowStatus explains unavailable and active states", () => {
     "Run needed",
   );
 
-  assert.equal(
-    liveFlowStatus({
+  {
+    const status = liveFlowStatus({
       enabled: true,
       isTransient: true,
       simulationStale: false,
@@ -557,9 +772,10 @@ test("liveFlowStatus explains unavailable and active states", () => {
       visibleWireCount: 5,
       activeWireCount: 0,
       sampledWireCount: 0,
-    }).title,
-    "No wire-current samples were found for the visible wires. 0 of 5 visible wires are animating. 5 visible wires have no usable current sample.",
-  );
+    });
+    assert.equal(status.label, "No ngspice");
+    assert.equal(status.title, "No ngspice current-vector samples were found for the visible wires. 0 of 5 visible wires are animating. 5 visible wires have no ngspice current-vector sample. Live Flow only animates wires with ngspice current vectors.");
+  }
 
   {
     const status = liveFlowStatus({
@@ -584,9 +800,10 @@ test("liveFlowStatus explains unavailable and active states", () => {
       floatingPinCount: 0,
       activeWireCount: 2,
       sampledWireCount: 4,
+      ngspiceWireCount: 2,
       strongestCurrent: 2.5e-6,
     }).label,
-    "2/4 wires · 2.50 µA",
+    "2/4 ngspice · 2.50 µA",
   );
 
   assert.match(
@@ -598,17 +815,14 @@ test("liveFlowStatus explains unavailable and active states", () => {
         floatingPinCount: 0,
         activeWireCount: 2,
         sampledWireCount: 4,
-        sampledMeasuredWireCount: 3,
-        sampledEstimatedWireCount: 1,
-        measuredWireCount: 1,
-        estimatedWireCount: 1,
+        ngspiceWireCount: 2,
         strongestCurrent: 2.5e-6,
     });
-    assert.equal(status.label, "2/4 wires · 2.50 µA");
-    assert.equal(status.source, "mixed");
+    assert.equal(status.label, "2/4 ngspice · 2.50 µA");
+    assert.equal(status.source, "ngspice");
     return status;
   })().title,
-    /2 of 4 visible wires are animating.*2 sampled wires are below.*2\.50 µA.*Animating streams: 1 measured, 1 estimated.*Sampled wires: 3 measured, 1 estimated.*Blue streams.*amber streams/,
+    /2 of 4 visible wires are animating.*2 sampled wires are below.*2\.50 µA.*Animating streams: 2 ngspice current vectors.*Sampled wires: 4 ngspice current vectors.*only animates wires with ngspice current vectors/,
   );
 
   assert.match(
@@ -620,17 +834,14 @@ test("liveFlowStatus explains unavailable and active states", () => {
         floatingPinCount: 0,
         activeWireCount: 2,
         sampledWireCount: 4,
-        measuredWireCount: 2,
-        estimatedWireCount: 0,
-        sampledMeasuredWireCount: 3,
-        sampledEstimatedWireCount: 1,
+        ngspiceWireCount: 2,
         strongestCurrent: 2.5e-6,
     });
-    assert.equal(status.label, "2/4 wires · 2.50 µA");
-    assert.equal(status.source, "measured");
+    assert.equal(status.label, "2/4 ngspice · 2.50 µA");
+    assert.equal(status.source, "ngspice");
     return status;
   })().title,
-    /2 of 4 visible wires are animating.*2 sampled wires are below.*Animating streams: 2 measured, 0 estimated.*Sampled wires: 3 measured, 1 estimated.*Blue streams/,
+    /2 of 4 visible wires are animating.*2 sampled wires are below.*Animating streams: 2 ngspice current vectors.*Sampled wires: 4 ngspice current vectors.*ngspice current vectors/,
   );
 
   assert.match(
@@ -642,35 +853,14 @@ test("liveFlowStatus explains unavailable and active states", () => {
         floatingPinCount: 0,
         activeWireCount: 2,
         sampledWireCount: 2,
-        measuredWireCount: 0,
-        estimatedWireCount: 2,
+        ngspiceWireCount: 2,
         strongestCurrent: 2.5e-6,
     });
-    assert.equal(status.label, "2 wires · 2.50 µA");
-    assert.equal(status.source, "estimated");
+    assert.equal(status.label, "2 ngspice · 2.50 µA");
+    assert.equal(status.source, "ngspice");
     return status;
   })().title,
-    /All 2 visible wires are animating.*Animating streams: 0 measured, 2 estimated.*Amber streams/,
-  );
-
-  assert.match(
-    (function () {
-      const status = liveFlowStatus({
-        enabled: true,
-        isTransient: true,
-        simulationStale: false,
-        floatingPinCount: 0,
-        activeWireCount: 2,
-        sampledWireCount: 2,
-        measuredWireCount: 2,
-        estimatedWireCount: 0,
-        strongestCurrent: 2.5e-6,
-    });
-    assert.equal(status.label, "2 wires · 2.50 µA");
-    assert.equal(status.source, "measured");
-    return status;
-  })().title,
-    /All 2 visible wires are animating.*Animating streams: 2 measured, 0 estimated.*Blue streams/,
+    /All 2 visible wires are animating.*Animating streams: 2 ngspice current vectors.*ngspice current vectors/,
   );
 
   {
@@ -682,19 +872,15 @@ test("liveFlowStatus explains unavailable and active states", () => {
       visibleWireCount: 6,
       activeWireCount: 2,
       sampledWireCount: 4,
-      sampledMeasuredWireCount: 2,
-      sampledEstimatedWireCount: 2,
-      measuredWireCount: 2,
-      estimatedWireCount: 0,
+      ngspiceWireCount: 2,
       strongestCurrent: 2.5e-6,
     });
-    assert.equal(status.label, "2/6 wires · 2.50 µA");
-    assert.equal(status.source, "measured");
+    assert.equal(status.label, "2/6 ngspice · 2.50 µA");
+    assert.equal(status.source, "ngspice");
     assert.match(status.title, /2 of 6 visible wires are animating/);
-    assert.match(status.title, /2 visible wires have no usable current sample/);
+    assert.match(status.title, /2 visible wires have no ngspice current-vector sample/);
     assert.match(status.title, /2 sampled wires are below the display threshold/);
-    assert.match(status.title, /Animating streams: 2 measured, 0 estimated/);
-    assert.match(status.title, /Sampled wires: 2 measured, 2 estimated/);
+    assert.match(status.title, /Animating streams: 2 ngspice current vectors/);
   }
 
   assert.match(
@@ -733,22 +919,23 @@ test("liveFlowStatus explains unavailable and active states", () => {
     strongestCurrent: 4.89e-22,
   });
   assert.equal(tinyNoFlow.label, "No flow now");
-  assert.equal(tinyNoFlow.source, "measured");
+  assert.equal(tinyNoFlow.source, "ngspice");
   assert.match(tinyNoFlow.title, /below 1\.00 pA/);
-  assert.match(tinyNoFlow.title, /Sampled wires: 4 measured, 0 estimated/);
+  assert.match(tinyNoFlow.title, /Sampled wires: 4 ngspice current vectors/);
 
-  const estimatedNoFlow = liveFlowStatus({
-    enabled: true,
-    isTransient: true,
-    simulationStale: false,
-    floatingPinCount: 0,
-    activeWireCount: 0,
-    sampledWireCount: 2,
-    sampledMeasuredWireCount: 0,
-    sampledEstimatedWireCount: 2,
-    strongestCurrent: 4e-9,
-  });
-  assert.equal(estimatedNoFlow.label, "Below range · 4.00 nA");
-  assert.equal(estimatedNoFlow.source, "estimated");
-  assert.match(estimatedNoFlow.title, /Sampled wires: 0 measured, 2 estimated/);
+  {
+    const status = liveFlowStatus({
+      enabled: true,
+      isTransient: true,
+      simulationStale: false,
+      floatingPinCount: 0,
+      visibleWireCount: 4,
+      activeWireCount: 2,
+      sampledWireCount: 4,
+      strongestCurrent: 2.5e-6,
+    });
+    assert.equal(status.source, "ngspice");
+    assert.match(status.title, /Animating streams: 2 ngspice current vectors/);
+    assert.doesNotMatch(status.title, /No ngspice current-vector coverage is available/);
+  }
 });

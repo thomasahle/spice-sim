@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import * as Switch from "@radix-ui/react-switch";
 import type { LiveFlowStatus } from "./liveFlow";
 
 interface Props {
@@ -66,6 +67,7 @@ export function PlayBar({
   }, [playing, speed, tmax, tmin, setTime]);
 
   const timeLabel = formatTime(time);
+  const showLiveFlowStatus = liveFlowStatus.show && liveFlowStatus.source === "ngspice";
 
   return (
     <div
@@ -121,28 +123,29 @@ export function PlayBar({
           </button>
         ))}
       </div>
-      <label
+      <div
         className="live-flow-toggle"
         title={liveFlowStatus.title}
       >
-        <input
-          type="checkbox"
+        <Switch.Root
+          className="live-flow-switch"
           checked={liveFlow}
-          onChange={(e) => setLiveFlow(e.target.checked)}
+          onCheckedChange={setLiveFlow}
           aria-label="Show Live Flow current animation"
-        />
-        <span className="live-flow-switch" aria-hidden="true">
-          <span className="live-flow-switch-knob" />
-        </span>
+        >
+          <Switch.Thumb className="live-flow-switch-knob" />
+        </Switch.Root>
         <span className="live-flow-toggle-label">Live Flow</span>
-      </label>
-      {liveFlowStatus.show && (
+      </div>
+      {showLiveFlowStatus && (
         <span
           className={`live-flow-status ${liveFlowStatus.tone} ${liveFlowStatus.source}`}
           title={liveFlowStatus.title}
           role="status"
           aria-live="polite"
           aria-label={`Live Flow: ${liveFlowStatus.label}. ${liveFlowStatus.title}`}
+          data-live-flow-source={liveFlowStatus.source}
+          data-live-flow-tone={liveFlowStatus.tone}
         >
           <span className="live-flow-source-dot" aria-hidden="true" />
           <span className="live-flow-status-label">{liveFlowStatus.label}</span>

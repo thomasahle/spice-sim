@@ -11,6 +11,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 1600,
     rolldownOptions: {
       output: {
+        name: 'SpiceSim',
         codeSplitting: {
           groups: [
             {
@@ -25,6 +26,13 @@ export default defineConfig({
             },
           ],
         },
+      },
+    },
+  },
+  worker: {
+    rolldownOptions: {
+      output: {
+        name: 'SpiceSimWorker',
       },
     },
   },

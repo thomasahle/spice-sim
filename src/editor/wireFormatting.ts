@@ -138,7 +138,8 @@ export function autoFormatWireStops(wire: Wire, page: SchematicPage): [number, n
   }
   for (const component of page.components) {
     for (let pinIdx = 0; pinIdx < getPinLayout(component).length; pinIdx++) {
-      addStop(pinWorldPos(component, pinIdx));
+      const pin = pinWorldPos(component, pinIdx);
+      if (wireHasExplicitPoint(wire, pin)) addStop(pin);
     }
   }
   for (const probe of page.probes) {
@@ -200,4 +201,8 @@ function pointOnWirePath(point: { x: number; y: number }, points: [number, numbe
     if (pointOnSegment(point.x, point.y, x1, y1, x2, y2)) return true;
   }
   return false;
+}
+
+function wireHasExplicitPoint(wire: Wire, point: { x: number; y: number }): boolean {
+  return wire.points.some(([x, y]) => samePoint(point, { x, y }));
 }

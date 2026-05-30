@@ -2,34 +2,32 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  makeHistorySnapshot,
   popLatestHistorySnapshot,
   pushBoundedHistory,
-  selectedIdsFromSnapshot,
+  type HistorySnapshot,
 } from "../src/editor/editorHistory.ts";
 import { emptyDoc } from "../src/editor/model.ts";
 
-test("history snapshots preserve selection ids with the document", () => {
-  const snapshot = makeHistorySnapshot(emptyDoc, new Set(["r1", "w1"]));
-
-  assert.equal(snapshot.doc, emptyDoc);
-  assert.deepEqual(snapshot.selectedIds, ["r1", "w1"]);
-  assert.deepEqual([...selectedIdsFromSnapshot(snapshot)], ["r1", "w1"]);
-});
+// Snapshots are plain documents now (selection no longer rides with history).
+// The bounded-history helpers only shuffle array elements by identity, so we
+// tag distinct doc objects to assert ordering.
+function docNamed(name: string): HistorySnapshot {
+  return { ...emptyDoc, directives: name };
+}
 
 test("bounded history drops the oldest snapshot", () => {
-  const first = makeHistorySnapshot(emptyDoc, ["a"]);
-  const second = makeHistorySnapshot(emptyDoc, ["b"]);
-  const third = makeHistorySnapshot(emptyDoc, ["c"]);
+  const first = docNamed("a");
+  const second = docNamed("b");
+  const third = docNamed("c");
 
   const next = pushBoundedHistory([first, second], third, 2);
 
-  assert.deepEqual(next.map((snapshot) => snapshot.selectedIds[0]), ["b", "c"]);
+  assert.deepEqual(next.map((snapshot) => snapshot.directives), ["b", "c"]);
 });
 
 test("latest history snapshot can be popped for canceled previews", () => {
-  const first = makeHistorySnapshot(emptyDoc, ["a"]);
-  const second = makeHistorySnapshot(emptyDoc, ["b"]);
+  const first = docNamed("a");
+  const second = docNamed("b");
 
   const popped = popLatestHistorySnapshot([first, second]);
 

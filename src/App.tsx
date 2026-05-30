@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
+import * as Toggle from "@radix-ui/react-toggle";
+import "katex/dist/katex.min.css";
 import { Editor } from "./editor/Editor";
+import { readStoredBoolean } from "./editor/storage";
 import "./styles.css";
 
 const IS_TAURI =
@@ -64,58 +67,35 @@ export default function App() {
   // Editor owns `pagesCollapsed`; it broadcasts the current state on every
   // change so the titlebar toggle can render its pressed/aria state without
   // having to lift state up.
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("spicesim.pagesCollapsed") === "1";
-    } catch {
-      return false;
-    }
-  });
-  const [inspectorCollapsed, setInspectorCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("spicesim.inspectorCollapsed") === "1";
-    } catch {
-      return false;
-    }
-  });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() =>
+    readStoredBoolean("spicesim.pagesCollapsed", false),
+  );
+  const [inspectorCollapsed, setInspectorCollapsed] = useState<boolean>(() =>
+    readStoredBoolean("spicesim.inspectorCollapsed", false),
+  );
   useEffect(() => {
-    const titleHandler = (e: Event) => {
-      const ce = e as CustomEvent<string>;
-      if (typeof ce.detail === "string" && ce.detail.trim()) {
-        setTitle(ce.detail);
+    const titleHandler = (e: CustomEvent<string>) => {
+      if (typeof e.detail === "string" && e.detail.trim()) {
+        setTitle(e.detail);
       }
     };
-    const sidebarHandler = (e: Event) => {
-      const ce = e as CustomEvent<{ collapsed: boolean }>;
-      if (ce.detail && typeof ce.detail.collapsed === "boolean") {
-        setSidebarCollapsed(ce.detail.collapsed);
+    const sidebarHandler = (e: CustomEvent<{ collapsed: boolean }>) => {
+      if (e.detail && typeof e.detail.collapsed === "boolean") {
+        setSidebarCollapsed(e.detail.collapsed);
       }
     };
-    const inspectorHandler = (e: Event) => {
-      const ce = e as CustomEvent<{ collapsed: boolean }>;
-      if (ce.detail && typeof ce.detail.collapsed === "boolean") {
-        setInspectorCollapsed(ce.detail.collapsed);
+    const inspectorHandler = (e: CustomEvent<{ collapsed: boolean }>) => {
+      if (e.detail && typeof e.detail.collapsed === "boolean") {
+        setInspectorCollapsed(e.detail.collapsed);
       }
     };
-    window.addEventListener("spicesim:title", titleHandler as EventListener);
-    window.addEventListener(
-      "spicesim:sidebar-state",
-      sidebarHandler as EventListener,
-    );
-    window.addEventListener(
-      "spicesim:inspector-state",
-      inspectorHandler as EventListener,
-    );
+    window.addEventListener("spicesim:title", titleHandler);
+    window.addEventListener("spicesim:sidebar-state", sidebarHandler);
+    window.addEventListener("spicesim:inspector-state", inspectorHandler);
     return () => {
-      window.removeEventListener("spicesim:title", titleHandler as EventListener);
-      window.removeEventListener(
-        "spicesim:sidebar-state",
-        sidebarHandler as EventListener,
-      );
-      window.removeEventListener(
-        "spicesim:inspector-state",
-        inspectorHandler as EventListener,
-      );
+      window.removeEventListener("spicesim:title", titleHandler);
+      window.removeEventListener("spicesim:sidebar-state", sidebarHandler);
+      window.removeEventListener("spicesim:inspector-state", inspectorHandler);
     };
   }, []);
 
@@ -135,10 +115,10 @@ export default function App() {
     <div className={`app${IS_TAURI ? "" : " website"}`}>
       {!IS_TAURI && (
         <header className="app-header">
-          <button
+          <Toggle.Root
             className={`app-header-pane-toggle left ${sidebarCollapsed ? "collapsed" : ""}`}
-            onClick={toggleSidebar}
-            aria-pressed={!sidebarCollapsed}
+            pressed={!sidebarCollapsed}
+            onPressedChange={toggleSidebar}
             title={sidebarCollapsed ? "Show sidebar (⌘\\)" : "Hide sidebar (⌘\\)"}
             aria-label="Toggle sidebar"
           >
@@ -155,7 +135,7 @@ export default function App() {
               <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
               <path d="M5.75 2.75v10.5" />
             </svg>
-          </button>
+          </Toggle.Root>
           <a
             className="app-header-brand"
             href={`https://github.com/${REPO_SLUG}`}
@@ -209,6 +189,7 @@ export default function App() {
               height={14}
               className="app-header-share-icon"
             >
+              {/* Three nodes joined by lines — classic share glyph. */}
               <circle cx="12" cy="3.5" r="1.8" />
               <circle cx="4" cy="8" r="1.8" />
               <circle cx="12" cy="12.5" r="1.8" />
@@ -239,10 +220,10 @@ export default function App() {
               <span className="app-header-stars-count">{formatStarCount(stars)}</span>
             )}
           </a>
-          <button
+          <Toggle.Root
             className={`app-header-pane-toggle right ${inspectorCollapsed ? "collapsed" : ""}`}
-            onClick={toggleInspector}
-            aria-pressed={!inspectorCollapsed}
+            pressed={!inspectorCollapsed}
+            onPressedChange={toggleInspector}
             title={inspectorCollapsed ? "Show inspector (⇧⌘\\)" : "Hide inspector (⇧⌘\\)"}
             aria-label="Toggle inspector"
           >
@@ -259,7 +240,7 @@ export default function App() {
               <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
               <path d="M10.25 2.75v10.5" />
             </svg>
-          </button>
+          </Toggle.Root>
         </header>
       )}
       {IS_TAURI && (
@@ -267,11 +248,11 @@ export default function App() {
            value. React's bare-prop shorthand renders as `"true"` which some
            versions of the drag-handler don't match — be explicit. */
         <div className="titlebar" data-tauri-drag-region="">
-          <button
+          <Toggle.Root
             className={`titlebar-pane-toggle left ${sidebarCollapsed ? "collapsed" : ""}`}
             data-tauri-drag-region="false"
-            onClick={toggleSidebar}
-            aria-pressed={!sidebarCollapsed}
+            pressed={!sidebarCollapsed}
+            onPressedChange={toggleSidebar}
             title={sidebarCollapsed ? "Show sidebar (⌘\\)" : "Hide sidebar (⌘\\)"}
             aria-label="Toggle sidebar"
           >
@@ -288,13 +269,13 @@ export default function App() {
               <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
               <path d="M5.75 2.75v10.5" />
             </svg>
-          </button>
+          </Toggle.Root>
           <div className="titlebar-title">{title}</div>
-          <button
+          <Toggle.Root
             className={`titlebar-pane-toggle right ${inspectorCollapsed ? "collapsed" : ""}`}
             data-tauri-drag-region="false"
-            onClick={toggleInspector}
-            aria-pressed={!inspectorCollapsed}
+            pressed={!inspectorCollapsed}
+            onPressedChange={toggleInspector}
             title={
               inspectorCollapsed ? "Show inspector (⇧⌘\\)" : "Hide inspector (⇧⌘\\)"
             }
@@ -313,7 +294,7 @@ export default function App() {
               <rect x="1.5" y="2.75" width="13" height="10.5" rx="1.5" />
               <path d="M10.25 2.75v10.5" />
             </svg>
-          </button>
+          </Toggle.Root>
         </div>
       )}
       <Editor />

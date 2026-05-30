@@ -3,13 +3,14 @@ import {
   cloneElement,
   isValidElement,
   useEffect,
-  useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
 } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
+import * as Tabs from "@radix-ui/react-tabs";
 import type { AnalysisSpec } from "./model";
 import { validateAnalysisSpec } from "./analysisValidation";
+import { SegmentedControl, SelectField, type SelectFieldOption } from "./RadixControls";
 
 interface Props {
   initial: AnalysisSpec;
@@ -31,6 +32,12 @@ const TABS: { kind: AnalysisSpec["kind"]; label: string; hint: string }[] = [
   { kind: "noise", label: "Noise", hint: "Input-referred / output noise spectral density" },
 ];
 
+const SWEEP_TYPE_OPTIONS = [
+  { value: "dec", label: "DEC" },
+  { value: "oct", label: "OCT" },
+  { value: "lin", label: "LIN" },
+] as const;
+
 export function AnalysisDialog({
   initial,
   open,
@@ -41,65 +48,13 @@ export function AnalysisDialog({
   onApply,
 }: Props) {
   const [spec, setSpec] = useState<AnalysisSpec>(initial);
-  const cardRef = useRef<HTMLDivElement | null>(null);
-  const prevFocusRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (open) setSpec(initial);
   }, [open, initial]);
-  // Keyboard + focus management. Escape closes; focus is remembered on open
-  // and restored on close so the prior trigger button stays in tab order.
-  useEffect(() => {
-    if (!open) return;
-    prevFocusRef.current = document.activeElement as HTMLElement | null;
-    const card = cardRef.current;
-    if (card) {
-      const focusable = card.querySelector<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      );
-      focusable?.focus();
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      } else if (e.key === "Tab") {
-        trapDialogTab(e, cardRef.current);
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.removeEventListener("keydown", onKey, true);
-      prevFocusRef.current?.focus?.();
-    };
-  }, [open, onClose]);
-
-  if (!open) return null;
 
   const tab = spec.kind;
   const validationIssues = validateAnalysisSpec(spec);
-  function focusTab(kind: AnalysisSpec["kind"]) {
-    window.setTimeout(() => {
-      cardRef.current
-        ?.querySelector<HTMLButtonElement>(`button[data-analysis-tab="${kind}"]`)
-        ?.focus();
-    }, 0);
-  }
-
-  function onTabKeyDown(e: ReactKeyboardEvent<HTMLButtonElement>) {
-    const index = TABS.findIndex((t) => t.kind === spec.kind);
-    if (index < 0) return;
-    let nextIndex: number;
-    if (e.key === "ArrowRight") nextIndex = (index + 1) % TABS.length;
-    else if (e.key === "ArrowLeft") nextIndex = (index - 1 + TABS.length) % TABS.length;
-    else if (e.key === "Home") nextIndex = 0;
-    else if (e.key === "End") nextIndex = TABS.length - 1;
-    else return;
-
-    e.preventDefault();
-    const next = TABS[nextIndex].kind;
-    switchTab(next);
-    focusTab(next);
-  }
+  const sourceOptions = sourceSelectOptions(sweepableSources, sourceLabels);
 
   function switchTab(k: AnalysisSpec["kind"]) {
     if (k === spec.kind) return;
@@ -131,46 +86,47 @@ export function AnalysisDialog({
   }
 
   return (
-    <div className="modal-scrim" onMouseDown={onClose} role="presentation">
-      <div
-        ref={cardRef}
-        className="modal-card"
-        onMouseDown={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Configure simulation"
-      >
+    <Dialog.Root open={open} onOpenChange={(nextOpen) => {
+      if (!nextOpen) onClose();
+    }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="modal-scrim" />
+        <Dialog.Content className="modal-card" aria-label="Configure simulation">
         <div className="modal-header">
-          <div className="modal-title">Configure simulation</div>
-          <button
-            className="icon-btn"
-            onClick={onClose}
-            title="Close"
-            aria-label="Close dialog"
-          >
-            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
-              <line x1={3.5} y1={3.5} x2={10.5} y2={10.5} />
-              <line x1={10.5} y1={3.5} x2={3.5} y2={10.5} />
-            </svg>
-          </button>
+          <Dialog.Title className="modal-title">Configure simulation</Dialog.Title>
+          <Dialog.Description className="sr-only">
+            Choose the analysis type (operating point, transient, AC, or DC sweep) and its parameters, then run the simulation.
+          </Dialog.Description>
+          <Dialog.Close asChild>
+            <button
+              className="icon-btn"
+              title="Close"
+              aria-label="Close dialog"
+            >
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
+                <line x1={3.5} y1={3.5} x2={10.5} y2={10.5} />
+                <line x1={10.5} y1={3.5} x2={3.5} y2={10.5} />
+              </svg>
+            </button>
+          </Dialog.Close>
         </div>
 
-        <div className="tabs" role="tablist" aria-label="Simulation analysis type">
-          {TABS.map((t) => (
-            <button
-              key={t.kind}
-              role="tab"
-              aria-selected={tab === t.kind}
-              tabIndex={tab === t.kind ? 0 : -1}
-              data-analysis-tab={t.kind}
-              className={`tab ${tab === t.kind ? "active" : ""}`}
-              onKeyDown={onTabKeyDown}
-              onClick={() => switchTab(t.kind)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <Tabs.Root
+          value={tab}
+          onValueChange={(value) => switchTab(value as AnalysisSpec["kind"])}
+        >
+          <Tabs.List className="tabs" aria-label="Simulation analysis type">
+            {TABS.map((t) => (
+              <Tabs.Trigger
+                key={t.kind}
+                value={t.kind}
+                className={`tab ${tab === t.kind ? "active" : ""}`}
+              >
+                {t.label}
+              </Tabs.Trigger>
+            ))}
+          </Tabs.List>
+        </Tabs.Root>
         <div className="tab-hint">
           {TABS.find((t) => t.kind === tab)?.hint}
         </div>
@@ -223,17 +179,12 @@ export function AnalysisDialog({
               )}
               <FormRow label="Source" hint="Refdes of source to sweep">
                 {sweepableSources.length > 0 ? (
-                  <select
-                    className="value-input"
+                  <SelectField
                     value={spec.src}
-                    onChange={(e) => setSpec({ ...spec, src: e.target.value })}
-                  >
-                    {sweepableSources.map((s) => (
-                      <option key={s} value={s}>
-                        {sourceLabels?.get(s) ?? s}
-                      </option>
-                    ))}
-                  </select>
+                    onValueChange={(src) => setSpec({ ...spec, src })}
+                    options={sourceOptions}
+                    ariaLabel="Source"
+                  />
                 ) : (
                   <input
                     className="value-input"
@@ -276,18 +227,12 @@ export function AnalysisDialog({
           {spec.kind === "ac" && (
             <>
               <FormRow label="Sweep">
-                <div className="seg" role="group" aria-label="AC sweep type">
-                  {(["dec", "oct", "lin"] as const).map((s) => (
-                    <button
-                      key={s}
-                      className={`seg-btn ${spec.sweep === s ? "active" : ""}`}
-                      onClick={() => setSpec({ ...spec, sweep: s })}
-                      aria-pressed={spec.sweep === s}
-                    >
-                      {s.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
+                <SegmentedControl
+                  value={spec.sweep}
+                  onValueChange={(sweep) => setSpec({ ...spec, sweep: sweep as "dec" | "oct" | "lin" })}
+                  options={SWEEP_TYPE_OPTIONS}
+                  ariaLabel="AC sweep type"
+                />
               </FormRow>
               <FormRow label="Points" hint="Points per decade/octave (or total for LIN)">
                 <input
@@ -330,17 +275,12 @@ export function AnalysisDialog({
               </FormRow>
               <FormRow label="Input source" hint="Refdes of input source (e.g. V1)">
                 {sweepableSources.length > 0 ? (
-                  <select
-                    className="value-input"
+                  <SelectField
                     value={spec.src}
-                    onChange={(e) => setSpec({ ...spec, src: e.target.value })}
-                  >
-                    {sweepableSources.map((s) => (
-                      <option key={s} value={s}>
-                        {sourceLabels?.get(s) ?? s}
-                      </option>
-                    ))}
-                  </select>
+                    onValueChange={(src) => setSpec({ ...spec, src })}
+                    options={sourceOptions}
+                    ariaLabel="Input source"
+                  />
                 ) : (
                   <input
                     className="value-input"
@@ -350,18 +290,12 @@ export function AnalysisDialog({
                 )}
               </FormRow>
               <FormRow label="Sweep">
-                <div className="seg" role="group" aria-label="Noise sweep type">
-                  {(["dec", "oct", "lin"] as const).map((s) => (
-                    <button
-                      key={s}
-                      className={`seg-btn ${spec.sweep === s ? "active" : ""}`}
-                      onClick={() => setSpec({ ...spec, sweep: s })}
-                      aria-pressed={spec.sweep === s}
-                    >
-                      {s.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
+                <SegmentedControl
+                  value={spec.sweep}
+                  onValueChange={(sweep) => setSpec({ ...spec, sweep: sweep as "dec" | "oct" | "lin" })}
+                  options={SWEEP_TYPE_OPTIONS}
+                  ariaLabel="Noise sweep type"
+                />
               </FormRow>
               <FormRow label="Points">
                 <input
@@ -401,8 +335,9 @@ export function AnalysisDialog({
             Apply
           </button>
         </div>
-      </div>
-    </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
@@ -420,28 +355,14 @@ function sourceWarning(
   return null;
 }
 
-function trapDialogTab(e: KeyboardEvent, root: HTMLElement | null) {
-  if (!root) return;
-  const focusable = Array.from(
-    root.querySelectorAll<HTMLElement>(
-      'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter((el) => el.offsetParent !== null && el.getAttribute("aria-hidden") !== "true");
-  if (focusable.length === 0) return;
-
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  const active = document.activeElement;
-  if (e.shiftKey && active === first) {
-    e.preventDefault();
-    last.focus();
-  } else if (!e.shiftKey && active === last) {
-    e.preventDefault();
-    first.focus();
-  } else if (!root.contains(active)) {
-    e.preventDefault();
-    first.focus();
-  }
+function sourceSelectOptions(
+  sweepableSources: string[],
+  sourceLabels?: Map<string, string>,
+): SelectFieldOption[] {
+  return sweepableSources.map((source) => ({
+    value: source,
+    label: sourceLabels?.get(source) ?? source,
+  }));
 }
 
 function FormRow({

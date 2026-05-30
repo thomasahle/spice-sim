@@ -192,7 +192,7 @@ test("round-trips custom subcircuit symbol geometry through layout annotations",
             y: 2,
             rotation: 180,
             value: "wide_block",
-            params: { npins: "6", w: "8", h: "5" },
+            params: { npins: "6", pinSides: "LLRRTB", w: "8", h: "5" },
           },
         ],
         wires: [],
@@ -214,7 +214,7 @@ test("round-trips custom subcircuit symbol geometry through layout annotations",
   };
 
   const netlist = buildNetlist(doc).netlist;
-  assert.match(netlist, /^\* spice-sim-layout: X1 x=-4 y=2 rot=180 w=8 h=5$/m);
+  assert.match(netlist, /^\* spice-sim-layout: X1 x=-4 y=2 rot=180 w=8 h=5 pinSides=LLRRTB$/m);
 
   const imported = await importNetlist(netlist);
   const instance = imported.doc.pages[0].components.find((component) => component.kind === "SUBX");
@@ -223,6 +223,7 @@ test("round-trips custom subcircuit symbol geometry through layout annotations",
   assert.equal(instance.y, 2);
   assert.equal(instance.rotation, 180);
   assert.equal(instance.params?.npins, "6");
+  assert.equal(instance.params?.pinSides, "LLRRTB");
   assert.equal(instance.params?.w, "8");
   assert.equal(instance.params?.h, "5");
 });
@@ -470,6 +471,7 @@ V1 vdd 0 DC 5
   assert.ok(instance);
   assert.equal(instance.value, "and2");
   assert.equal(instance.params?.npins, "5");
+  assert.equal(instance.params?.pinSides, "LLRTB");
 
   const subckt = imported.doc.pages[1];
   const labels = subckt.components.filter((c) => c.kind === "LABEL").map((c) => c.value);
@@ -484,7 +486,9 @@ V1 vdd 0 DC 5
   assert.ok(subckt.components.some((c) => c.kind === "B"));
 
   const regenerated = buildNetlist(imported.doc).netlist;
-  assert.match(regenerated, /^X1\s+\S+\s+\S+\s+\S+\s+\S+\s+0\s+and2$/m);
+  assert.match(regenerated, /^VLFX1P1\s+\S+\s+lf_X1_p1\s+0$/m);
+  assert.match(regenerated, /^VLFX1P5\s+0\s+lf_X1_p5\s+0$/m);
+  assert.match(regenerated, /^X1\s+lf_X1_p1\s+lf_X1_p2\s+lf_X1_p3\s+lf_X1_p4\s+lf_X1_p5\s+and2$/m);
   assert.match(regenerated, /^\.subckt and2 A B Y VDD VSS$/m);
   assert.match(regenerated, /^B1\s+Y\s+VSS\s+V=V\(A\)\*V\(B\)$/m);
 });

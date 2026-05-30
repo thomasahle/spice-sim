@@ -11,6 +11,7 @@ import type { AnalysisSpec, SimSettings } from "./model";
 import { validateAnalysisSpec } from "./analysisValidation";
 import { ValueWithUnit } from "./ValueWithUnit";
 import { UNIT_FAMILIES } from "./valueUnits";
+import { SegmentedControl, SelectField } from "./RadixControls";
 
 interface Props {
   analysis: AnalysisSpec;
@@ -34,6 +35,12 @@ const DC_RANGE_PRESETS = [
   { label: "-1..1", title: "Diode I/V range", start: "-1", stop: "1", step: "0.05" },
   { label: "0..3", title: "MOS/BJT transfer range", start: "0", stop: "3", step: "0.05" },
 ];
+
+const SWEEP_TYPE_OPTIONS = [
+  { value: "dec", label: "DEC" },
+  { value: "oct", label: "OCT" },
+  { value: "lin", label: "LIN" },
+] as const;
 
 // SPICE source refdes prefix determines the units for a DC sweep on it: a
 // current source ("I…") sweeps amps, anything else (V… by convention)
@@ -98,17 +105,12 @@ export function SimSettingsPanel({
   return (
     <div className="sim-settings">
       <Row label="Analysis">
-        <select
-          className="value-input"
+        <SelectField
+          ariaLabel="Analysis"
           value={analysis.kind}
-          onChange={(e) => switchKind(e.target.value as AnalysisSpec["kind"])}
-        >
-          {Object.entries(KIND_LABEL).map(([k, label]) => (
-            <option key={k} value={k}>
-              {label}
-            </option>
-          ))}
-        </select>
+          onValueChange={(value) => switchKind(value as AnalysisSpec["kind"])}
+          options={Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }))}
+        />
       </Row>
       {validationIssues.length > 0 && (
         <div className="form-warn">
@@ -155,17 +157,12 @@ export function SimSettingsPanel({
           {dcSourceWarning && <div className="form-warn">{dcSourceWarning}</div>}
           <Row label="Source">
             {sweepableSources.length > 0 ? (
-              <select
-                className="value-input"
+              <SelectField
+                ariaLabel="DC sweep source"
                 value={analysis.src}
-                onChange={(e) => updateA("src", e.target.value)}
-              >
-                {sweepableSources.map((s) => (
-                  <option key={s} value={s}>
-                    {sourceLabels?.get(s) ?? s}
-                  </option>
-                ))}
-              </select>
+                onValueChange={(value) => updateA("src", value)}
+                options={sweepableSources.map((s) => ({ value: s, label: sourceLabels?.get(s) ?? s }))}
+              />
             ) : (
               <input
                 className="value-input"
@@ -226,18 +223,12 @@ export function SimSettingsPanel({
       {analysis.kind === "ac" && (
         <>
           <Row label="Sweep type">
-            <div className="seg" role="group" aria-label="AC sweep type">
-              {(["dec", "oct", "lin"] as const).map((s) => (
-                <button
-                  key={s}
-                  className={`seg-btn ${analysis.sweep === s ? "active" : ""}`}
-                  onClick={() => updateA("sweep", s)}
-                  aria-pressed={analysis.sweep === s}
-                >
-                  {s.toUpperCase()}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl
+              ariaLabel="AC sweep type"
+              value={analysis.sweep}
+              onValueChange={(value) => updateA("sweep", value)}
+              options={[...SWEEP_TYPE_OPTIONS]}
+            />
           </Row>
           <Row label="Points">
             <input
@@ -278,17 +269,12 @@ export function SimSettingsPanel({
           </Row>
           <Row label="Input source">
             {sweepableSources.length > 0 ? (
-              <select
-                className="value-input"
+              <SelectField
+                ariaLabel="Noise input source"
                 value={analysis.src}
-                onChange={(e) => updateA("src", e.target.value)}
-              >
-                {sweepableSources.map((s) => (
-                  <option key={s} value={s}>
-                    {sourceLabels?.get(s) ?? s}
-                  </option>
-                ))}
-              </select>
+                onValueChange={(value) => updateA("src", value)}
+                options={sweepableSources.map((s) => ({ value: s, label: sourceLabels?.get(s) ?? s }))}
+              />
             ) : (
               <input
                 className="value-input"
@@ -298,18 +284,12 @@ export function SimSettingsPanel({
             )}
           </Row>
           <Row label="Sweep">
-            <div className="seg" role="group" aria-label="Noise sweep type">
-              {(["dec", "oct", "lin"] as const).map((s) => (
-                <button
-                  key={s}
-                  className={`seg-btn ${analysis.sweep === s ? "active" : ""}`}
-                  onClick={() => updateA("sweep", s)}
-                  aria-pressed={analysis.sweep === s}
-                >
-                  {s.toUpperCase()}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl
+              ariaLabel="Noise sweep type"
+              value={analysis.sweep}
+              onValueChange={(value) => updateA("sweep", value)}
+              options={[...SWEEP_TYPE_OPTIONS]}
+            />
           </Row>
           <Row label="Points">
             <input
@@ -345,15 +325,16 @@ export function SimSettingsPanel({
       <div className="sim-divider" />
 
       <Row label="Method">
-        <select
-          className="value-input"
+        <SelectField
+          ariaLabel="Simulation method"
           value={settings?.method ?? "trap"}
-          onChange={(e) => updateS("method", e.target.value as SimSettings["method"])}
-        >
-          <option value="trap">Trapezoidal</option>
-          <option value="gear">Gear</option>
-          <option value="be">Backward Euler</option>
-        </select>
+          onValueChange={(value) => updateS("method", value as SimSettings["method"])}
+          options={[
+            { value: "trap", label: "Trapezoidal" },
+            { value: "gear", label: "Gear" },
+            { value: "be", label: "Backward Euler" },
+          ]}
+        />
       </Row>
       <Row label="Temperature" hint="default 27">
         <ValueWithUnit

@@ -15,6 +15,7 @@ import {
   parseValueUnit,
   type UnitFamily,
 } from "./valueUnits.ts";
+import { SelectField } from "./RadixControls";
 
 interface Props {
   value: string;
@@ -102,19 +103,14 @@ export function ValueWithUnit({
         spellCheck={false}
       />
       {family.options.length > 1 ? (
-        <select
-          className="value-input value-with-unit-select"
+        <SelectField
           value={prefix}
-          onChange={(e) => onPrefixChange(e.target.value)}
+          onValueChange={onPrefixChange}
+          options={family.options.map((opt) => ({ value: opt.prefix, label: opt.label }))}
           disabled={disabled}
-          aria-label={ariaLabel ? `${ariaLabel} unit` : "Unit"}
-        >
-          {family.options.map((opt) => (
-            <option key={opt.prefix} value={opt.prefix}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
+          ariaLabel={ariaLabel ? `${ariaLabel} unit` : "Unit"}
+          className="value-with-unit-select"
+        />
       ) : family.base ? (
         <span className="value-with-unit-static" aria-hidden="true">
           {family.options[0]?.label ?? family.base}

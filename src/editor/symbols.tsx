@@ -3,8 +3,6 @@
 
 import type { ComponentKind } from "./model";
 import { estimateInlineMathTextWidth } from "./mathText.ts";
-import { SvgInlineMathText } from "./mathTextSvg";
-import { subxPinLabelMaxWidth } from "./subxLayout.ts";
 
 interface Props {
   kind: ComponentKind;
@@ -27,10 +25,11 @@ const SW = 0.12; // line width in cell units
 export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = false, mirrored = false, subxPins, subxLabel, subxPinLabels, subxPinSides }: Props) {
   const stroke = selected ? "var(--accent)" : "var(--ink)";
   const lead = palette ? 1.45 : 2;
-  // Larger symbols on the canvas: bodies extend close to the pins so the
-  // visible "tail" between body and wire is short. Palette icons keep
-  // their smaller proportions so they sit nicely in the toolbar slots.
-  const sourceRadius = palette ? 1.08 : 1.5;
+  // Larger symbols on the canvas: bodies extend toward the pins so the
+  // visible "tail" between body and wire is short — but not so large the
+  // circle crowds the pins or a wire routed at pin level grazes its edge.
+  // r=1.2 leaves a 0.8-cell lead each side (pins sit at ±2).
+  const sourceRadius = palette ? 1.08 : 1.2;
   const passiveLead = palette ? 1.55 : 2;
   const transistorLead = palette ? 1.55 : 2;
   const common = {
@@ -359,10 +358,6 @@ export function SubxGlyph({
         if (!p || !pinLabel.trim()) return null;
         const side = sides[i];
         const fontSize = 0.32;
-        const maxLabelWidth =
-          side === "T" || side === "B"
-            ? Math.max(0.8, subxHorizontalPinLabelWidth(sides, side, bodyHalfW))
-            : subxPinLabelMaxWidth(bodyHalfW, fontSize);
         const labelPosition = subxPinLabelPosition(p, side, bodyHalfW, bodyHalfH);
         return (
           <g
@@ -443,12 +438,6 @@ function subxPinLabelPosition(
   if (side === "B") return { x: pin.x, y: bodyHalfH - 0.18, anchor: "middle" };
   if (side === "L") return { x: -bodyHalfW + 0.28, y: pin.y + 0.11, anchor: "start" };
   return { x: bodyHalfW - 0.28, y: pin.y + 0.11, anchor: "end" };
-}
-
-function subxHorizontalPinLabelWidth(sides: string[], side: string, bodyHalfW: number): number {
-  const count = sides.filter((candidate) => candidate === side).length;
-  if (count <= 1) return bodyHalfW * 2 - 0.6;
-  return (bodyHalfW * 2 - 0.6) / count;
 }
 
 // Compact glyph for the palette (no rotation, small viewBox).

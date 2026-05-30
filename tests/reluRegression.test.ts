@@ -60,7 +60,11 @@ test("pure-device ReLU harness instantiates the reusable cell with ordered pins"
 
   assert.deepEqual(result.errors, []);
   assert.equal(result.modelDiagnostics.length, 0);
-  assert.match(netlist, /^X1 vdd vss vref x dp dm wr eta h wp wm u relu1_real_cell$/m);
+  assert.match(netlist, /^VLFX1P1 vdd lf_X1_p1 0$/m);
+  assert.match(netlist, /^VLFX1P12 u lf_X1_p12 0$/m);
+  assert.match(netlist, /^X1 lf_X1_p1 lf_X1_p2 lf_X1_p3 lf_X1_p4 lf_X1_p5 lf_X1_p6 lf_X1_p7 lf_X1_p8 lf_X1_p9 lf_X1_p10 lf_X1_p11 lf_X1_p12 relu1_real_cell$/m);
+  assert.match(netlist, /@VLFX1P1\[i\]/);
+  assert.match(netlist, /@VLFX1P12\[i\]/);
   assert.match(netlist, /^\.subckt relu1_real_cell vdd vss vref x dp dm wr eta h wp wm u$/m);
   assert.doesNotMatch(netlist, /^B\d+\b/m);
   assert.doesNotMatch(netlist, /\b(?:max|tanh|limit)\s*\(/i);

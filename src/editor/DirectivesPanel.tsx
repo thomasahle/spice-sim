@@ -8,18 +8,17 @@ import {
   Children,
   cloneElement,
   isValidElement,
-  useEffect,
   useMemo,
-  useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
 } from "react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   modelDefinitionLine,
   parseModelLine,
   type ModelDeviceType,
 } from "./modelPresets";
+import { SelectField } from "./RadixControls";
 
 export type DirectiveKind =
   | "meas"
@@ -59,6 +58,20 @@ export interface Directive {
 }
 
 const MEAS_FUNCS = ["MAX", "MIN", "AVG", "RMS", "PP", "FIND", "WHEN", "INTEG", "DERIV"] as const;
+const MEAS_ANALYSIS_OPTIONS = [
+  { value: "tran", label: "Transient" },
+  { value: "ac", label: "AC" },
+  { value: "dc", label: "DC" },
+  { value: "noise", label: "Noise" },
+] as const;
+const MEAS_FUNC_OPTIONS = MEAS_FUNCS.map((func) => ({ value: func, label: func }));
+const MODEL_TYPE_OPTIONS = [
+  { value: "D", label: "Diode" },
+  { value: "NPN", label: "NPN BJT" },
+  { value: "PNP", label: "PNP BJT" },
+  { value: "NMOS", label: "NMOS" },
+  { value: "PMOS", label: "PMOS" },
+] as const;
 
 let DIRECTIVE_NEXT_ID = 1;
 function nextId(): string { return `dir-${DIRECTIVE_NEXT_ID++}`; }
@@ -416,12 +429,6 @@ const KIND_LABEL: Record<DirectiveKind, string> = {
 export function DirectivesPanel({ value, onChange }: Props) {
   const dirs = useMemo(() => parseDirectives(value), [value]);
   const [adding, setAdding] = useState(false);
-  const addListRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!adding) return;
-    addListRef.current?.querySelector<HTMLButtonElement>(".dirs-add-row")?.focus();
-  }, [adding]);
 
   function commit(next: Directive[]) {
     onChange(serializeDirectives(next));
@@ -442,50 +449,14 @@ export function DirectivesPanel({ value, onChange }: Props) {
     commit([...dirs, opt.factory()]);
   }
 
-  function focusAddOption(index: number) {
-    const buttons = Array.from(
-      addListRef.current?.querySelectorAll<HTMLButtonElement>(".dirs-add-row") ?? [],
-    );
-    buttons[index]?.focus();
-  }
-
-  function onAddOptionKeyDown(e: ReactKeyboardEvent<HTMLButtonElement>) {
-    const buttons = Array.from(
-      addListRef.current?.querySelectorAll<HTMLButtonElement>(".dirs-add-row") ?? [],
-    );
-    if (buttons.length === 0) return;
-    const index = buttons.findIndex((button) => button === e.currentTarget);
-    if (index < 0) return;
-    let nextIndex: number;
-    if (e.key === "ArrowDown" || e.key === "ArrowRight") {
-      nextIndex = (index + 1) % buttons.length;
-    } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
-      nextIndex = (index - 1 + buttons.length) % buttons.length;
-    } else if (e.key === "Home") {
-      nextIndex = 0;
-    } else if (e.key === "End") {
-      nextIndex = buttons.length - 1;
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      setAdding(false);
-      return;
-    } else {
-      return;
-    }
-
-    e.preventDefault();
-    e.stopPropagation();
-    focusAddOption(nextIndex);
-  }
-
   return (
     <div className="dirs">
-      {dirs.length === 0 && !adding && (
+      {dirs.length === 0 && (
         <div className="dirs-empty">
-          No directives. <button className="link-btn" onClick={() => setAdding(true)}>
-            Add one
-          </button>
+          No directives.{" "}
+          <AddDirectiveMenu open={adding} onOpenChange={setAdding} onAdd={add}>
+            <button className="link-btn">Add one</button>
+          </AddDirectiveMenu>
         </div>
       )}
       <div className="dirs-list">
@@ -499,38 +470,52 @@ export function DirectivesPanel({ value, onChange }: Props) {
         ))}
       </div>
 
-      {adding ? (
-        <div
-          ref={addListRef}
+      {dirs.length > 0 && (
+        <AddDirectiveMenu open={adding} onOpenChange={setAdding} onAdd={add}>
+          <button className="dirs-add">
+            + Add directive
+          </button>
+        </AddDirectiveMenu>
+      )}
+    </div>
+  );
+}
+
+function AddDirectiveMenu({
+  open,
+  onOpenChange,
+  onAdd,
+  children,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onAdd: (opt: AddOption) => void;
+  children: ReactElement;
+}) {
+  return (
+    <DropdownMenu.Root open={open} onOpenChange={onOpenChange} modal={false}>
+      <DropdownMenu.Trigger asChild>{children}</DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
           className="dirs-add-list"
-          role="menu"
-          aria-label="Add SPICE directive"
+          align="start"
+          side="bottom"
+          sideOffset={6}
+          collisionPadding={8}
         >
           {ADD_OPTIONS.map((o) => (
-            <button
+            <DropdownMenu.Item
               key={o.kind}
               className="dirs-add-row"
-              role="menuitem"
-              onKeyDown={onAddOptionKeyDown}
-              onClick={() => add(o)}
-              title={o.hint}
+              onSelect={() => onAdd(o)}
             >
               <span className="dirs-add-label">{o.label}</span>
               <span className="dirs-add-hint">{o.hint}</span>
-            </button>
+            </DropdownMenu.Item>
           ))}
-          <button className="dirs-add-cancel" onClick={() => setAdding(false)}>
-            Cancel
-          </button>
-        </div>
-      ) : (
-        dirs.length > 0 && (
-          <button className="dirs-add" onClick={() => setAdding(true)}>
-            + Add directive
-          </button>
-        )
-      )}
-    </div>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 
@@ -603,21 +588,17 @@ function CardBody({
       return (
         <>
           <Row label="Analysis">
-            <select
-              className="value-input"
+            <SelectField
               value={m.analysis}
-              onChange={(e) =>
+              onValueChange={(value) =>
                 onChange({
                   ...directive,
-                  meas: { ...m, analysis: e.target.value as MeasAnalysis },
+                  meas: { ...m, analysis: value as MeasAnalysis },
                 })
               }
-            >
-              <option value="tran">Transient</option>
-              <option value="ac">AC</option>
-              <option value="dc">DC</option>
-              <option value="noise">Noise</option>
-            </select>
+              options={MEAS_ANALYSIS_OPTIONS}
+              ariaLabel="Measurement analysis"
+            />
           </Row>
           <Row label="Name">
             <input
@@ -630,22 +611,17 @@ function CardBody({
             />
           </Row>
           <Row label="Function">
-            <select
-              className="value-input"
+            <SelectField
               value={m.func}
-              onChange={(e) =>
+              onValueChange={(value) =>
                 onChange({
                   ...directive,
-                  meas: { ...m, func: e.target.value as typeof MEAS_FUNCS[number] },
+                  meas: { ...m, func: value as typeof MEAS_FUNCS[number] },
                 })
               }
-            >
-              {MEAS_FUNCS.map((f) => (
-                <option key={f} value={f}>
-                  {f}
-                </option>
-              ))}
-            </select>
+              options={MEAS_FUNC_OPTIONS}
+              ariaLabel="Measurement function"
+            />
           </Row>
           <Row label="Expression" hint="ngspice trace name or function arg, e.g. V(out)">
             <input
@@ -708,22 +684,17 @@ function CardBody({
             />
           </Row>
           <Row label="Type">
-            <select
-              className="value-input"
+            <SelectField
               value={model.type}
-              onChange={(e) =>
+              onValueChange={(value) =>
                 onChange({
                   ...directive,
-                  model: { ...model, type: e.target.value as ModelDeviceType },
+                  model: { ...model, type: value as ModelDeviceType },
                 })
               }
-            >
-              <option value="D">Diode</option>
-              <option value="NPN">NPN BJT</option>
-              <option value="PNP">PNP BJT</option>
-              <option value="NMOS">NMOS</option>
-              <option value="PMOS">PMOS</option>
-            </select>
+              options={MODEL_TYPE_OPTIONS}
+              ariaLabel="Model type"
+            />
           </Row>
           <Row label="Parameters" hint="SPICE model tokens, e.g. LEVEL=1 VTO=0.7 KP=180e-6">
             <textarea

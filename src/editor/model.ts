@@ -136,20 +136,28 @@ export function parsePortOrder(value: string | undefined): number | null {
 }
 
 export function orderedSubcircuitPortLabels(page: SchematicPage): string[] {
+  return orderedSubcircuitPortComponents(page).map((component) => component.value.trim());
+}
+
+function orderedSubcircuitPortComponents(page: SchematicPage): CircuitComponent[] {
   const labels = page.components.filter(
     (component) => component.kind === "LABEL" && component.value.trim() !== "",
   );
   const hasExplicitPorts = labels.some((component) => component.params?.port === "1");
   return orderedLabelPorts(hasExplicitPorts
     ? labels.filter((component) => component.params?.port === "1")
-    : labels).map((component) => component.value.trim());
+    : labels);
 }
 
 export function subcircuitPortLabels(page: SchematicPage): string[] {
-  const labels: string[] = [];
+  return subcircuitPortComponents(page).map((component) => component.value.trim());
+}
+
+export function subcircuitPortComponents(page: SchematicPage): CircuitComponent[] {
+  const labels: CircuitComponent[] = [];
   const seen = new Set<string>();
-  for (const label of orderedSubcircuitPortLabels(page)) {
-    const key = label.toLowerCase();
+  for (const label of orderedSubcircuitPortComponents(page)) {
+    const key = label.value.trim().toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     labels.push(label);
@@ -159,6 +167,14 @@ export function subcircuitPortLabels(page: SchematicPage): string[] {
 
 export function subcircuitPortCount(page: SchematicPage): number {
   return Math.min(MAX_SUBCIRCUIT_PINS, subcircuitPortLabels(page).length);
+}
+
+export function subcircuitInstanceParamsForPage(page: SchematicPage): Record<string, string> {
+  const labels = subcircuitPortComponents(page).slice(0, MAX_SUBCIRCUIT_PINS);
+  const sideHints = subcircuitPinSidesFromPorts(labels);
+  return sideHints
+    ? { npins: String(labels.length), pinSides: sideHints }
+    : { npins: String(labels.length) };
 }
 
 export function subcircuitPinLabelsForInstance(
@@ -172,9 +188,12 @@ export function subcircuitPinLabelsForInstance(
 
 export function subcircuitBodyWidth(component: CircuitComponent): number {
   const raw = Number(component.params?.w);
-  const n = subcircuitPinCountForInstance(component);
-  const pinsPerSide = Math.ceil(n / 2);
-  const pinCountWidth = Math.min(8, 4.8 + Math.max(0, pinsPerSide - 3) * 0.3);
+  const counts = subcircuitPinSideCounts(component);
+  const verticalPinsPerSide = Math.max(counts.L, counts.R);
+  const horizontalPinsPerSide = Math.max(counts.T, counts.B);
+  const verticalSideWidth = Math.min(8, 4.8 + Math.max(0, verticalPinsPerSide - 3) * 0.3);
+  const horizontalSideWidth = Math.min(16, Math.max(4.8, horizontalPinsPerSide - 1 + 1.2));
+  const pinCountWidth = Math.max(verticalSideWidth, horizontalSideWidth);
   const labelWidth = component.value.trim()
     ? estimateInlineMathTextWidth(component.value.trim()) * 0.6 + 0.84
     : 0;
@@ -184,16 +203,67 @@ export function subcircuitBodyWidth(component: CircuitComponent): number {
 
 export function subcircuitBodyHeight(component: CircuitComponent): number {
   const raw = Number(component.params?.h);
-  const n = subcircuitPinCountForInstance(component);
-  const leftCount = Math.ceil(n / 2);
-  const rightCount = n - leftCount;
-  const autoHeight = Math.max(leftCount, rightCount, 1) - 1 + 1.2;
+  const counts = subcircuitPinSideCounts(component);
+  const sidePinAutoHeight = Math.max(counts.L, counts.R, 1) - 1 + 1.2;
+  const topBottomAutoHeight = Math.max(counts.T, counts.B) > 0 ? 2.2 : 1.2;
+  const autoHeight = Math.max(sidePinAutoHeight, topBottomAutoHeight);
   return clampFinite(raw, autoHeight, autoHeight, 24);
 }
 
 function subcircuitPinCountForInstance(component: CircuitComponent): number {
   const raw = parseInt(component.params?.npins ?? "4", 10);
   return Math.max(1, Math.min(MAX_SUBCIRCUIT_PINS, Number.isFinite(raw) ? raw : 4));
+}
+
+export function subcircuitPinSidesForInstance(component: CircuitComponent): string[] | null {
+  const n = subcircuitPinCountForInstance(component);
+  const raw = (component.params?.pinSides ?? "").trim().toUpperCase();
+  if (raw.length < n || /[^LRTB]/.test(raw.slice(0, n))) return null;
+  return raw.slice(0, n).split("");
+}
+
+export function effectiveSubcircuitPinSidesForInstance(component: CircuitComponent): string[] {
+  const explicit = subcircuitPinSidesForInstance(component);
+  if (explicit) return explicit;
+  const n = subcircuitPinCountForInstance(component);
+  const leftCount = Math.ceil(n / 2);
+  return Array.from({ length: n }, (_, idx) => (idx < leftCount ? "L" : "R"));
+}
+
+function subcircuitPinSideCounts(component: CircuitComponent): Record<"L" | "R" | "T" | "B", number> {
+  const n = subcircuitPinCountForInstance(component);
+  const sides = effectiveSubcircuitPinSidesForInstance(component).slice(0, n);
+  const counts = { L: 0, R: 0, T: 0, B: 0 };
+  for (const side of sides) {
+    counts[side as "L" | "R" | "T" | "B"]++;
+  }
+  return counts;
+}
+
+function subcircuitPinSidesFromPorts(ports: CircuitComponent[]): string | null {
+  if (ports.length === 0) return null;
+  const minX = Math.min(...ports.map((port) => port.x));
+  const maxX = Math.max(...ports.map((port) => port.x));
+  const minY = Math.min(...ports.map((port) => port.y));
+  const maxY = Math.max(...ports.map((port) => port.y));
+  if (Math.abs(maxX - minX) < 1e-9) {
+    return ports.map((port) => portSideParam(port) ?? "L").join("");
+  }
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  return ports.map((port) => {
+    const explicit = portSideParam(port);
+    if (explicit) return explicit;
+    const dx = port.x - centerX;
+    const dy = port.y - centerY;
+    if (Math.abs(dy) > Math.abs(dx) * 1.15) return dy < 0 ? "T" : "B";
+    return dx <= 0 ? "L" : "R";
+  }).join("");
+}
+
+function portSideParam(component: CircuitComponent): "L" | "R" | "T" | "B" | null {
+  const side = component.params?.portSide?.trim().toUpperCase();
+  return side === "L" || side === "R" || side === "T" || side === "B" ? side : null;
 }
 
 function clampFinite(value: number, fallback: number, min: number, max: number): number {
@@ -392,18 +462,38 @@ export function getPinLayout(
 ): { x: number; y: number }[] {
   if (c.kind !== "SUBX") return mirrorPinLayoutIfNeeded(PIN_LAYOUTS[c.kind], c.mirrored);
   const n = subcircuitPinCountForInstance(c);
-  const leftCount = Math.ceil(n / 2);
-  const rightCount = n - leftCount;
+  const sides = effectiveSubcircuitPinSidesForInstance(c);
+  const counts = subcircuitPinSideCounts(c);
   const pinX = subcircuitBodyWidth(c) / 2 + 0.6;
   const bodyHeight = subcircuitBodyHeight(c);
-  const startY = (count: number) => count <= 1 ? 0 : -((bodyHeight - 1.2) / 2);
-  const stepY = (count: number) => count <= 1 ? 0 : (bodyHeight - 1.2) / (count - 1);
+  const bodyWidth = subcircuitBodyWidth(c);
+  const pinY = bodyHeight / 2 + 0.6;
+  const verticalStartY = (count: number) => count <= 1 ? 0 : -((bodyHeight - 1.2) / 2);
+  const verticalStepY = (count: number) => count <= 1 ? 0 : (bodyHeight - 1.2) / (count - 1);
+  const horizontalStartX = (count: number) => count <= 1 ? 0 : -((bodyWidth - 1.2) / 2);
+  const horizontalStepX = (count: number) => count <= 1 ? 0 : (bodyWidth - 1.2) / (count - 1);
+  const leftPins = Array.from({ length: counts.L }, (_, i) => ({
+    x: -pinX,
+    y: verticalStartY(counts.L) + i * verticalStepY(counts.L),
+  }));
+  const rightPins = Array.from({ length: counts.R }, (_, i) => ({
+    x: pinX,
+    y: verticalStartY(counts.R) + i * verticalStepY(counts.R),
+  }));
+  const topPins = Array.from({ length: counts.T }, (_, i) => ({
+    x: horizontalStartX(counts.T) + i * horizontalStepX(counts.T),
+    y: -pinY,
+  }));
+  const bottomPins = Array.from({ length: counts.B }, (_, i) => ({
+    x: horizontalStartX(counts.B) + i * horizontalStepX(counts.B),
+    y: pinY,
+  }));
   const layout: { x: number; y: number }[] = [];
-  for (let i = 0; i < leftCount; i++) {
-    layout.push({ x: -pinX, y: startY(leftCount) + i * stepY(leftCount) });
-  }
-  for (let i = 0; i < rightCount; i++) {
-    layout.push({ x: pinX, y: startY(rightCount) + i * stepY(rightCount) });
+  const indexes = { L: 0, R: 0, T: 0, B: 0 };
+  const pinsBySide = { L: leftPins, R: rightPins, T: topPins, B: bottomPins };
+  for (let i = 0; i < n; i++) {
+    const side = sides[i] as "L" | "R" | "T" | "B";
+    layout.push(pinsBySide[side][indexes[side]++] ?? { x: 0, y: 0 });
   }
   return mirrorPinLayoutIfNeeded(layout, c.mirrored);
 }
@@ -473,6 +563,35 @@ export function pinLabelForKind(kind: ComponentKind, idx: number): string | null
 
 export function rotateNext(r: Rotation): Rotation {
   return ((r + 90) % 360) as Rotation;
+}
+
+// Flipping a component about its horizontal axis (top↔bottom) is equivalent
+// to toggling its vertical-axis mirror and replacing the rotation with
+// (180 − rotation): a horizontal reflection F satisfies F = R₁₈₀ ∘ M, and
+// M ∘ R_θ = R₋θ ∘ M, so F ∘ R_θ ∘ M_m = R₍₁₈₀₋θ₎ ∘ M_{!m}. (90° and 270°
+// rotations are fixed points of this map; only the mirror flag flips.)
+export function flipRotation(r: Rotation): Rotation {
+  return ((180 - r + 360) % 360) as Rotation;
+}
+
+// Two-terminal passives that can be swapped in place from the inspector.
+export const SWAPPABLE_PASSIVE_KINDS: ComponentKind[] = ["R", "C", "L"];
+
+function pinAxisOf(kind: ComponentKind): "h" | "v" {
+  const layout = PIN_LAYOUTS[kind];
+  if (layout.length < 2) return "v";
+  return Math.abs(layout[0].x - layout[1].x) >= Math.abs(layout[0].y - layout[1].y) ? "h" : "v";
+}
+
+// When swapping kinds, keep both pins at their current world positions so
+// existing wires stay attached. R's default orientation is horizontal while
+// C/L are vertical, so crossing that axis needs a 90° rotation bump.
+export function rotationForKindSwap(
+  from: ComponentKind,
+  to: ComponentKind,
+  rotation: Rotation,
+): Rotation {
+  return pinAxisOf(from) === pinAxisOf(to) ? rotation : rotateNext(rotation);
 }
 
 export function makeId(prefix: string): string {
