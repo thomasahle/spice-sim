@@ -1286,6 +1286,9 @@ export function Editor() {
     })(),
     UNDO_LIMIT,
   );
+  const stableNodeNamesRef = useRef<Map<string, string>>(new Map());
+  const stableNodeScopeRef = useRef("");
+  const copyShareLinkRef = useRef<(() => Promise<void>) | null>(null);
   const [showStartupEmptyCard, setShowStartupEmptyCard] = useState(() => {
     const shared = currentSharedDoc();
     if (shared) return activeSchematicIsEmpty(normalizeDoc(shared));
@@ -1483,7 +1486,7 @@ export function Editor() {
     const sidebar = () => setPagesCollapsed((c) => !c);
     const inspector = () => setInspectorCollapsed((c) => !c);
     const share = () => {
-      void copyShareLink();
+      void copyShareLinkRef.current?.();
     };
     window.addEventListener("spicesim:toggle-sidebar", sidebar);
     window.addEventListener("spicesim:toggle-inspector", inspector);
@@ -1526,6 +1529,11 @@ export function Editor() {
   // Derive the active page once per render so most editor code can treat
   // `page.components` etc as the source of truth.
   const page = currentPage(doc);
+  const stableNodeScope = `${workspace.active ?? "shared"}:${doc.pages[0]?.id ?? "root"}`;
+  if (stableNodeScopeRef.current !== stableNodeScope) {
+    stableNodeScopeRef.current = stableNodeScope;
+    stableNodeNamesRef.current.clear();
+  }
   const activeTextEditId = textEdit?.componentId ?? null;
   const activeTextEditKind = textEdit?.kind ?? null;
   const applyCanvasTextEditFocusSelection = useCallback(
@@ -1606,7 +1614,7 @@ export function Editor() {
       if (followupFrame !== null) window.cancelAnimationFrame(followupFrame);
       for (const timeout of followupTimeouts) window.clearTimeout(timeout);
     };
-  }, [page.components, page.probes, activeTextEditId, activeTextEditKind, textEdit?.pinIndex, applyCanvasTextEditFocusSelection]);
+  }, [page.components, page.probes, activeTextEditId, activeTextEditKind, textEdit?.pinIndex, docRef, applyCanvasTextEditFocusSelection]);
   // Always-current refs to dodge stale closures inside global listeners.
   // (docRef is provided by useDocHistory above.)
   const workspaceRef = useRef(workspace);
@@ -2264,7 +2272,7 @@ export function Editor() {
         break;
       }
       case "file:export_netlist": {
-        const r = buildNetlist(docRef.current);
+        const r = buildNetlist(docRef.current, stableNodeNamesRef.current);
         const p = await exportNetlist(r.netlist);
         if (p) setStatus(`Exported netlist to ${p}`);
         break;
@@ -5410,6 +5418,7 @@ export function Editor() {
       setStatus("Share link added to URL");
     }
   }
+  copyShareLinkRef.current = copyShareLink;
 
   async function exportSchematicSvg() {
     const svg = svgRef.current;
@@ -5533,7 +5542,7 @@ export function Editor() {
     const runGeneration = editGenerationRef.current;
     setRunning(true);
     setStatus("Building netlist…");
-    const result = buildNetlist(docRef.current);
+    const result = buildNetlist(docRef.current, stableNodeNamesRef.current);
     const runIssues = [...result.errors, ...result.warnings];
     setRunWarnings(runIssues);
     setRunFloatingPins(result.floatingPins);
@@ -5732,7 +5741,13 @@ export function Editor() {
     noteResize !== null ||
     subxResize !== null;
   const { pinAnnotations, wireJunctionDots, componentValueLabelOffsets, netLabelLayoutMap } =
-    usePinAnnotations({ doc, page, isDragging, canvasValueFontSize });
+    usePinAnnotations({
+      doc,
+      page,
+      isDragging,
+      canvasValueFontSize,
+      stableNodeNames: stableNodeNamesRef.current,
+    });
   const lastSelectedProbeNode = lastSelectedProbe
     ? pinAnnotations.nodes.posToNode.get(
         `${coordKey(lastSelectedProbe.x)},${coordKey(lastSelectedProbe.y)}`,
@@ -8352,4 +8367,3 @@ function formatVolts(v: number): string {
   if (a >= 1e-6) return `${(v * 1e6).toFixed(2)} µV`;
   return `${(v * 1e9).toFixed(2)} nV`;
 }
-

@@ -61,6 +61,28 @@ test("with a shared hint map, an existing net keeps its name when a component is
   assert.equal(second.nodes.pinToNode.get("r1#1"), r1Pin1);
 });
 
+test("with a shared hint map, auto names survive component reordering", () => {
+  const stable = new Map<string, string>();
+  const first = buildNetlist(dividerDoc(), stable);
+  const junction = first.nodes.pinToNode.get("r1#1");
+  const sourceSide = first.nodes.pinToNode.get("r1#0");
+  const loadSide = first.nodes.pinToNode.get("r2#1");
+  assert.ok(junction && sourceSide && loadSide);
+
+  const reordered = dividerDoc();
+  reordered.pages[0].components = [
+    reordered.pages[0].components[2],
+    reordered.pages[0].components[0],
+    reordered.pages[0].components[3],
+    reordered.pages[0].components[1],
+  ];
+  const second = buildNetlist(reordered, stable);
+  assert.equal(second.nodes.pinToNode.get("r1#1"), junction);
+  assert.equal(second.nodes.pinToNode.get("r2#0"), junction);
+  assert.equal(second.nodes.pinToNode.get("r1#0"), sourceSide);
+  assert.equal(second.nodes.pinToNode.get("r2#1"), loadSide);
+});
+
 test("auto names stay unique under the hint map (no collisions)", () => {
   const stable = new Map<string, string>();
   const result = buildNetlist(

@@ -38,17 +38,19 @@ export function usePinAnnotations({
   page,
   isDragging,
   canvasValueFontSize,
+  stableNodeNames,
 }: {
   doc: CircuitDoc;
   page: SchematicPage;
   isDragging: boolean;
   canvasValueFontSize: number;
+  stableNodeNames?: Map<string, string>;
 }): PinAnnotationLayouts {
   // Only buildNetlist is genuinely expensive — it walks every page to resolve
   // the whole netlist. Freeze just this one while a drag is in flight so we
   // don't rebuild it per pointer-move frame. (The cost: node-name hover text
   // on adjacent wires reads the pre-drag mapping until the drag commits.)
-  const pinAnnotations = useStableDuringDrag(() => buildNetlist(doc), [doc], isDragging);
+  const pinAnnotations = useStableDuringDrag(() => buildNetlist(doc, stableNodeNames), [doc, stableNodeNames], isDragging);
   // The layout derivations below are cheap single-page traversals, so they run
   // live during a drag — junction dots track the moving wire, value labels and
   // net-label placement reflow as the component moves, instead of snapping into

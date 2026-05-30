@@ -202,9 +202,14 @@ interface PageOpts {
   modelTypesByName: Map<string, Set<ModelDeviceType>>;
   /** Global refdes counters, namespaced for the root only. Subckts use local counters. */
   globalCounters?: Record<string, number>;
+  /** Opt-in canonical-net-key -> name map for stable root auto-node names. */
+  stableNames?: Map<string, string>;
 }
 
-export function buildNetlist(doc: CircuitDoc): NetlistResult {
+export function buildNetlist(
+  doc: CircuitDoc,
+  stableNames?: Map<string, string>,
+): NetlistResult {
   const usedModels = new Set<ComponentKind>();
   const modelTypesByName = buildModelTypeIndex(doc.directives);
   const globalCounters: Record<string, number> = {};
@@ -220,6 +225,7 @@ export function buildNetlist(doc: CircuitDoc): NetlistResult {
     usedModels,
     modelTypesByName,
     globalCounters,
+    stableNames,
   });
   warnings.push(...rootBuild.warnings);
   floatingPins.push(...rootBuild.floatingPins);
@@ -351,6 +357,86 @@ function liveFlowSaveTokens(component: CircuitComponent, refdes: string): string
       return getPinLayout(component).map((_, pinIndex) => `@${liveFlowSubcircuitPinSenseRef(refdes, pinIndex)}[i]`);
     default:
       return [];
+  }
+}
+
+// Remap auto-named root nets (the n# ones) so a repeated build can keep the
+// names attached to the same device-pin membership. This keeps traces and
+// measurements aimed at an unlabeled node from drifting when unrelated
+// components are inserted or reordered. Labels, ground, notes, and subcircuit
+// internals are intentionally outside this map.
+function applyStableAutoNames(
+  rootToName: Map<string, string>,
+  compPinKeys: { compId: string; pinIdx: number; posKey: string; kind: ComponentKind }[],
+  dsu: DSU,
+  stableNames: Map<string, string>,
+): void {
+  const isAuto = (name: string) => /^n\d+$/.test(name);
+  const members = new Map<string, string[]>();
+
+  for (const cp of compPinKeys) {
+    if (cp.kind === "LABEL" || cp.kind === "GND" || cp.kind === "NOTE") continue;
+    const root = dsu.find(cp.posKey);
+    const list = members.get(root);
+    const member = `${cp.compId}:${cp.pinIdx}`;
+    if (list) list.push(member);
+    else members.set(root, [member]);
+  }
+
+  const keyByRoot = new Map<string, string>();
+  for (const [root, list] of members) {
+    keyByRoot.set(root, list.slice().sort().join("|"));
+  }
+
+  const autoRoots = [...rootToName]
+    .filter(([, name]) => isAuto(name))
+    .map(([root, current]) => ({
+      root,
+      current,
+      key: keyByRoot.get(root),
+    }));
+  if (autoRoots.length === 0) return;
+
+  const used = new Set([...rootToName.values()].filter((name) => !isAuto(name)));
+  const desiredCounts = new Map<string, number>();
+  for (const item of autoRoots) {
+    if (!item.key) continue;
+    const prior = stableNames.get(item.key);
+    if (prior && isAuto(prior)) desiredCounts.set(prior, (desiredCounts.get(prior) ?? 0) + 1);
+  }
+
+  const assigned = new Map<string, string>();
+  for (const item of autoRoots) {
+    if (!item.key) continue;
+    const prior = stableNames.get(item.key);
+    if (!prior || !isAuto(prior) || desiredCounts.get(prior) !== 1 || used.has(prior)) continue;
+    assigned.set(item.root, prior);
+    used.add(prior);
+  }
+
+  let fallbackIdx = 1;
+  const nextAutoName = () => {
+    while (used.has(`n${fallbackIdx}`)) fallbackIdx += 1;
+    const name = `n${fallbackIdx}`;
+    used.add(name);
+    return name;
+  };
+
+  for (const item of autoRoots) {
+    if (assigned.has(item.root)) continue;
+    if (!used.has(item.current)) {
+      assigned.set(item.root, item.current);
+      used.add(item.current);
+    } else {
+      assigned.set(item.root, nextAutoName());
+    }
+  }
+
+  for (const [root, name] of assigned) rootToName.set(root, name);
+  for (const item of autoRoots) {
+    if (!item.key) continue;
+    const name = rootToName.get(item.root);
+    if (name && isAuto(name)) stableNames.set(item.key, name);
   }
 }
 
@@ -584,6 +670,9 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
   for (const cp of compPinKeys) {
     const r = dsu.find(cp.posKey);
     if (!rootToName.has(r)) rootToName.set(r, `n${nodeCounter++}`);
+  }
+  if (opts.stableNames) {
+    applyStableAutoNames(rootToName, compPinKeys, dsu, opts.stableNames);
   }
 
   const pinToNode = new Map<string, string>();
