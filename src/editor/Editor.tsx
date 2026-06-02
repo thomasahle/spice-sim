@@ -237,7 +237,7 @@ import {
   graphDocToLegacy,
 } from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline } from "./graphModel";
-import { deleteNode as graphDeleteNode, splitEdgeAtPoint } from "./graphEdit";
+import { deleteNode as graphDeleteNode, splitEdgeAtPoint, splitEdgeAtSegment } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -1930,6 +1930,19 @@ export function Editor() {
   >(null);
   const nodeDragRef = useRef(nodeDrag);
   nodeDragRef.current = nodeDrag;
+  // Node-tool segment selection (click a wire body, not a handle): Delete splits
+  // the wire at that segment (§13.5).
+  const [segSel, setSegSel] = useState<{ wireId: string; segIndex: number } | null>(null);
+  const segSelRef = useRef(segSel);
+  segSelRef.current = segSel;
+  // Node-tool selection is tool-scoped — clear it when switching away.
+  useEffect(() => {
+    if (tool !== "node") {
+      setNodeSel(null);
+      setSegSel(null);
+      setNodeDrag(null);
+    }
+  }, [tool]);
   const toolRef = useRef(tool);
   toolRef.current = tool;
   const nodeSelRef = useRef(nodeSel);
@@ -2617,6 +2630,18 @@ export function Editor() {
       }
       if (k === "t" && !meta) {
         selectTool("NOTE");
+        return;
+      }
+      if (
+        (k === "backspace" || k === "delete") &&
+        toolRef.current === "node" &&
+        segSelRef.current
+      ) {
+        // A selected wire SEGMENT → split the wire there into two nets (§13.5).
+        e.preventDefault();
+        const s = segSelRef.current;
+        commit((d) => updateCurrentPageGraph(d, (p) => splitEdgeAtSegment(p, s.wireId, s.segIndex)));
+        setSegSel(null);
         return;
       }
       if (
@@ -3418,9 +3443,32 @@ export function Editor() {
         }
       }
       setNodeSel(best);
-      if (bestDrag) {
-        capturePointer(e);
-        setNodeDrag(bestDrag);
+      if (best) {
+        setSegSel(null);
+        if (bestDrag) {
+          capturePointer(e);
+          setNodeDrag(bestDrag);
+        }
+      } else {
+        // No handle nearby — try selecting a wire segment (body) so Delete can
+        // split the wire there (§13.5).
+        const distToSeg = (px: number, py: number, x1: number, y1: number, x2: number, y2: number) => {
+          const dx = x2 - x1, dy = y2 - y1;
+          const len2 = dx * dx + dy * dy;
+          const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2));
+          return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+        };
+        let seg: { wireId: string; segIndex: number } | null = null;
+        let segD = 0.3;
+        for (const w of g.wires) {
+          const poly = wirePolyline(g, w, idx);
+          if (!poly) continue;
+          for (let i = 0; i < poly.length - 1; i++) {
+            const d = distToSeg(raw.x, raw.y, poly[i][0], poly[i][1], poly[i + 1][0], poly[i + 1][1]);
+            if (d < segD) { segD = d; seg = { wireId: w.id, segIndex: i }; }
+          }
+        }
+        setSegSel(seg);
       }
       return;
     }
@@ -8251,6 +8299,27 @@ export function Editor() {
                 const idx = pinNodeIndex(g);
                 return (
                   <g className="node-edit-handles">
+                    {segSel &&
+                      (() => {
+                        const w = g.wires.find((wi) => wi.id === segSel.wireId);
+                        if (!w) return null;
+                        const poly = wirePolyline(g, w, idx);
+                        if (!poly || segSel.segIndex >= poly.length - 1) return null;
+                        const [x1, y1] = poly[segSel.segIndex];
+                        const [x2, y2] = poly[segSel.segIndex + 1];
+                        return (
+                          <line
+                            x1={x1}
+                            y1={y1}
+                            x2={x2}
+                            y2={y2}
+                            stroke="var(--accent)"
+                            strokeWidth={0.18}
+                            strokeLinecap="round"
+                            opacity={0.6}
+                          />
+                        );
+                      })()}
                     {allNodeIds(g).map((id) => {
                       const p = nodePos(g, id, idx);
                       if (!p) return null;

@@ -7,6 +7,7 @@ import {
   gcOrphanNodes,
   nodeDegree,
   splitEdgeAtPoint,
+  splitEdgeAtSegment,
 } from "../src/editor/graphEdit.ts";
 import { buildGraphNets } from "../src/editor/graphNetlist.ts";
 import type { CircuitComponent, CircuitNode, SchematicPage, Wire } from "../src/editor/graphModel.ts";
@@ -32,6 +33,24 @@ test("splitEdgeAtPoint splits a wire at an interior point into a T-junction", ()
   assert.equal(nets.netOf.get("a"), nets.netOf.get(r.nodeId), "junction joins the net");
   assert.equal(splitEdgeAtPoint(p, 2, 5), null, "off-wire point → no split");
   assert.equal(splitEdgeAtPoint(p, 0, 0), null, "existing endpoint → not an interior split");
+});
+
+test("splitEdgeAtSegment splits a multi-bend wire into two nets at a middle segment", () => {
+  const nodes: CircuitNode[] = [
+    { id: "a", x: 0, y: 0 },
+    { id: "b", x: 4, y: 2 },
+  ];
+  // polyline (0,0)->(2,0)->(2,2)->(4,2); segment 1 is (2,0)-(2,2)
+  const wires: Wire[] = [{ id: "e1", a: "a", b: "b", bends: [[2, 0], [2, 2]] }];
+  const p = page({ nodes, wires });
+  const after = splitEdgeAtSegment(p, "e1", 1);
+  assert.equal(after.wires.length, 2, "two fragments");
+  const nets = buildGraphNets(after);
+  assert.notEqual(nets.netOf.get("a"), nets.netOf.get("b"), "fragments are now separate nets");
+  assert.deepEqual(after.wires.map((w) => w.bends.length).sort(), [0, 0], "each fragment is straight");
+  // deleting the only segment of a 2-point wire drops it entirely
+  const p2 = page({ nodes: [{ id: "a", x: 0, y: 0 }, { id: "b", x: 2, y: 0 }], wires: [{ id: "e", a: "a", b: "b", bends: [] }] });
+  assert.equal(splitEdgeAtSegment(p2, "e", 0).wires.length, 0, "2-point wire's only segment → wire dropped");
 });
 
 test("deleteEdge splits the graph (the connection is severed)", () => {

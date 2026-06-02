@@ -116,6 +116,46 @@ export function deleteNode(page: SchematicPage, nodeId: NodeId): SchematicPage {
   return gcOrphanNodes(dropNode({ ...page, wires: page.wires.filter((w) => !incSet.has(w)) }));
 }
 
+/** Split a wire by removing one of its polyline segments (Node tool §13.5):
+ *  the edge becomes the two fragments on either side, which are now separate
+ *  nets. The split vertices become standalone endpoint nodes. A fragment with
+ *  < 2 points (deleting an end segment, or the only segment of a 2-point wire)
+ *  is dropped. `segIndex` is the 0-based segment of wirePolyline(edge). */
+export function splitEdgeAtSegment(
+  page: SchematicPage,
+  wireId: string,
+  segIndex: number,
+): SchematicPage {
+  const edge = page.wires.find((w) => w.id === wireId);
+  if (!edge) return page;
+  const poly = wirePolyline(page, edge, pinNodeIndex(page));
+  if (!poly) return page;
+  const n = poly.length - 1; // segment count
+  if (segIndex < 0 || segIndex >= n) return page;
+
+  const newNodes: CircuitNode[] = [];
+  const newWires: Wire[] = [];
+  const toBends = (slice: [number, number][]) => slice.map(([x, y]) => [x, y] as [number, number]);
+
+  // Left fragment: a → vertex(segIndex), only if it has a real segment.
+  if (segIndex >= 1) {
+    const end: CircuitNode = { id: makeNodeId(), x: poly[segIndex][0], y: poly[segIndex][1] };
+    newNodes.push(end);
+    newWires.push({ id: edge.id, a: edge.a, b: end.id, bends: toBends(poly.slice(1, segIndex)) });
+  }
+  // Right fragment: vertex(segIndex+1) → b.
+  if (segIndex + 1 <= n - 1) {
+    const start: CircuitNode = { id: makeNodeId(), x: poly[segIndex + 1][0], y: poly[segIndex + 1][1] };
+    newNodes.push(start);
+    newWires.push({ id: makeWireId(), a: start.id, b: edge.b, bends: toBends(poly.slice(segIndex + 2, n)) });
+  }
+  return gcOrphanNodes({
+    ...page,
+    nodes: [...(page.nodes ?? []), ...newNodes],
+    wires: page.wires.flatMap((w) => (w.id === wireId ? newWires : [w])),
+  });
+}
+
 /** Point a wire's endpoint at a different node (drop-to-connect onto a node). */
 export function setWireEndpoint(
   page: SchematicPage,
