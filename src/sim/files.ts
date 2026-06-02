@@ -1,16 +1,24 @@
 // File I/O bridge: save/load .spicesim JSON documents, export .cir netlist.
 // Falls back to gracefully no-op behaviour when not running inside Tauri.
 
-import type { LegacyCircuitDoc as CircuitDoc } from "../editor/legacyModel";
+import type { CircuitDoc } from "../editor/model.ts";
+import { GRAPH_DOC_VERSION } from "../editor/model.ts";
+import { migrateToGraphDoc } from "../editor/docNormalize.ts";
 
 function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+// .spicesim files store the Model-C GRAPH doc, version-tagged. Stamp on write
+// so reopened files are recognised as v2; migrate older (v1) files on open.
+function serializeDoc(doc: CircuitDoc): string {
+  return JSON.stringify({ ...doc, version: GRAPH_DOC_VERSION }, replaceSets, 2);
+}
+
 export async function saveDoc(doc: CircuitDoc, path: string | null): Promise<string | null> {
   if (!isTauri()) {
     // Browser fallback: download a JSON file
-    const blob = new Blob([JSON.stringify(doc, replaceSets, 2)], {
+    const blob = new Blob([serializeDoc(doc)], {
       type: "application/json",
     });
     const a = document.createElement("a");
@@ -31,7 +39,7 @@ export async function saveDoc(doc: CircuitDoc, path: string | null): Promise<str
       ],
     }));
   if (!target) return null;
-  await writeTextFile(target, JSON.stringify(doc, replaceSets, 2));
+  await writeTextFile(target, serializeDoc(doc));
   return target;
 }
 
@@ -46,7 +54,7 @@ export async function openDoc(): Promise<{ path: string; doc: CircuitDoc } | nul
         if (!f) return resolve(null);
         const text = await f.text();
         try {
-          resolve({ path: f.name, doc: JSON.parse(text) });
+          resolve({ path: f.name, doc: migrateToGraphDoc(JSON.parse(text)) });
         } catch {
           resolve(null);
         }
@@ -63,7 +71,7 @@ export async function openDoc(): Promise<{ path: string; doc: CircuitDoc } | nul
   });
   if (!sel || typeof sel !== "string") return null;
   const text = await readTextFile(sel);
-  return { path: sel, doc: JSON.parse(text) };
+  return { path: sel, doc: migrateToGraphDoc(JSON.parse(text)) };
 }
 
 export async function openNetlist(): Promise<{ path: string; text: string } | null> {

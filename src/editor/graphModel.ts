@@ -6,6 +6,7 @@
 import {
   makeId,
   pinWorldPos,
+  GRAPH_DOC_VERSION,
   type CircuitComponent,
   type CircuitNode,
   type Probe,
@@ -17,7 +18,8 @@ export type { CircuitComponent, CircuitNode, Probe, SchematicPage, Wire };
 export type NodeId = string;
 export type WireId = string;
 
-export const GRAPH_DOC_VERSION = 2 as const;
+// Single source of truth lives in model.ts; re-exported here for graph callers.
+export { GRAPH_DOC_VERSION };
 
 export function makeNodeId(): NodeId {
   return makeId("n");

@@ -2,7 +2,9 @@
 // Persisted to localStorage so projects survive reloads without requiring
 // disk save. Disk save (.spicesim) still works for export/share.
 
-import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel";
+import type { CircuitDoc } from "./model.ts";
+import { GRAPH_DOC_VERSION } from "./model.ts";
+import { migrateToGraphDoc } from "./docNormalize.ts";
 
 export interface ProjectEntry {
   id: string;
@@ -70,12 +72,16 @@ export function saveWorkspace(w: Workspace) {
   }
 }
 
+/**
+ * Load + migrate a project to the Model-C GRAPH doc. Older (v1) entries stored
+ * as legacy polylines are migrated on the fly; v2 entries pass through. Returns
+ * null only when no entry exists (or parsing fails).
+ */
 export function loadProject(id: string): CircuitDoc | null {
   try {
-    return safeParse<CircuitDoc | null>(
-      localStorage.getItem(PROJECT_PREFIX + id),
-      null,
-    );
+    const raw = safeParse<unknown>(localStorage.getItem(PROJECT_PREFIX + id), null);
+    if (raw === null) return null;
+    return migrateToGraphDoc(raw);
   } catch {
     return null;
   }
@@ -83,7 +89,10 @@ export function loadProject(id: string): CircuitDoc | null {
 
 export function saveProject(id: string, doc: CircuitDoc) {
   try {
-    localStorage.setItem(PROJECT_PREFIX + id, JSON.stringify(doc));
+    localStorage.setItem(
+      PROJECT_PREFIX + id,
+      JSON.stringify({ ...doc, version: GRAPH_DOC_VERSION }),
+    );
   } catch (e) {
     if (isQuotaError(e) && onQuotaFailure) onQuotaFailure("project");
     console.warn("[Spice Sim] saveProject failed", e);

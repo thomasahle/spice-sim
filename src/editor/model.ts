@@ -113,6 +113,10 @@ export interface SimSettings {
 }
 
 export interface CircuitDoc {
+  /** Persistence schema version. Absent / <2 ⇒ legacy v1 (polyline wires);
+   *  >=2 ⇒ Model-C graph doc (wires are node edges). Stamped on save by the
+   *  persistence layer; consumed by migrateToGraphDoc on load. */
+  version?: number;
   /** Ordered pages; pages[0] is the root schematic (main netlist). Others emit as `.subckt`. */
   pages: SchematicPage[];
   /** Currently-edited page id. */
@@ -121,6 +125,9 @@ export interface CircuitDoc {
   analysis: AnalysisSpec;
   simSettings?: SimSettings;
 }
+
+/** Current graph-doc persistence schema version. */
+export const GRAPH_DOC_VERSION = 2;
 
 export const MAX_SUBCIRCUIT_PINS = 64;
 

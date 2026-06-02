@@ -43,7 +43,6 @@ import {
 // legacyModel.ts). These move back to ./model when the editor edits the graph.
 import {
   currentPage,
-  emptyDoc,
   subcircuitInstanceParamsForPage,
   subcircuitPinLabelsForInstance,
   subcircuitPortCount,
@@ -119,7 +118,7 @@ import {
   type FloatingPinDiagnostic,
   type ModelDiagnostic,
 } from "./netlist";
-import { normalizeDoc } from "./docNormalize";
+import { migrateToGraphDoc } from "./docNormalize";
 import { snapNetLabelDrag } from "./netLabelConnections";
 import { SvgInlineMathText } from "./mathTextSvg";
 import { estimateInlineMathTextWidth } from "./mathText.ts";
@@ -1255,6 +1254,7 @@ export function Editor() {
       const name = "Shared circuit";
       const fresh: Workspace = { active: id, projects: [{ id, name }] };
       saveWorkspace(fresh);
+      // `shared` is already a migrated graph doc; saveProject stamps version.
       saveProject(id, shared);
       return fresh;
     }
@@ -1267,7 +1267,7 @@ export function Editor() {
     const id = newProjectId();
     const fresh: Workspace = { active: id, projects: [{ id, name: "Untitled" }] };
     saveWorkspace(fresh);
-    saveProject(id, emptyDoc);
+    saveProject(id, emptyDocGraph);
     return fresh;
   });
   const {
@@ -1284,38 +1284,31 @@ export function Editor() {
     (() => {
       const w = loadWorkspace();
       if (w.active) {
+        // loadProject already migrates v1→graph and normalizes.
         const loaded = loadProject(w.active);
-        if (loaded) return legacyDocToGraph(normalizeDoc(loaded));
+        if (loaded) return loaded;
       }
-      return legacyDocToGraph(emptyDoc);
+      return emptyDocGraph;
     })(),
     UNDO_LIMIT,
   );
-  // The graph (graphDoc) is the source of truth. Editing still runs on the
-  // legacy (polyline) shapes via these derived views; `commit`/`setDoc` bridge
-  // legacy edits back onto the graph. Native graph edit ops (which preserve node
-  // identity — the silent-auto-connect fix) replace the bridge op-by-op.
+  // The graph (graphDoc) is the source of truth. Editing/rendering still reads
+  // the legacy (polyline) shapes via this derived view; native graph edit ops
+  // (which preserve node identity — the silent-auto-connect fix) and `commit`
+  // write the graph directly. Persistence reads `graphDocRef` (the graph doc).
   const doc = useMemo(() => graphDocToLegacy(graphDoc), [graphDoc]);
   const docRef = useRef(doc);
   docRef.current = doc;
-  const setDoc = useCallback(
-    (next: CircuitDoc | ((cur: CircuitDoc) => CircuitDoc)) => {
-      setGraphDoc((cur) =>
-        legacyDocToGraph(typeof next === "function" ? next(graphDocToLegacy(cur)) : next),
-      );
-    },
-    [setGraphDoc],
-  );
   const stableNodeNamesRef = useRef<Map<string, string>>(new Map());
   const stableNodeScopeRef = useRef("");
   const copyShareLinkRef = useRef<(() => Promise<void>) | null>(null);
   const [showStartupEmptyCard, setShowStartupEmptyCard] = useState(() => {
     const shared = currentSharedDoc();
-    if (shared) return activeSchematicIsEmpty(normalizeDoc(shared));
+    if (shared) return activeSchematicIsEmpty(shared);
     const w = loadWorkspace();
     if (w.active) {
       const loaded = loadProject(w.active);
-      if (loaded) return activeSchematicIsEmpty(normalizeDoc(loaded));
+      if (loaded) return activeSchematicIsEmpty(loaded);
     }
     return true;
   });
@@ -1599,10 +1592,10 @@ export function Editor() {
     [applyCanvasTextEditFocusSelection],
   );
   useEffect(() => {
-    if (showStartupEmptyCard && !activeSchematicIsEmpty(doc)) {
+    if (showStartupEmptyCard && !activeSchematicIsEmpty(graphDoc)) {
       setShowStartupEmptyCard(false);
     }
-  }, [doc, showStartupEmptyCard]);
+  }, [graphDoc, showStartupEmptyCard]);
   useEffect(() => {
     if (!activeTextEditId || !activeTextEditKind) return;
     const component = page.components.find((c) => c.id === activeTextEditId);
@@ -1658,15 +1651,15 @@ export function Editor() {
   const handledShareHashRef = useRef(
     typeof window === "undefined" ? "" : window.location.hash,
   );
-  useWorkspacePersistence(workspace, doc, workspaceRef, docRef);
+  useWorkspacePersistence(workspace, graphDoc, workspaceRef, graphDocRef);
 
   function switchProject(id: string) {
     if (id === workspace.active) return;
     // Flush current doc first so we don't lose pending changes.
-    if (workspace.active) saveProject(workspace.active, docRef.current);
-    const loaded = loadProject(id);
-    const next = loaded ? normalizeDoc(loaded) : emptyDoc;
-    setDoc(next);
+    if (workspace.active) saveProject(workspace.active, graphDocRef.current);
+    // loadProject already migrates v1→graph and normalizes.
+    const next = loadProject(id) ?? emptyDocGraph;
+    setGraphDoc(next);
     setPast([]);
     setFuture([]);
     resetInteractionState();
@@ -1691,9 +1684,9 @@ export function Editor() {
       name = `${baseName} ${n}`;
     }
     const id = newProjectId();
-    if (workspace.active) saveProject(workspace.active, docRef.current);
-    saveProject(id, emptyDoc);
-    setDoc(emptyDoc);
+    if (workspace.active) saveProject(workspace.active, graphDocRef.current);
+    saveProject(id, emptyDocGraph);
+    setGraphDoc(emptyDocGraph);
     setPast([]);
     setFuture([]);
     resetInteractionState();
@@ -1911,8 +1904,9 @@ export function Editor() {
     const nextActive = workspace.active === id ? remaining[0].id : workspace.active;
     setWorkspace({ active: nextActive, projects: remaining });
     if (workspace.active === id) {
+      // loadProject already migrates v1→graph; DEMO is a legacy demo doc.
       const loaded = loadProject(nextActive);
-      setDoc(loaded ? normalizeDoc(loaded) : DEMO);
+      setGraphDoc(loaded ?? migrateToGraphDoc(DEMO));
       setPast([]);
       setFuture([]);
       setSelectedIds(new Set());
@@ -2095,7 +2089,7 @@ export function Editor() {
     // mystery freeze.
     opts.onPhase?.("rendering");
     await new Promise((r) => requestAnimationFrame(() => r(null)));
-    commit(() => legacyDocToGraph(normalizeDoc(imported.doc)));
+    commit(() => migrateToGraphDoc(imported.doc));
     setFilePath(null);
     setDiskDirty(true);
     resetInteractionState();
@@ -2234,17 +2228,18 @@ export function Editor() {
       const shared = currentSharedDoc();
       handledShareHashRef.current = hash;
       if (!shared) return;
-      if (sameCircuitDoc(shared, docRef.current)) {
+      if (sameCircuitDoc(shared, graphDocRef.current)) {
         setStatus("Shared circuit already open");
         return;
       }
       const previousActive = workspaceRef.current.active;
-      if (previousActive) saveProject(previousActive, docRef.current);
+      if (previousActive) saveProject(previousActive, graphDocRef.current);
 
       const id = newProjectId();
       const name = nextSharedProjectName(workspaceRef.current.projects);
+      // `shared` is already a migrated graph doc.
       saveProject(id, shared);
-      setDoc(shared);
+      setGraphDoc(shared);
       setPast([]);
       setFuture([]);
       setFilePath(null);
@@ -2305,7 +2300,8 @@ export function Editor() {
         if (!confirmDiscardIfDirty()) return;
         const r = await openDoc();
         if (!r) return;
-        commit(() => legacyDocToGraph(normalizeDoc(r.doc)));
+        // openDoc already migrates v1→graph.
+        commit(() => r.doc);
         setFilePath(r.path);
         setDiskDirty(false);
         resetInteractionState();
@@ -2324,7 +2320,7 @@ export function Editor() {
         break;
       }
       case "file:save": {
-        const p = await saveDoc(docRef.current, filePathRef.current);
+        const p = await saveDoc(graphDocRef.current, filePathRef.current);
         if (p) {
           setFilePath(p);
           setDiskDirty(false);
@@ -2333,7 +2329,7 @@ export function Editor() {
         break;
       }
       case "file:save_as": {
-        const p = await saveDoc(docRef.current, null);
+        const p = await saveDoc(graphDocRef.current, null);
         if (p) {
           setFilePath(p);
           setDiskDirty(false);
@@ -5707,7 +5703,7 @@ export function Editor() {
   }
 
   async function copyShareLink() {
-    const url = shareUrlForDoc(window.location.href, docRef.current);
+    const url = shareUrlForDoc(window.location.href, graphDocRef.current);
     try {
       await navigator.clipboard?.writeText(url);
       setStatus("Share link copied");
@@ -8609,21 +8605,27 @@ export function Editor() {
 
 
 
-function activeSchematicIsEmpty(doc: CircuitDoc): boolean {
-  const page = currentPage(doc);
+function activeSchematicIsEmpty(doc: GraphDoc): boolean {
+  const page = currentPageGraph(doc);
   return page.components.length === 0 && page.wires.length === 0;
 }
 
 
-function currentSharedDoc(): CircuitDoc | null {
+// The shared (#doc=…) payload, migrated to the Model-C GRAPH doc (or null).
+function currentSharedDoc(): GraphDoc | null {
   if (typeof window === "undefined") return null;
-  const shared = sharedDocFromHash(window.location.hash);
-  if (!shared || typeof shared !== "object") return null;
-  return normalizeDoc(shared as Partial<CircuitDoc>);
+  return sharedDocFromHash(window.location.hash);
 }
 
-function sameCircuitDoc(a: CircuitDoc, b: CircuitDoc): boolean {
-  return JSON.stringify(a) === JSON.stringify(normalizeDoc(b));
+// Structural equality of two GRAPH docs, ignoring the persistence `version`
+// tag (the in-memory doc carries none; a freshly-decoded shared doc does).
+function sameCircuitDoc(a: GraphDoc, b: GraphDoc): boolean {
+  const strip = (d: GraphDoc): Omit<GraphDoc, "version"> => {
+    const copy = { ...d };
+    delete copy.version;
+    return copy;
+  };
+  return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
 }
 
 function nextSharedProjectName(projects: Workspace["projects"]): string {
