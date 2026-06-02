@@ -3,13 +3,32 @@
 // over a SchematicPage; the editor wires these to gestures.
 
 import {
+  makeNodeId,
+  makeWireId,
   nodePos,
   pinNodeIndex,
+  wirePolyline,
   type CircuitNode,
   type NodeId,
   type SchematicPage,
   type Wire,
 } from "./graphModel.ts";
+
+/** Is (px,py) on the segment (x1,y1)-(x2,y2) (collinear + within the span)? */
+function pointOnSeg(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): boolean {
+  const cross = (px - x1) * (y2 - y1) - (py - y1) * (x2 - x1);
+  if (Math.abs(cross) > 1e-6) return false;
+  const dot = (px - x1) * (x2 - x1) + (py - y1) * (y2 - y1);
+  const len2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
+  return dot >= -1e-6 && dot <= len2 + 1e-6;
+}
 
 /** Edges incident to a node (a wire with this node at either end). */
 export function incidentWires(page: SchematicPage, nodeId: NodeId): Wire[] {
@@ -111,4 +130,50 @@ export function setWireEndpoint(
 /** Add a standalone node (e.g. a junction or free end). */
 export function addNode(page: SchematicPage, node: CircuitNode): SchematicPage {
   return { ...page, nodes: [...(page.nodes ?? []), node] };
+}
+
+/** Split the edge whose polyline passes through (x,y) at an INTERIOR point into
+ *  two edges meeting at a new junction node — the T-junction primitive used by
+ *  draw-onto-wire (§10), probe-on-wire (§11/§9d), and node-tool segment ops.
+ *  Returns the updated page + the new junction node id, or null if (x,y) isn't
+ *  on any edge's interior (it's at an existing vertex/node, or off all wires). */
+export function splitEdgeAtPoint(
+  page: SchematicPage,
+  x: number,
+  y: number,
+): { page: SchematicPage; nodeId: NodeId } | null {
+  const idx = pinNodeIndex(page);
+  for (const wire of page.wires) {
+    const poly = wirePolyline(page, wire, idx);
+    if (!poly || poly.length < 2) continue;
+    for (let i = 0; i < poly.length - 1; i++) {
+      const [x1, y1] = poly[i];
+      const [x2, y2] = poly[i + 1];
+      // A hit at an existing vertex (endpoint/bend) is not an interior split.
+      if (
+        (Math.abs(x - x1) < 1e-6 && Math.abs(y - y1) < 1e-6) ||
+        (Math.abs(x - x2) < 1e-6 && Math.abs(y - y2) < 1e-6)
+      ) {
+        continue;
+      }
+      if (!pointOnSeg(x, y, x1, y1, x2, y2)) continue;
+      // poly = [nodePos(a), ...bends, nodePos(b)]; split at segment i.
+      const junction: CircuitNode = { id: makeNodeId(), x, y };
+      const beforeBends = poly.slice(1, i + 1).map(([bx, by]) => [bx, by] as [number, number]);
+      const afterBends = poly
+        .slice(i + 1, poly.length - 1)
+        .map(([bx, by]) => [bx, by] as [number, number]);
+      const e1: Wire = { id: wire.id, a: wire.a, b: junction.id, bends: beforeBends };
+      const e2: Wire = { id: makeWireId(), a: junction.id, b: wire.b, bends: afterBends };
+      return {
+        page: {
+          ...page,
+          nodes: [...(page.nodes ?? []), junction],
+          wires: page.wires.flatMap((w) => (w.id === wire.id ? [e1, e2] : [w])),
+        },
+        nodeId: junction.id,
+      };
+    }
+  }
+  return null;
 }

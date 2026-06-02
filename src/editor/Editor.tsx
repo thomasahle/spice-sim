@@ -237,7 +237,7 @@ import {
   graphDocToLegacy,
 } from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline } from "./graphModel";
-import { deleteNode as graphDeleteNode } from "./graphEdit";
+import { deleteNode as graphDeleteNode, splitEdgeAtPoint } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -2700,6 +2700,20 @@ export function Editor() {
     return screenToWorldPoint(clientX, clientY, rect, { pan, zoom, cellPx: CELL });
   }
 
+  // Dev-only test hook so the puppeteer QA harness can target world coordinates
+  // (inverse of screenToWorld) and read the live graph. Stripped from prod builds.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as { __qa?: unknown }).__qa = {
+      worldToScreen: (wx: number, wy: number) => {
+        const rect = svgRef.current!.getBoundingClientRect();
+        return { x: rect.left + pan.x + wx * CELL * zoom, y: rect.top + pan.y + wy * CELL * zoom };
+      },
+      graphPage: () => currentPageGraph(graphDocRef.current),
+      legacyPage: () => graphToLegacyPage(currentPageGraph(graphDocRef.current)),
+    };
+  });
+
   function snapPoint(p: { x: number; y: number }): { x: number; y: number } {
     return snapWorldPoint(p, snapToGrid);
   }
@@ -3268,27 +3282,31 @@ export function Editor() {
   }
 
   function addWireEdgeAtCoords(page: GraphPage, route: [number, number][]): GraphPage {
-    const idx = pinNodeIndex(page);
-    const nodes = [...(page.nodes ?? [])];
-    const createdAt = new Map<string, string>();
+    // `p` is threaded through endpoint resolution because landing on a wire's
+    // interior splits that wire (§10 T-junction), changing the page.
+    let p: GraphPage = page;
     const resolve = (x: number, y: number): string => {
-      for (const id of allNodeIds(page)) {
-        const pos = nodePos(page, id, idx);
+      const idx = pinNodeIndex(p);
+      for (const id of allNodeIds(p)) {
+        const pos = nodePos(p, id, idx);
         if (pos && Math.abs(pos.x - x) < 1e-6 && Math.abs(pos.y - y) < 1e-6) return id;
       }
-      const k = `${x},${y}`;
-      const created = createdAt.get(k);
-      if (created) return created;
+      // Endpoint lands mid-existing-wire → split it into a junction (T).
+      const split = splitEdgeAtPoint(p, x, y);
+      if (split) {
+        p = split.page;
+        return split.nodeId;
+      }
+      // Otherwise a fresh standalone node at the coord.
       const id = makeNodeId();
-      nodes.push({ id, x, y });
-      createdAt.set(k, id);
+      p = { ...p, nodes: [...(p.nodes ?? []), { id, x, y }] };
       return id;
     };
     const a = resolve(route[0][0], route[0][1]);
     const b = resolve(route[route.length - 1][0], route[route.length - 1][1]);
     if (a === b) return page;
     const bends = route.slice(1, -1).map(([x, y]) => [x, y] as [number, number]);
-    return { ...page, nodes, wires: [...page.wires, { id: makeWireId(), a, b, bends }] };
+    return { ...p, wires: [...p.wires, { id: makeWireId(), a, b, bends }] };
   }
 
   function commitWireRoute(points: [number, number][]) {
@@ -3511,15 +3529,22 @@ export function Editor() {
         };
         commit((d) =>
           updateCurrentPageGraph(d, (p) => {
-            // Attach the probe to the graph node at the click (pin or junction),
-            // so its measured net is by node id. (Probing a bare wire interior —
-            // splitting to make a junction — is a follow-up.)
+            // Attach the probe to the graph node at the click (pin or junction)
+            // so its measured net is by node id. If the click is on a bare wire
+            // interior, split it into a junction and attach there (§9d/§11).
             const idx = pinNodeIndex(p);
-            const nodeId = allNodeIds(p).find((id) => {
+            const existing = allNodeIds(p).find((id) => {
               const pos = nodePos(p, id, idx);
               return pos !== null && Math.abs(pos.x - snap.x) < 1e-6 && Math.abs(pos.y - snap.y) < 1e-6;
             });
-            return { ...p, probes: [...p.probes, { ...probe, node: nodeId }] };
+            if (existing) {
+              return { ...p, probes: [...p.probes, { ...probe, node: existing }] };
+            }
+            const split = splitEdgeAtPoint(p, snap.x, snap.y);
+            if (split) {
+              return { ...split.page, probes: [...split.page.probes, { ...probe, node: split.nodeId }] };
+            }
+            return { ...p, probes: [...p.probes, { ...probe }] };
           }),
         );
         setSelectedIds(new Set([probe.id]));

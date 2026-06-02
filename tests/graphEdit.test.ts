@@ -6,6 +6,7 @@ import {
   deleteNode,
   gcOrphanNodes,
   nodeDegree,
+  splitEdgeAtPoint,
 } from "../src/editor/graphEdit.ts";
 import { buildGraphNets } from "../src/editor/graphNetlist.ts";
 import type { CircuitComponent, CircuitNode, SchematicPage, Wire } from "../src/editor/graphModel.ts";
@@ -13,6 +14,25 @@ import type { CircuitComponent, CircuitNode, SchematicPage, Wire } from "../src/
 function page(over: Partial<SchematicPage>): SchematicPage {
   return { id: "main", name: "main", components: [], nodes: [], wires: [], probes: [], ...over };
 }
+
+test("splitEdgeAtPoint splits a wire at an interior point into a T-junction", () => {
+  const nodes: CircuitNode[] = [
+    { id: "a", x: 0, y: 0 },
+    { id: "b", x: 4, y: 0 },
+  ];
+  const wires: Wire[] = [{ id: "e1", a: "a", b: "b", bends: [] }];
+  const p = page({ nodes, wires });
+  const r = splitEdgeAtPoint(p, 2, 0);
+  assert.ok(r, "interior split succeeds");
+  assert.equal(r.page.wires.length, 2, "edge split into two");
+  const j = r.page.nodes.find((n) => n.id === r.nodeId);
+  assert.ok(j && j.x === 2 && j.y === 0, "junction node created at the split point");
+  const nets = buildGraphNets(r.page);
+  assert.equal(nets.netOf.get("a"), nets.netOf.get("b"), "endpoints still one net via junction");
+  assert.equal(nets.netOf.get("a"), nets.netOf.get(r.nodeId), "junction joins the net");
+  assert.equal(splitEdgeAtPoint(p, 2, 5), null, "off-wire point → no split");
+  assert.equal(splitEdgeAtPoint(p, 0, 0), null, "existing endpoint → not an interior split");
+});
 
 test("deleteEdge splits the graph (the connection is severed)", () => {
   const nodes: CircuitNode[] = [
