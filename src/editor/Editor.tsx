@@ -2757,7 +2757,7 @@ export function Editor() {
   function fitToContent() {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return;
-    fitBoundsToView(collectPageBounds(currentPage(docRef.current)), rect);
+    fitBoundsToView(collectPageBounds(currentPageGraph(graphDocRef.current)), rect);
   }
 
   function fitSelectionToContent() {
@@ -2768,7 +2768,7 @@ export function Editor() {
       fitToContent();
       return;
     }
-    fitBoundsToView(collectPageBounds(currentPage(docRef.current), selected), rect);
+    fitBoundsToView(collectPageBounds(currentPageGraph(graphDocRef.current), selected), rect);
   }
 
   function fitBoundsToView(bounds: { xs: number[]; ys: number[] }, rect: DOMRect) {
@@ -4654,7 +4654,7 @@ export function Editor() {
 
   // Pivot for a group transform: centre of the selection's bounding box,
   // snapped to the grid so transformed integer points stay on-grid.
-  function selectionPivot(selection: Set<string>, p: SchematicPage): { x: number; y: number } {
+  function selectionPivot(selection: Set<string>, p: GraphPage): { x: number; y: number } {
     const { xs, ys } = collectPageBounds(p, selection);
     if (xs.length === 0) return { x: 0, y: 0 };
     const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
@@ -4693,7 +4693,7 @@ export function Editor() {
     // selected wires & probes ride rigidly with them. Wires/probes attached to
     // the moved component pins follow so connectivity survives (same promise as
     // a single-element rotate — see transformGroupWires for the per-wire rules).
-    const pivot = selectionPivot(selected, page0);
+    const pivot = selectionPivot(selected, currentPageGraph(graphDocRef.current));
     const groupMutate = (c: CircuitComponent) =>
       transformComponentInGroup(c, op, pivot, snapToGridRef.current);
     const xform = (x: number, y: number): { x: number; y: number } => {
@@ -5725,7 +5725,7 @@ export function Editor() {
       setStatus("✗ Draw a schematic before exporting SVG");
       return;
     }
-    const collected = collectPageBounds(p);
+    const collected = collectPageBounds(currentPageGraph(graphDocRef.current));
     const bounds = boundsFromPoints(collected.xs, collected.ys, 1.2);
     if (!bounds) {
       setStatus("✗ Draw a schematic before exporting SVG");
@@ -6006,9 +6006,9 @@ export function Editor() {
   const showInspectorActions = selectedObjectCount > 0 || arrangeableComponentCount > 0 || page.wires.length > 0;
   const selectionBounds = useMemo(() => {
     if (tool !== "select" || selectedObjectCount <= 1) return null;
-    const bounds = collectPageBounds(page, selectedIds);
+    const bounds = collectPageBounds(graphPage, selectedIds);
     return boundsFromPoints(bounds.xs, bounds.ys, 0.42);
-  }, [page, selectedIds, selectedObjectCount, tool]);
+  }, [graphPage, selectedIds, selectedObjectCount, tool]);
   const schematicStrokeWidth = Math.max(0.055, Math.min(0.12, 2.6 / (CELL * zoom)));
   const selectedSchematicStrokeWidth = schematicStrokeWidth * 1.45;
   const hoveredSchematicStrokeWidth = schematicStrokeWidth * 1.25;
@@ -6047,7 +6047,7 @@ export function Editor() {
   const { pinAnnotations, wireJunctionDots, componentValueLabelOffsets, netLabelLayoutMap } =
     usePinAnnotations({
       doc: graphDoc,
-      page,
+      page: graphPage,
       isDragging,
       canvasValueFontSize,
       stableNodeNames: stableNodeNamesRef.current,
@@ -6189,7 +6189,7 @@ export function Editor() {
     return labels;
   }, [page.components, pinAnnotations.nodes.posToNode]);
   const { probeScopes, probeScopeLabelIds, visibleProbeScopes } = useProbeScopes({
-    page,
+    page: graphPage,
     posToNode: pinAnnotations.nodes.posToNode,
     nodeDisplayLabels,
     hoverId,
@@ -6261,7 +6261,7 @@ export function Editor() {
       const committedLayout = netLabelLayoutMap.get(component.id);
       const layout = draftLabel === component.value.trim()
         ? committedLayout
-        : netLabelLayout(component, page, draftLabel);
+        : netLabelLayout(component, graphPage, draftLabel);
       return {
         kind: textEdit.kind,
         componentId: component.id,
@@ -6371,6 +6371,7 @@ export function Editor() {
   }, [
     canvasValueFontSize,
     componentValueLabelOffsets,
+    graphPage,
     netLabelLayoutMap,
     page,
     pan.x,
@@ -6407,7 +6408,7 @@ export function Editor() {
   });
   const liveFlowReadoutObstacles = useMemo(() => {
     const obstacles = page.components.map((component) => componentVisualBoundsFor(component, 0.18));
-    const valueOffsets = valueLabelOffsets(page, (component) =>
+    const valueOffsets = valueLabelOffsets(graphPage, (component) =>
       canvasValueLabel(component.kind, component.value),
     );
     const occupiedValueLabels = [];
@@ -6419,7 +6420,7 @@ export function Editor() {
       occupiedValueLabels.push(bounds);
       obstacles.push(bounds);
     }
-    for (const layout of netLabelLayouts(page, occupiedValueLabels).values()) {
+    for (const layout of netLabelLayouts(graphPage, occupiedValueLabels).values()) {
       obstacles.push(layout.bounds);
     }
     for (const probe of page.probes) {
@@ -6442,7 +6443,7 @@ export function Editor() {
       });
     }
     return obstacles;
-  }, [canvasValueFontSize, page, probeScopes]);
+  }, [canvasValueFontSize, graphPage, page, probeScopes]);
   const liveFlowWireReadoutObstacles = useMemo(() => {
     const allWireBounds = page.wires.map((wire) => ({
       id: wire.id,
@@ -8012,7 +8013,7 @@ export function Editor() {
               if (c.kind === "LABEL") {
                 const label = c.value.trim();
                 const layout = label
-                  ? netLabelLayoutMap.get(c.id) ?? netLabelLayout(c, page, label)
+                  ? netLabelLayoutMap.get(c.id) ?? netLabelLayout(c, graphPage, label)
                   : null;
                 const sel = selectedIds.has(c.id);
                 const hovered = hoverId === c.id;

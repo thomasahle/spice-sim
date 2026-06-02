@@ -8,18 +8,34 @@ import {
   valueLabelOffset,
   valueLabelOffsets,
 } from "../src/editor/labelPlacement.ts";
+import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
+import { pinNodeIndex, wirePolyline } from "../src/editor/graphModel.ts";
 import type { CircuitComponent, SchematicPage } from "../src/editor/model.ts";
+import type { LegacyWire } from "../src/editor/legacyModel.ts";
 
 function page(components: CircuitComponent[]): SchematicPage {
   return { id: "main", name: "Main", components, wires: [], probes: [] };
 }
 
-function pageWithWires(components: CircuitComponent[], wires: SchematicPage["wires"]): SchematicPage {
-  return { id: "main", name: "Main", components, wires, probes: [] };
+// Wires are authored as legacy polylines and converted to the graph model so the
+// placement code (which now reads wire geometry via wirePolyline) sees real
+// graph edges — exactly as production does.
+function pageWithWires(components: CircuitComponent[], wires: LegacyWire[]): SchematicPage {
+  return legacyPageToGraph({ id: "main", name: "Main", components, wires, probes: [] });
 }
 
 function pageWithProbes(components: CircuitComponent[], probes: SchematicPage["probes"]): SchematicPage {
   return { id: "main", name: "Main", components, wires: [], probes };
+}
+
+/** First wire's polyline on a graph page (the legacy `.points` equivalent). */
+function firstWirePolyline(p: SchematicPage): [number, number][] {
+  const idx = pinNodeIndex(p);
+  for (const wire of p.wires) {
+    const poly = wirePolyline(p, wire, idx);
+    if (poly) return poly;
+  }
+  throw new Error("no wire polyline");
 }
 
 test("source labels avoid nearby horizontal components", () => {
@@ -251,7 +267,7 @@ test("net labels choose an open side instead of covering the connected wire", ()
 
   const layout = netLabelLayout(label, schematic, "in");
 
-  assert.equal(wireIntersectsRect(schematic.wires[0].points, layout.bounds), false);
+  assert.equal(wireIntersectsRect(firstWirePolyline(schematic), layout.bounds), false);
   assert.equal(rectsIntersect(layout.bounds, componentVisualBoundsFor(resistor, 0.18)), false);
 });
 

@@ -2,8 +2,8 @@ import { componentVisualBoundsFor, wireIntersectsRect } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
 import { estimateInlineMathTextWidth } from "./mathText.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
-import type { CircuitComponent, Probe } from "./model.ts";
-import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
+import type { CircuitComponent, CircuitNode, Probe, SchematicPage } from "./model.ts";
+import { pinNodeIndex, wirePolyline } from "./graphModel.ts";
 
 export type LabelAnchor = "start" | "middle" | "end";
 
@@ -108,8 +108,7 @@ export function netLabelLayouts(
 ): Map<string, NetLabelLayout> {
   const layouts = new Map<string, NetLabelLayout>();
   const occupied = [...occupiedLabels];
-  for (const component of page.components) {
-    if (component.kind !== "LABEL") continue;
+  for (const component of netLabelComponents(page)) {
     const text = component.value.trim();
     if (!text) continue;
     const layout = netLabelLayout(component, page, text, occupied);
@@ -117,6 +116,35 @@ export function netLabelLayouts(
     occupied.push(layout.bounds);
   }
   return layouts;
+}
+
+/** A directly-named graph node (`node.name`, only from netlist import) renders
+ *  as a net-label chip exactly like a `kind:"LABEL"` component. The legacy view
+ *  synthesized these into LABELs (see graphConvert.graphToLegacyPage); on the
+ *  graph page they live as nodes, so we materialize the same pseudo-LABEL here
+ *  (same id / coordinate / value) to keep geometry identical. */
+export function namedNodeLabelComponent(node: CircuitNode): CircuitComponent {
+  return {
+    id: `label-${node.id}`,
+    kind: "LABEL",
+    x: node.x,
+    y: node.y,
+    rotation: 0,
+    value: node.name ?? "",
+  };
+}
+
+/** All net-label-bearing components on a graph page: real LABEL components plus
+ *  the pseudo-LABELs synthesized from directly-named standalone nodes. */
+export function netLabelComponents(page: SchematicPage): CircuitComponent[] {
+  const out: CircuitComponent[] = [];
+  for (const component of page.components) {
+    if (component.kind === "LABEL") out.push(component);
+  }
+  for (const node of page.nodes ?? []) {
+    if (node.name) out.push(namedNodeLabelComponent(node));
+  }
+  return out;
 }
 
 export function netLabelBounds(
@@ -257,7 +285,7 @@ function labelOverlapScore(component: CircuitComponent, page: SchematicPage, bou
   if (component.kind === "V" || component.kind === "I") {
     score += overlapArea(bounds, componentVisualBoundsFor(component, 0.12)) * 120;
   }
-  for (const other of page.components) {
+  for (const other of obstacleComponents(page)) {
     if (other.id === component.id) continue;
     if (other.kind === "LABEL") {
       for (const labelBounds of netLabelObstacleBounds(other)) {
@@ -273,9 +301,11 @@ function labelOverlapScore(component: CircuitComponent, page: SchematicPage, bou
       score += overlapArea(bounds, componentUserLabelBounds(other, otherLabel)) * 80;
     }
   }
+  const pinIdx = pinNodeIndex(page);
   for (const wire of page.wires) {
-    if (!wireIntersectsRect(wire.points, bounds)) continue;
-    score += wireTouchesComponentPin(wire, component) ? 42 : 34;
+    const points = wirePolyline(page, wire, pinIdx);
+    if (!points || !wireIntersectsRect(points, bounds)) continue;
+    score += wireTouchesComponentPin(points, component) ? 42 : 34;
   }
   for (const probe of page.probes) {
     score += overlapArea(bounds, probeMarkerBounds(probe)) * 90;
@@ -367,15 +397,17 @@ function netLabelOverlapScore(
   layout: NetLabelLayout,
 ): number {
   let score = 0;
-  for (const other of page.components) {
+  for (const other of obstacleComponents(page)) {
     if (other.id === component.id) continue;
     const obstacle = componentObstacleBounds(other);
     if (rectsIntersect(layout.bounds, obstacle)) {
       score += 90 + overlapArea(layout.bounds, obstacle) * 70;
     }
   }
+  const pinIdx = pinNodeIndex(page);
   for (const wire of page.wires) {
-    if (wireIntersectsRect(wire.points, layout.bounds)) score += 120;
+    const points = wirePolyline(page, wire, pinIdx);
+    if (points && wireIntersectsRect(points, layout.bounds)) score += 120;
   }
   for (const probe of page.probes) {
     score += overlapArea(layout.bounds, probeMarkerBounds(probe)) * 130;
@@ -417,12 +449,22 @@ function labelToLabelScore(bounds: Bounds, occupiedLabels: Bounds[]): number {
   return score;
 }
 
-function wireTouchesComponentPin(wire: Wire, component: CircuitComponent): boolean {
+function wireTouchesComponentPin(points: [number, number][], component: CircuitComponent): boolean {
   for (let idx = 0; idx < getPinLayout(component).length; idx++) {
     const pin = pinWorldPos(component, idx);
-    if (wire.points.some(([x, y]) => sameCoord(x, pin.x) && sameCoord(y, pin.y))) return true;
+    if (points.some(([x, y]) => sameCoord(x, pin.x) && sameCoord(y, pin.y))) return true;
   }
   return false;
+}
+
+/** Components that act as label/obstacle sources during placement scoring: the
+ *  page's real components plus the pseudo-LABELs from directly-named nodes. The
+ *  legacy view fed these as real LABEL components (graphToLegacyPage), so we add
+ *  them here to keep obstacle geometry identical on the graph page. */
+function obstacleComponents(page: SchematicPage): CircuitComponent[] {
+  const named = page.nodes?.filter((node) => node.name) ?? [];
+  if (named.length === 0) return page.components;
+  return [...page.components, ...named.map(namedNodeLabelComponent)];
 }
 
 function sameCoord(a: number, b: number): boolean {

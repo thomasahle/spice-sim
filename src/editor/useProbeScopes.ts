@@ -7,8 +7,7 @@ import { coordKey } from "./netlist.ts";
 import { inlineProbeScopeLabel, shouldRenderInlineProbeScope } from "./probeDisplay.ts";
 import { findNodeTrace } from "./simVectorLookup.ts";
 import { layoutProbeScopes } from "./scopeLayout.ts";
-import type { Probe } from "./model.ts";
-import type { LegacySchematicPage as SchematicPage } from "./legacyModel.ts";
+import type { Probe, SchematicPage } from "./model.ts";
 import type { SimResult } from "../sim/api.ts";
 
 export interface ProbeScopePlacement {

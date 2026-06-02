@@ -3,11 +3,16 @@
 // that depend only on label / geometry / probe-display modules, so they can
 // live (and be unit-tested) in isolation.
 
-import type { CircuitComponent } from "./model.ts";
-import type { LegacySchematicPage as SchematicPage } from "./legacyModel.ts";
+import type { CircuitComponent, SchematicPage } from "./model.ts";
 import { getPinLayout, pinLabelForKind, pinWorldPos } from "./model.ts";
+import { pinNodeIndex, wirePolyline } from "./graphModel.ts";
 import { componentBoundsFor, componentVisualBoundsFor } from "./geometry.ts";
-import { netLabelLayout, valueLabelBounds, valueLabelOffsets } from "./labelPlacement.ts";
+import {
+  namedNodeLabelComponent,
+  netLabelLayout,
+  valueLabelBounds,
+  valueLabelOffsets,
+} from "./labelPlacement.ts";
 import { canvasValueLabel } from "./labelFormatting.ts";
 import { probeHasDisplayLabel } from "./probeDisplay.ts";
 import { probeScopeLabelBounds } from "./scopeLayout.ts";
@@ -57,8 +62,7 @@ export function pinHintLabel(c: CircuitComponent, idx: number): string | null {
 export function collectPageBounds(p: SchematicPage, selected?: Set<string>): { xs: number[]; ys: number[] } {
   const xs: number[] = [];
   const ys: number[] = [];
-  for (const c of p.components) {
-    if (selected && !selected.has(c.id)) continue;
+  const pushComponentBounds = (c: CircuitComponent) => {
     const bounds = componentBoundsFor(c);
     xs.push(bounds.x1, bounds.x2);
     ys.push(bounds.y1, bounds.y2);
@@ -68,10 +72,28 @@ export function collectPageBounds(p: SchematicPage, selected?: Set<string>): { x
       xs.push(wp.x);
       ys.push(wp.y);
     }
+  };
+  for (const c of p.components) {
+    if (selected && !selected.has(c.id)) continue;
+    pushComponentBounds(c);
   }
+  // Directly-named graph nodes render as net-label chips; the legacy view
+  // synthesized them as LABEL components appended after the real ones (see
+  // graphConvert.graphToLegacyPage), so they also contributed their LABEL body +
+  // pin bounds here. Mirror that (after real components) for whole-page bounds.
+  // Their synthetic id is never in `selected`, so they drop out of selection bounds.
+  for (const node of p.nodes ?? []) {
+    if (!node.name) continue;
+    const pseudo = namedNodeLabelComponent(node);
+    if (selected && !selected.has(pseudo.id)) continue;
+    pushComponentBounds(pseudo);
+  }
+  const pinIdx = pinNodeIndex(p);
   for (const w of p.wires) {
     if (selected && !selected.has(w.id)) continue;
-    for (const [x, y] of w.points) {
+    const points = wirePolyline(p, w, pinIdx);
+    if (!points) continue;
+    for (const [x, y] of points) {
       xs.push(x);
       ys.push(y);
     }
@@ -100,14 +122,17 @@ function includeCanvasLabelBounds(
   const offsets = valueLabelOffsets(p, (component) =>
     canvasValueLabel(component.kind, component.value),
   );
+  const pushNetLabelBounds = (c: CircuitComponent) => {
+    const text = c.value.trim();
+    if (!text) return;
+    const bounds = netLabelLayout(c, p, text).bounds;
+    xs.push(c.x, bounds.x1, bounds.x2);
+    ys.push(c.y, bounds.y1, bounds.y2);
+  };
   for (const c of p.components) {
     if (selected && !selected.has(c.id)) continue;
     if (c.kind === "LABEL") {
-      const text = c.value.trim();
-      if (!text) continue;
-      const bounds = netLabelLayout(c, p, text).bounds;
-      xs.push(c.x, bounds.x1, bounds.x2);
-      ys.push(c.y, bounds.y1, bounds.y2);
+      pushNetLabelBounds(c);
       continue;
     }
     if (c.kind === "NOTE") {
@@ -122,5 +147,15 @@ function includeCanvasLabelBounds(
     const bounds = valueLabelBounds(c, offset, text);
     xs.push(bounds.x1, bounds.x2);
     ys.push(bounds.y1, bounds.y2);
+  }
+  // Directly-named graph nodes render as net-label chips (legacy synthesized
+  // them as LABEL components — see graphConvert.graphToLegacyPage). Their
+  // synthetic id is never in `selected`, so like the legacy LABELs they only
+  // contribute to whole-page (fit-to-content) bounds, not selection bounds.
+  for (const node of p.nodes ?? []) {
+    if (!node.name) continue;
+    const pseudo = namedNodeLabelComponent(node);
+    if (selected && !selected.has(pseudo.id)) continue;
+    pushNetLabelBounds(pseudo);
   }
 }

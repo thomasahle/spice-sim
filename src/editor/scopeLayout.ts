@@ -1,5 +1,5 @@
-import type { CircuitComponent, Probe } from "./model.ts";
-import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
+import type { CircuitComponent, Probe, SchematicPage } from "./model.ts";
+import { pinNodeIndex, wirePolyline } from "./graphModel.ts";
 import { componentBoundsFor as geometryComponentBoundsFor } from "./geometry.ts";
 import { canvasValueLabel } from "./labelFormatting.ts";
 import { netLabelLayouts, valueLabelBounds, valueLabelOffsets } from "./labelPlacement.ts";
@@ -62,7 +62,7 @@ function scopeOffsetForProbe(
     const bounds = scopeBounds(probe, candidate, options);
     const score =
       scopeComponentOverlapScore(bounds, page.components) * 180 +
-      scopeWireOverlapScore(bounds, page.wires) * 45 +
+      scopeWireOverlapScore(bounds, page) * 45 +
       scopeLabelOverlapScore(bounds, page) * 80 +
       scopeProbeOverlapScore(bounds, page.probes, probe.id) * 160 +
       placedBounds.filter((placed) => rectsIntersect(bounds, placed)).length * 160 +
@@ -132,12 +132,15 @@ function scopeComponentOverlapScore(bounds: Bounds, components: CircuitComponent
   return score;
 }
 
-function scopeWireOverlapScore(bounds: Bounds, wires: Wire[]): number {
+function scopeWireOverlapScore(bounds: Bounds, page: SchematicPage): number {
   let score = 0;
-  for (const wire of wires) {
-    for (let i = 0; i < wire.points.length - 1; i++) {
-      const [x1, y1] = wire.points[i];
-      const [x2, y2] = wire.points[i + 1];
+  const pinIdx = pinNodeIndex(page);
+  for (const wire of page.wires) {
+    const points = wirePolyline(page, wire, pinIdx);
+    if (!points) continue;
+    for (let i = 0; i < points.length - 1; i++) {
+      const [x1, y1] = points[i];
+      const [x2, y2] = points[i + 1];
       const segmentBounds = {
         x1: Math.min(x1, x2) - 0.18,
         y1: Math.min(y1, y2) - 0.18,

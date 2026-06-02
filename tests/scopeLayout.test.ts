@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { Probe, SchematicPage } from "../src/editor/model.ts";
 import { componentBoundsFor } from "../src/editor/geometry.ts";
+import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
 import { netLabelLayouts } from "../src/editor/labelPlacement.ts";
 import { estimateInlineMathTextWidth } from "../src/editor/mathText.ts";
 import { layoutProbeScopes, probeScopeLabelBounds } from "../src/editor/scopeLayout.ts";
@@ -95,14 +96,18 @@ test("probe scopes avoid net labels and probe label chips in dense areas", () =>
 });
 
 test("probe scopes avoid routed net label positions", () => {
-  const page: SchematicPage = {
-    ...pageWithProbes([probe("out", -0.9, 1.33)]),
+  // Author the wire as a legacy polyline, then convert: the placement code reads
+  // wire geometry from the graph (wirePolyline), so the wire must be a real edge.
+  const page = legacyPageToGraph({
+    id: "main",
+    name: "main",
     components: [
       { id: "label", kind: "LABEL", x: 0, y: 0, rotation: 0, value: "in" },
       { id: "r1", kind: "R", x: 3.1, y: 0, rotation: 0, value: "1k" },
     ],
     wires: [{ id: "w1", points: [[-2, 0], [2, 0]] }],
-  };
+    probes: [{ id: "out", x: -0.9, y: 1.33, color: "#0a84ff" }],
+  });
   const routedLabel = [...netLabelLayouts(page).values()][0];
   assert.ok(routedLabel);
   assert.equal(scopeOverlapsRect(page.probes[0], {
