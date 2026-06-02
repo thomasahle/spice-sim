@@ -5,8 +5,10 @@
 // vertices) with the in-between vertices kept as bends.
 
 import { getPinLayout, pinWorldPos } from "./model.ts";
+import type { CircuitDoc } from "./model.ts";
 import type {
   LegacyCircuitComponent as LegacyComponent,
+  LegacyCircuitDoc,
   LegacyProbe,
   LegacySchematicPage as LegacyPage,
   LegacyWire,
@@ -267,6 +269,18 @@ export function graphToLegacyPage(page: SchematicPage): LegacyPage {
     wires,
     probes,
   };
+}
+
+// Doc-level converters: map every page through the page converters, preserving
+// the doc-level fields (activePageId / directives / analysis / simSettings).
+// Used by the editor to migrate a loaded legacy (v1) doc to the graph model on
+// load, and to emit a legacy doc for v1 persistence / legacy emitters.
+export function legacyDocToGraph(doc: LegacyCircuitDoc): CircuitDoc {
+  return { ...doc, pages: doc.pages.map((p) => legacyPageToGraph(p)) };
+}
+
+export function graphDocToLegacy(doc: CircuitDoc): LegacyCircuitDoc {
+  return { ...doc, pages: doc.pages.map((p) => graphToLegacyPage(p)) };
 }
 
 // re-export for convenience

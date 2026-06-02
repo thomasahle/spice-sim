@@ -9,7 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type CSSProperties,
 } from "react";
-import type { CircuitComponent, ComponentKind, Probe } from "./model";
+import type { CircuitComponent, ComponentKind, Probe, CircuitDoc as GraphDoc } from "./model";
 import type {
   LegacyCircuitDoc as CircuitDoc,
   LegacySchematicPage as SchematicPage,
@@ -234,7 +234,12 @@ import {
   type DirectContactPin,
   type SelectionTransform,
 } from "./dragMath";
-import { graphToLegacyPage, legacyPageToGraph } from "./graphConvert";
+import {
+  graphToLegacyPage,
+  legacyPageToGraph,
+  legacyDocToGraph,
+  graphDocToLegacy,
+} from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex } from "./graphModel";
 import { deleteNode as graphDeleteNode } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
@@ -1281,25 +1286,40 @@ export function Editor() {
     return fresh;
   });
   const {
-    doc,
-    setDoc,
+    doc: graphDoc,
+    setDoc: setGraphDoc,
     setPast,
     setFuture,
     pushPast,
     popLatestPast,
-    docRef,
+    docRef: graphDocRef,
     pastRef,
     futureRef,
-  } = useDocHistory(
+  } = useDocHistory<GraphDoc>(
     (() => {
       const w = loadWorkspace();
       if (w.active) {
         const loaded = loadProject(w.active);
-        if (loaded) return normalizeDoc(loaded);
+        if (loaded) return legacyDocToGraph(normalizeDoc(loaded));
       }
-      return emptyDoc;
+      return legacyDocToGraph(emptyDoc);
     })(),
     UNDO_LIMIT,
+  );
+  // The graph (graphDoc) is the source of truth. Editing still runs on the
+  // legacy (polyline) shapes via these derived views; `commit`/`setDoc` bridge
+  // legacy edits back onto the graph. Native graph edit ops (which preserve node
+  // identity — the silent-auto-connect fix) replace the bridge op-by-op.
+  const doc = useMemo(() => graphDocToLegacy(graphDoc), [graphDoc]);
+  const docRef = useRef(doc);
+  docRef.current = doc;
+  const setDoc = useCallback(
+    (next: CircuitDoc | ((cur: CircuitDoc) => CircuitDoc)) => {
+      setGraphDoc((cur) =>
+        legacyDocToGraph(typeof next === "function" ? next(graphDocToLegacy(cur)) : next),
+      );
+    },
+    [setGraphDoc],
   );
   const stableNodeNamesRef = useRef<Map<string, string>>(new Map());
   const stableNodeScopeRef = useRef("");
@@ -1973,14 +1993,14 @@ export function Editor() {
   const latestRunIdRef = useRef(0);
 
   function historySnapshot(): HistorySnapshot {
-    return docRef.current;
+    return graphDocRef.current;
   }
   function restoreHistorySnapshot(snapshot: HistorySnapshot) {
-    setDoc(snapshot);
+    setGraphDoc(snapshot);
     // Selection is preserved across undo/redo (it does not ride with history),
     // but drop ids that the restored doc no longer contains so we never keep a
     // ghost selection pointing at deleted objects.
-    const restoredPage = currentPage(snapshot);
+    const restoredPage = currentPage(graphDocToLegacy(snapshot));
     const liveIds = new Set<string>([
       ...restoredPage.components.map((c) => c.id),
       ...restoredPage.wires.map((w) => w.id),

@@ -1,4 +1,4 @@
-import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel.ts";
+import type { CircuitDoc } from "./model.ts";
 
 // A history entry is just the document. Selection is intentionally NOT part of
 // the snapshot — undo/redo restore the circuit but leave the user's current
