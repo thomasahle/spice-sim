@@ -8,6 +8,7 @@
 import { useMemo } from "react";
 import { findTimeIndex } from "./simSampleTime.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
+import { pinNodeIndex, wirePolyline } from "./graphModel.ts";
 import { findNamedTrace } from "./simVectorLookup.ts";
 import { liveFlowSubcircuitPinSenseRef, type buildNetlist } from "./netlist.ts";
 import {
@@ -24,7 +25,7 @@ import {
   type LiveFlowSampleSource,
   type WireFlowCandidate,
 } from "./liveFlow.ts";
-import type { LegacyCircuitDoc as CircuitDoc, LegacySchematicPage as SchematicPage } from "./legacyModel.ts";
+import type { CircuitDoc, SchematicPage } from "./model.ts";
 import type { SimResult } from "../sim/api.ts";
 
 type PinAnnotations = ReturnType<typeof buildNetlist>;
@@ -107,15 +108,17 @@ export function useLiveFlowSamples({
     }
 
     const raw = new Map<string, { current: number; source: LiveFlowSampleSource }>();
+    const pinIdx = pinNodeIndex(page);
     for (const w of page.wires) {
-      if (!liveFlowWireHasVisibleLength(w.points)) continue;
+      const poly = wirePolyline(page, w, pinIdx);
+      if (!poly || !liveFlowWireHasVisibleLength(poly)) continue;
       const candidates: WireFlowCandidate[] = [];
       for (const c of page.components) {
         const componentCurrent = componentCurrents.get(c.id);
         const pins = getPinLayout(c);
         for (let i = 0; i < pins.length; i++) {
           const p = pinWorldPos(c, i);
-          const attachment = wireFlowAttachmentForPoint(w.points, p);
+          const attachment = wireFlowAttachmentForPoint(poly, p);
           if (!attachment) continue;
           if (c.kind === "SUBX" || c.kind === "OPAMP") {
             const pinCurrent = subcircuitPinCurrents.get(`${c.id}:${i}`);
@@ -156,7 +159,7 @@ export function useLiveFlowSamples({
       raw.set(w.id, { current: sample.signedCurrent, source: sample.source });
     }
     return normalizeLiveFlowSamples(raw);
-  }, [animateLiveFlow, simResult, playTime, page.components, page.wires, pinAnnotations, isTransient]);
+  }, [animateLiveFlow, simResult, playTime, page, pinAnnotations, isTransient]);
 
   const componentFlowSamples = useMemo(() => {
     const raw = new Map<string, { current: number; source: LiveFlowSampleSource }>();
@@ -164,6 +167,7 @@ export function useLiveFlowSamples({
     const scale = simResult.vectors.find((v) => v.is_scale);
     if (!scale) return new Map<string, LiveFlowSample>();
     const idx = findTimeIndex(scale.data, playTime);
+    const pinIdx = pinNodeIndex(page);
 
     for (const c of page.components) {
       if (c.kind === "GND") {
@@ -172,7 +176,8 @@ export function useLiveFlowSamples({
         for (const w of page.wires) {
           const wireSample = wireFlowSamples.get(w.id);
           if (!wireSample || wireSample.source !== "ngspice") continue;
-          if (!wireFlowAttachmentForPoint(w.points, p)) continue;
+          const poly = wirePolyline(page, w, pinIdx);
+          if (!poly || !wireFlowAttachmentForPoint(poly, p)) continue;
           if (
             strongest === null ||
             Math.abs(wireSample.signedCurrent) > Math.abs(strongest.signedCurrent)
@@ -248,13 +253,17 @@ export function useLiveFlowSamples({
       raw,
       Array.from(wireFlowSamples.values(), (sample) => sample.signedCurrent),
     );
-  }, [animateLiveFlow, simResult, playTime, page.components, page.wires, pinAnnotations.refdes, isTransient, wireFlowSamples]);
+  }, [animateLiveFlow, simResult, playTime, page, pinAnnotations.refdes, isTransient, wireFlowSamples]);
 
   const liveFlowUiStatus = useMemo(() => {
     let activeWireCount = 0;
     let ngspiceWireCount = 0;
     let strongestCurrent = 0;
-    const visibleWireCount = page.wires.filter((wire) => liveFlowWireHasVisibleLength(wire.points)).length;
+    const statusPinIdx = pinNodeIndex(page);
+    const visibleWireCount = page.wires.filter((wire) => {
+      const poly = wirePolyline(page, wire, statusPinIdx);
+      return poly ? liveFlowWireHasVisibleLength(poly) : false;
+    }).length;
     for (const sample of wireFlowSamples.values()) {
       const visual = liveFlowVisualFromSample(sample);
       if (visual.active) {
@@ -278,7 +287,7 @@ export function useLiveFlowSamples({
       ngspiceWireCount,
       strongestCurrent,
     });
-  }, [analysisKind, isTransient, liveFlow, page.wires, floatingPinCount, simResult, simulationStale, wireFlowSamples]);
+  }, [analysisKind, isTransient, liveFlow, page, floatingPinCount, simResult, simulationStale, wireFlowSamples]);
 
   return { wireFlowSamples, componentFlowSamples, liveFlowUiStatus };
 }

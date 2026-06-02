@@ -6398,7 +6398,7 @@ export function Editor() {
     simResult,
     isTransient,
     playTime,
-    page,
+    page: graphPage,
     pinAnnotations,
     analysisKind: doc.analysis.kind,
     simulationStale,
