@@ -4672,7 +4672,14 @@ export function Editor() {
       const mutate = (c: CircuitComponent): CircuitComponent => {
         if (op === "rotate-cw") return { ...c, rotation: rotateNext(c.rotation) };
         if (op === "rotate-ccw") return { ...c, rotation: rotatePrev(c.rotation) };
-        if (getPinLayout(c).length === 2) return swapTwoPinTerminals(c);
+        if (getPinLayout(c).length === 2) {
+          // Flip a 2-pin part = swap terminal polarity in place (rotation+180).
+          // In the graph model pin-node positions are derived, so the +180 also
+          // swaps which coord each pin-node sits at — reverse `pins` so each node
+          // stays on its original coordinate and the wires don't move (§9c).
+          const swapped = swapTwoPinTerminals(c);
+          return swapped.pins ? { ...swapped, pins: [...swapped.pins].reverse() } : swapped;
+        }
         return reorientComponent(c, op);
       };
       transformSelected(mutate, selected);
