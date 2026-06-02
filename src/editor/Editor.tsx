@@ -1921,6 +1921,15 @@ export function Editor() {
   // node ids each call; the coordinate is stable. Refs mirror state for the
   // mount-once global keydown handler.
   const [nodeSel, setNodeSel] = useState<{ x: number; y: number } | null>(null);
+  // Node-tool drag of a draggable handle: a standalone node (by id) or a bend
+  // (by wire id + index). Pin-nodes are select-only (they follow their component).
+  const [nodeDrag, setNodeDrag] = useState<
+    | { kind: "node"; id: string; start: { x: number; y: number }; committed: boolean }
+    | { kind: "bend"; wireId: string; index: number; start: { x: number; y: number }; committed: boolean }
+    | null
+  >(null);
+  const nodeDragRef = useRef(nodeDrag);
+  nodeDragRef.current = nodeDrag;
   const toolRef = useRef(tool);
   toolRef.current = tool;
   const nodeSelRef = useRef(nodeSel);
@@ -3384,6 +3393,7 @@ export function Editor() {
       const idx = pinNodeIndex(g);
       let best: { x: number; y: number } | null = null;
       let bestD = 0.45;
+      let bestDrag: typeof nodeDrag = null;
       for (const id of allNodeIds(g)) {
         const p = nodePos(g, id, idx);
         if (!p) continue;
@@ -3391,18 +3401,27 @@ export function Editor() {
         if (d < bestD) {
           bestD = d;
           best = { x: p.x, y: p.y };
+          // Pin-nodes are select-only (they follow their component); standalone
+          // nodes (junctions / free endpoints) are draggable.
+          bestDrag = idx.has(id) ? null : { kind: "node", id, start: raw, committed: false };
         }
       }
       for (const w of g.wires) {
-        for (const [bx, by] of w.bends) {
+        for (let i = 0; i < w.bends.length; i++) {
+          const [bx, by] = w.bends[i];
           const d = Math.hypot(bx - raw.x, by - raw.y);
           if (d < bestD) {
             bestD = d;
             best = { x: bx, y: by };
+            bestDrag = { kind: "bend", wireId: w.id, index: i, start: raw, committed: false };
           }
         }
       }
       setNodeSel(best);
+      if (bestDrag) {
+        capturePointer(e);
+        setNodeDrag(bestDrag);
+      }
       return;
     }
     // Touch on empty canvas pans instead of starting a rubber-band selection.
@@ -3781,6 +3800,44 @@ export function Editor() {
     const g = screenToGrid(e.clientX, e.clientY);
     const raw = screenToWorld(e.clientX, e.clientY);
     setCursor(g);
+    // Node-tool drag: move a standalone node or a bend to the (snapped) cursor.
+    // Absolute set → idempotent preview. Pin-nodes were never armed (select-only).
+    if (nodeDragRef.current) {
+      const nd = nodeDragRef.current;
+      const snapped = snapPoint(raw);
+      if (!nd.committed) {
+        if (Math.hypot(snapped.x - nd.start.x, snapped.y - nd.start.y) < 0.1) return;
+        pushPast(historySnapshot());
+        setFuture([]);
+        setNodeDrag({ ...nd, committed: true });
+      }
+      previewMutate((d) =>
+        updateCurrentPageGraph(d, (p) =>
+          nd.kind === "node"
+            ? {
+                ...p,
+                nodes: (p.nodes ?? []).map((n) =>
+                  n.id === nd.id ? { ...n, x: snapped.x, y: snapped.y } : n,
+                ),
+              }
+            : {
+                ...p,
+                wires: p.wires.map((w) =>
+                  w.id === nd.wireId
+                    ? {
+                        ...w,
+                        bends: w.bends.map((b, i) =>
+                          i === nd.index ? ([snapped.x, snapped.y] as [number, number]) : b,
+                        ),
+                      }
+                    : w,
+                ),
+              },
+        ),
+      );
+      setNodeSel({ x: snapped.x, y: snapped.y });
+      return;
+    }
     if (tool === "wire" || isSinglePinSnappingTool(tool) || wireGestureRef.current) {
       setSnapTarget(nearestConnection(raw.x, raw.y, 1.0, WIRING_SNAP));
       const activeGesture = wireGestureRef.current;
@@ -4064,6 +4121,12 @@ export function Editor() {
 
   function onCanvasPointerUp(e: React.PointerEvent<SVGSVGElement>) {
     releasePointer(e);
+    // Finish a node-tool handle drag. If it never committed (no movement past
+    // threshold) it was just a select — nothing to do but clear the drag state.
+    if (nodeDrag) {
+      setNodeDrag(null);
+      return;
+    }
     if (e.pointerType === "touch") {
       activeTouchesRef.current.delete(e.pointerId);
       if (activeTouchesRef.current.size < 2) pinchRef.current = null;
