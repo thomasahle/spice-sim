@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { collectSelectedTopology } from "../src/editor/selectionTopology.ts";
-import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
+import { geometryToGraph } from "../src/editor/graphConvert.ts";
 
 // collectSelectedTopology now reads wire geometry from the graph (Model C), so
 // the fixture is a real graph page (built from the legacy polyline shape via the
 // production converter). w1 spans r1.pin1(2,0)→r2.pin0(6,0); the wire-probe at
 // (4,0) sits on its body, the pin-probe on r1.pin0, the floating one off-net.
-const page = legacyPageToGraph({
+const page = geometryToGraph({
   id: "p1",
   name: "main",
   components: [

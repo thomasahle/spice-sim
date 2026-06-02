@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import test, { afterEach, beforeEach } from "node:test";
 
 import { DEMOS } from "../src/editor/demos.ts";
-import { legacyDocToGraph } from "../src/editor/graphConvert.ts";
+import { geometryDocToGraph } from "../src/editor/graphConvert.ts";
 import { migrateToGraphDoc, normalizeDoc } from "../src/editor/docNormalize.ts";
 import {
   encodeSharedDoc,
@@ -18,7 +18,7 @@ import {
 } from "../src/editor/shareUrl.ts";
 import { loadProject, saveProject } from "../src/editor/projects.ts";
 import { GRAPH_DOC_VERSION, type CircuitDoc, type SimSettings } from "../src/editor/model.ts";
-import type { LegacyCircuitDoc } from "../src/editor/legacyModel.ts";
+import type { GeometryDoc } from "../src/editor/geometryModel.ts";
 
 // --- localStorage stub (projects.ts persists there) ----------------------
 const store = new Map<string, string>();
@@ -67,7 +67,7 @@ function graphFixtures(): { name: string; doc: CircuitDoc }[] {
   const fromDemos = DEMOS.map((d) => ({
     name: `demo:${d.id}`,
     // persisted() = the normalized, version-stamped shape we expect on load.
-    doc: persisted(legacyDocToGraph(d.build())),
+    doc: persisted(geometryDocToGraph(d.build())),
   }));
   const hand: CircuitDoc = persisted({
     pages: [
@@ -130,7 +130,7 @@ for (const { name, doc } of graphFixtures()) {
 // ---------------------------------------------------------------------------
 
 // A legacy v1 doc (wires are polylines, no version, no pin ids / nodes).
-function legacyV1Fixture(): LegacyCircuitDoc {
+function legacyV1Fixture(): GeometryDoc {
   return {
     pages: [
       {
@@ -174,13 +174,13 @@ function withSeededRandom<T>(fn: () => T): T {
   }
 }
 
-test("migrateToGraphDoc(v1) equals legacyDocToGraph(normalizeDoc(v1)) — no data loss", () => {
+test("migrateToGraphDoc(v1) equals geometryDocToGraph(normalizeDoc(v1)) — no data loss", () => {
   const v1 = legacyV1Fixture();
   // Same converter, same RNG sequence ⇒ byte-identical output. Proves the v1
   // discriminator routes through the trusted legacy converter unchanged.
   const viaMigrate = withSeededRandom(() => migrateToGraphDoc(structuredClone(v1)));
   const viaDirect = withSeededRandom(() =>
-    legacyDocToGraph(normalizeDoc(structuredClone(v1)) as unknown as LegacyCircuitDoc),
+    geometryDocToGraph(normalizeDoc(structuredClone(v1)) as unknown as GeometryDoc),
   );
   assert.deepEqual(canon(viaMigrate), canon(viaDirect));
 });
@@ -271,6 +271,6 @@ test("an empty doc converts to the same empty graph doc by either route", () => 
   // No version, no wires, no nodes, no pins ⇒ ambiguous; migrate defaults to the
   // legacy route, but for an empty doc both routes yield the same graph doc.
   const viaMigrate = migrateToGraphDoc(structuredClone(empty));
-  const viaLegacy = legacyDocToGraph(normalizeDoc(structuredClone(empty)) as unknown as LegacyCircuitDoc);
+  const viaLegacy = geometryDocToGraph(normalizeDoc(structuredClone(empty)) as unknown as GeometryDoc);
   assert.deepEqual(canon(viaMigrate), canon(viaLegacy));
 });

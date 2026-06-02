@@ -7,15 +7,15 @@ import {
   selectableHitAt,
   wireVertexDragHitAt,
 } from "../src/editor/canvasHitTest.ts";
-import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
-import type { LegacySchematicPage } from "../src/editor/legacyModel.ts";
+import { geometryToGraph } from "../src/editor/graphConvert.ts";
+import type { GeometryPage } from "../src/editor/geometryModel.ts";
 
 // canvasHitTest reads wire geometry from the graph (Model C). Fixtures are real
 // graph pages produced from the legacy polyline shape by the production
 // converter, so wirePolyline resolves each edge to the polyline the asserts
 // expect. (A 2-point wire whose ends are pins keeps its id; an interior-bend
 // polyline keeps node order so vertex indices match the old polyline indices.)
-const graphPage = (legacy: LegacySchematicPage) => legacyPageToGraph(legacy);
+const graphPage = (legacy: GeometryPage) => geometryToGraph(legacy);
 
 const page = graphPage({
   id: "p",

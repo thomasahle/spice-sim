@@ -4,12 +4,12 @@
 //
 // Each converted helper now reads wire geometry from the graph (wirePolyline)
 // instead of `wire.points`. In production it runs on the editor's graph page;
-// the pre-conversion code ran on `graphToLegacyPage(graphPage)` (the legacy
+// the pre-conversion code ran on `graphToGeometry(graphPage)` (the legacy
 // projection of the same page). So the behavior-preservation reference is the
 // *pre-conversion* (polyline) algorithm applied to that legacy projection. This
-// test rebuilds each demo, converts with legacyDocToGraph, runs the now-graph
+// test rebuilds each demo, converts with geometryDocToGraph, runs the now-graph
 // helpers on the graph page, and asserts identical output against a frozen copy
-// of the pre-conversion polyline algorithm fed graphToLegacyPage(graphPage).
+// of the pre-conversion polyline algorithm fed graphToGeometry(graphPage).
 //
 // The frozen references use the SAME geometry primitives as production (imported
 // from geometry.ts), so they differ from the converted code only in reading
@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { DEMOS } from "../src/editor/demos.ts";
-import { graphToLegacyPage, legacyDocToGraph } from "../src/editor/graphConvert.ts";
+import { graphToGeometry, geometryDocToGraph } from "../src/editor/graphConvert.ts";
 import {
   autoFormatPolylinePage,
   autoFormatWiresAvoiding,
@@ -43,7 +43,7 @@ import {
   samePoint,
 } from "../src/editor/geometry.ts";
 import type { CircuitComponent } from "../src/editor/model.ts";
-import type { LegacySchematicPage, LegacyWire } from "../src/editor/legacyModel.ts";
+import type { GeometryPage, GeometryWire } from "../src/editor/geometryModel.ts";
 
 function sameTup(a: [number, number], b: [number, number]): boolean {
   return Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6;
@@ -56,7 +56,7 @@ function sameTup(a: [number, number], b: [number, number]): boolean {
 // pure routing crossover (a wire bend lying on another wire's body, where no
 // wire actually ENDS), which Model C correctly does not solder. See
 // `isPureCrossover` and the divergence note in the report.
-function legacyJunctionDots(page: LegacySchematicPage): { x: number; y: number }[] {
+function legacyJunctionDots(page: GeometryPage): { x: number; y: number }[] {
   const key = (x: number, y: number) => `${x},${y}`;
   const counts = new Map<string, { x: number; y: number; degree: number }>();
   const add = (x: number, y: number, degree = 1) => {
@@ -97,7 +97,7 @@ function legacyJunctionDots(page: LegacySchematicPage): { x: number; y: number }
 
 /** Is (x,y) a pure routing crossover — no wire ENDS there (it's only an interior
  *  bend / pass-through of one or more wires)? Model C does not solder these. */
-function isPureCrossover(page: LegacySchematicPage, x: number, y: number): boolean {
+function isPureCrossover(page: GeometryPage, x: number, y: number): boolean {
   for (const wire of page.wires) {
     if (wire.points.length < 2) continue;
     const first = wire.points[0];
@@ -115,7 +115,7 @@ function isPureCrossover(page: LegacySchematicPage, x: number, y: number): boole
 }
 
 // ── Frozen pre-conversion dragMath.wireEndpointAnchors ────────────────────────
-function legacyPointTouchesWirePath(point: { x: number; y: number }, wire: LegacyWire): boolean {
+function legacyPointTouchesWirePath(point: { x: number; y: number }, wire: GeometryWire): boolean {
   if (wire.points.some(([x, y]) => samePoint(point, { x, y }))) return true;
   for (let i = 0; i < wire.points.length - 1; i++) {
     const [x1, y1] = wire.points[i];
@@ -127,7 +127,7 @@ function legacyPointTouchesWirePath(point: { x: number; y: number }, wire: Legac
 function legacyStationaryConnection(
   point: { x: number; y: number },
   currentWireId: string,
-  page: LegacySchematicPage,
+  page: GeometryPage,
   selected: Set<string>,
 ): boolean {
   for (const component of page.components) {
@@ -143,8 +143,8 @@ function legacyStationaryConnection(
   return false;
 }
 function legacyWireEndpointAnchors(
-  wire: LegacyWire,
-  page: LegacySchematicPage,
+  wire: GeometryWire,
+  page: GeometryPage,
   selected: Set<string>,
 ): { start?: boolean; end?: boolean } {
   if (wire.points.length < 2) return {};
@@ -157,14 +157,14 @@ function legacyWireEndpointAnchors(
 }
 
 // ── Frozen pre-conversion canvasHitTest (selectable-at + connection snap) ──────
-function hitProbe(page: LegacySchematicPage, gx: number, gy: number, r: number) {
+function hitProbe(page: GeometryPage, gx: number, gy: number, r: number) {
   for (let i = page.probes.length - 1; i >= 0; i--) {
     const p = page.probes[i];
     if ((gx - p.x) ** 2 + (gy - p.y) ** 2 <= r * r) return p;
   }
   return null;
 }
-function hitComponent(page: LegacySchematicPage, gx: number, gy: number) {
+function hitComponent(page: GeometryPage, gx: number, gy: number) {
   for (let i = page.components.length - 1; i >= 0; i--) {
     const c = page.components[i];
     const b = componentVisualBoundsFor(c, 0.2);
@@ -177,7 +177,7 @@ function hitComponentCore(c: CircuitComponent, gx: number, gy: number): boolean 
   const inset = Math.min(0.55, Math.max(0.18, Math.min(b.x2 - b.x1, b.y2 - b.y1) * 0.18));
   return gx >= b.x1 + inset && gx <= b.x2 - inset && gy >= b.y1 + inset && gy <= b.y2 - inset;
 }
-function hitWire(page: LegacySchematicPage, gx: number, gy: number, r: number) {
+function hitWire(page: GeometryPage, gx: number, gy: number, r: number) {
   for (let i = page.wires.length - 1; i >= 0; i--) {
     const w = page.wires[i];
     for (let j = 0; j < w.points.length - 1; j++) {
@@ -188,7 +188,7 @@ function hitWire(page: LegacySchematicPage, gx: number, gy: number, r: number) {
   }
   return null;
 }
-function hitWireBody(page: LegacySchematicPage, gx: number, gy: number, r: number) {
+function hitWireBody(page: GeometryPage, gx: number, gy: number, r: number) {
   for (let i = page.wires.length - 1; i >= 0; i--) {
     const w = page.wires[i];
     for (let j = 0; j < w.points.length - 1; j++) {
@@ -209,7 +209,7 @@ function hitWireBody(page: LegacySchematicPage, gx: number, gy: number, r: numbe
   }
   return null;
 }
-function legacySelectableItemId(page: LegacySchematicPage, gx: number, gy: number): string | null {
+function legacySelectableItemId(page: GeometryPage, gx: number, gy: number): string | null {
   const directProbe = hitProbe(page, gx, gy, 0.36);
   const probe = directProbe ?? hitProbe(page, gx, gy, 0.5);
   const comp = hitComponent(page, gx, gy);
@@ -227,7 +227,7 @@ function legacySelectableItemId(page: LegacySchematicPage, gx: number, gy: numbe
   return cands[0]?.id ?? null;
 }
 function legacyNearestConnectionTarget(
-  page: LegacySchematicPage,
+  page: GeometryPage,
   gx: number,
   gy: number,
   radius: number,
@@ -264,8 +264,8 @@ function legacyNearestConnectionTarget(
 
 for (const demo of DEMOS) {
   test(`edit-geometry parity (legacy vs graph): ${demo.id}`, () => {
-    const graphPage = legacyDocToGraph(demo.build()).pages[0];
-    const legacyPage = graphToLegacyPage(graphPage);
+    const graphPage = geometryDocToGraph(demo.build()).pages[0];
+    const legacyPage = graphToGeometry(graphPage);
 
     // buildWireJunctionDots (graph degree ≥ 3) vs legacy coincidence-degree:
     // the graph set must be a subset (never invents a dot), and every legacy dot

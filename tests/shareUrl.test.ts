@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { emptyDoc, GRAPH_DOC_VERSION, type CircuitDoc } from "../src/editor/model.ts";
-import { legacyDocToGraph } from "../src/editor/graphConvert.ts";
+import { geometryDocToGraph } from "../src/editor/graphConvert.ts";
 import { normalizeDoc } from "../src/editor/docNormalize.ts";
-import type { LegacyCircuitDoc } from "../src/editor/legacyModel.ts";
+import type { GeometryDoc } from "../src/editor/geometryModel.ts";
 import { decodeSharedDoc, encodeSharedDoc, sharedDocFromHash, shareUrlForDoc } from "../src/editor/shareUrl.ts";
 
 // Persistence v2: encodeSharedDoc stamps version:2 and decodeSharedDoc migrates
@@ -53,7 +53,7 @@ test("share URLs preserve note annotation metadata", () => {
 test("share URLs preserve complete project metadata and layout state", () => {
   // A full graph doc (converted from the legacy fixture) with subcircuits,
   // device params, notes, named nets, bends, probes and sim settings.
-  const legacy: LegacyCircuitDoc = {
+  const legacy: GeometryDoc = {
     pages: [
       {
         id: "page-main",
@@ -88,7 +88,7 @@ test("share URLs preserve complete project metadata and layout state", () => {
     analysis: { kind: "tran", tstep: "5n", tstop: "30u", tstart: "1u" },
     simSettings: { method: "gear", temperature: "35", uic: true, options: "reltol=1e-4 abstol=1e-12" },
   };
-  const doc = persisted(legacyDocToGraph(legacy));
+  const doc = persisted(geometryDocToGraph(legacy));
 
   assert.deepEqual(canon(decodeSharedDoc(encodeSharedDoc(doc))), canon(doc));
 });
@@ -103,7 +103,7 @@ test("share URLs preserve existing hash params and replace doc", () => {
 test("old (v1) share links are migrated to a graph doc on decode", () => {
   // Encode a legacy payload the way an OLD client would have: raw legacy JSON,
   // no version, polyline wires — exactly what is still live in users' links.
-  const legacy: LegacyCircuitDoc = {
+  const legacy: GeometryDoc = {
     pages: [
       {
         id: "page-v1",

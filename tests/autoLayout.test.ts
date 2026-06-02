@@ -3,14 +3,14 @@ import test from "node:test";
 
 import { autoArrangePage } from "../src/editor/autoLayout.ts";
 import { pinWorldPos } from "../src/editor/model.ts";
-import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
-import type { LegacySchematicPage } from "../src/editor/legacyModel.ts";
+import { geometryToGraph } from "../src/editor/graphConvert.ts";
+import type { GeometryPage } from "../src/editor/geometryModel.ts";
 
 // autoArrangePage consumes a graph (Model C) page; fixtures are built from the
 // legacy polyline shape via the production converter so wire geometry resolves.
-const graphPage = (legacy: LegacySchematicPage) => legacyPageToGraph(legacy);
+const graphPage = (legacy: GeometryPage) => geometryToGraph(legacy);
 
-function samplePage(): LegacySchematicPage {
+function samplePage(): GeometryPage {
   return {
     id: "page",
     name: "main",

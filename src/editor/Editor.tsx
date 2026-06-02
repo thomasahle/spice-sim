@@ -13,14 +13,12 @@ import type {
   CircuitComponent,
   ComponentKind,
   Probe,
+  CircuitDoc,
   CircuitDoc as GraphDoc,
+  SchematicPage,
   SchematicPage as GraphPage,
 } from "./model";
-import type {
-  LegacyCircuitDoc as CircuitDoc,
-  LegacySchematicPage as SchematicPage,
-  LegacyWire as Wire,
-} from "./legacyModel";
+import type { GeometryDoc, GeometryWire } from "./geometryModel";
 import {
   COMPONENT_LABELS,
   defaultValue,
@@ -38,26 +36,23 @@ import {
   subcircuitBodyHeight,
   subcircuitBodyWidth,
 } from "./model";
-// Doc/page plumbing the editor uses while it still edits legacy (polyline)
-// docs internally — legacy-typed wrappers over the graph helpers (see
-// legacyModel.ts). These move back to ./model when the editor edits the graph.
+// Graph doc/page plumbing. The graph is the editor's one and only document
+// model: these read/mutate the graph doc directly so connectivity comes from
+// explicit edges, not geometry. (`currentPageGraph` etc. are kept as aliases for
+// the call sites that name the graph version explicitly.)
 import {
   currentPage,
+  currentPage as currentPageGraph,
+  updateCurrentPage as updateCurrentPageGraph,
+  makePage as makePageGraph,
+  updatePageMeta as updatePageMetaGraph,
+  emptyDoc as emptyDocGraph,
   subcircuitInstanceParamsForPage,
   subcircuitPinLabelsForInstance,
   subcircuitPortCount,
   subcircuitPortComponents,
   subcircuitPortLabels,
   subcircuitPageForInstance,
-} from "./legacyModel";
-// Graph-side doc/page helpers for native edit ops (commitGraph): these mutate the
-// graph doc directly so connectivity comes from explicit edges, not geometry.
-import {
-  currentPage as currentPageGraph,
-  updateCurrentPage as updateCurrentPageGraph,
-  makePage as makePageGraph,
-  updatePageMeta as updatePageMetaGraph,
-  emptyDoc as emptyDocGraph,
 } from "./model";
 import { ComponentGlyph } from "./symbols";
 import {
@@ -230,10 +225,9 @@ import {
   type SelectionTransform,
 } from "./dragMath";
 import {
-  graphToLegacyPage,
-  legacyPageToGraph,
-  legacyDocToGraph,
-  graphDocToLegacy,
+  graphToGeometry,
+  geometryToGraph,
+  geometryDocToGraph,
 } from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline, type Wire as GraphWire } from "./graphModel";
 import { applyArrangeGeometry, deleteNode as graphDeleteNode, splitEdgeAtPoint, splitEdgeAtSegment } from "./graphEdit";
@@ -627,7 +621,7 @@ const SUBX_PIN_SIDE_OPTIONS = [
 // Default to the RC step demo so the scope is alive on first launch
 // (transient with an exponential charge curve), instead of the divider OP
 // which only renders a flat-line 5V scope.
-const DEMO: CircuitDoc = (DEMOS.find((d) => d.id === "rc_step") ?? DEMOS[0]).build();
+const DEMO: GeometryDoc = (DEMOS.find((d) => d.id === "rc_step") ?? DEMOS[0]).build();
 
 // Match the responsive breakpoint in styles.css: phones (portrait + landscape)
 // and short tablets get the overlay-drawer layout instead of the three-column
@@ -1032,7 +1026,9 @@ function ComponentLiveFlowGlyph({
 }
 
 type WireNodeProps = {
-  w: Wire;
+  w: GraphWire;
+  /** Projected geometry of this wire (wirePolyline). */
+  points: [number, number][];
   selected: boolean;
   hovered: boolean;
   liveActive: boolean;
@@ -1046,6 +1042,7 @@ type WireNodeProps = {
 
 const WireNode = memo(function WireNode({
   w,
+  points,
   selected: sel,
   hovered,
   liveActive,
@@ -1070,7 +1067,7 @@ const WireNode = memo(function WireNode({
     flowReadout && flow && flowReadoutText?.showArrow
       ? liveFlowReadoutArrow(flowReadout, flow.direction)
       : "";
-  const polyPoints = w.points.map((p) => p.join(",")).join(" ");
+  const polyPoints = points.map((p) => p.join(",")).join(" ");
   return (
     <g className={`wire-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}>
       {wireTitle && <title>{wireTitle}</title>}
@@ -1292,13 +1289,13 @@ export function Editor() {
     })(),
     UNDO_LIMIT,
   );
-  // The graph (graphDoc) is the source of truth. Editing/rendering still reads
-  // the legacy (polyline) shapes via this derived view; native graph edit ops
-  // (which preserve node identity — the silent-auto-connect fix) and `commit`
-  // write the graph directly. Persistence reads `graphDocRef` (the graph doc).
-  const doc = useMemo(() => graphDocToLegacy(graphDoc), [graphDoc]);
-  const docRef = useRef(doc);
-  docRef.current = doc;
+  // The graph (graphDoc) is the editor's one and only document model. `doc` /
+  // `docRef` are just convenience aliases for it; rendering reads wire geometry
+  // on demand via wirePolyline(page, wire). Edit ops and `commit` write the
+  // graph directly (preserving node identity — the silent-auto-connect fix), and
+  // persistence reads `graphDocRef`.
+  const doc = graphDoc;
+  const docRef = graphDocRef;
   const stableNodeNamesRef = useRef<Map<string, string>>(new Map());
   const stableNodeScopeRef = useRef("");
   const copyShareLinkRef = useRef<(() => Promise<void>) | null>(null);
@@ -1552,12 +1549,23 @@ export function Editor() {
     startZoom: number;
     centerWorld: { x: number; y: number };
   }>(null);
-  // Derive the active page once per render so most editor code can treat
-  // `page.components` etc as the source of truth.
-  const page = currentPage(doc);
-  // Graph-native active page (Model C). Render/read consumers are being migrated
-  // off the legacy `page` view onto this; geometry comes from wirePolyline.
-  const graphPage = useMemo(() => currentPageGraph(graphDoc), [graphDoc]);
+  // The active page (Model-C graph). Derived once per render so editor code can
+  // treat `page.components` / `page.wires` etc. as the source of truth; wire
+  // geometry comes from wirePolyline(page, wire). `graphPage` is kept as an alias
+  // for the sites that name the graph page explicitly.
+  const page = useMemo(() => currentPageGraph(graphDoc), [graphDoc]);
+  const graphPage = page;
+  // The active page's wires projected to geometry polylines ({id, points}), for
+  // the polyline-shaped geometry helpers (wire routing/avoidance, splice/split
+  // previews). Memoized so the projected array has a stable reference per page —
+  // some helpers detect "no change" via reference identity.
+  const pageWirePolylines = useMemo<PolylineWire[]>(() => {
+    const idx = pinNodeIndex(page);
+    return page.wires.flatMap((w) => {
+      const points = wirePolyline(page, w, idx);
+      return points ? [{ id: w.id, points }] : [];
+    });
+  }, [page]);
   const stableNodeScope = `${workspace.active ?? "shared"}:${doc.pages[0]?.id ?? "root"}`;
   if (stableNodeScopeRef.current !== stableNodeScope) {
     stableNodeScopeRef.current = stableNodeScope;
@@ -2012,7 +2020,7 @@ export function Editor() {
     // Selection is preserved across undo/redo (it does not ride with history),
     // but drop ids that the restored doc no longer contains so we never keep a
     // ghost selection pointing at deleted objects.
-    const restoredPage = currentPage(graphDocToLegacy(snapshot));
+    const restoredPage = currentPageGraph(snapshot);
     const liveIds = new Set<string>([
       ...restoredPage.components.map((c) => c.id),
       ...restoredPage.wires.map((w) => w.id),
@@ -2742,7 +2750,10 @@ export function Editor() {
       },
       screenToWorld: (sx: number, sy: number) => screenToWorld(sx, sy),
       graphPage: () => currentPageGraph(graphDocRef.current),
-      legacyPage: () => graphToLegacyPage(currentPageGraph(graphDocRef.current)),
+      // Geometry projection of the active graph page ({wires with points}).
+      // `legacyPage` is kept as a back-compat alias for pixel-QA tooling.
+      geometryPage: () => graphToGeometry(currentPageGraph(graphDocRef.current)),
+      legacyPage: () => graphToGeometry(currentPageGraph(graphDocRef.current)),
     };
   });
 
@@ -3366,7 +3377,7 @@ export function Editor() {
     if (!simResultRef.current) return null;
     const wire = page.wires.find((candidate) => candidate.id === wireId);
     if (!wire) return null;
-    for (const [x, y] of wire.points) {
+    for (const [x, y] of wirePolyline(page, wire) ?? []) {
       const node = pinAnnotations.nodes.posToNode.get(`${coordKey(x)},${coordKey(y)}`);
       if (!node || node === "0") continue;
       const trace = findNodeTrace(simResultRef.current.vectors, node, simResultRef.current.plot);
@@ -3653,7 +3664,7 @@ export function Editor() {
             { x: prev[0], y: prev[1] },
             { x: target[0], y: target[1] },
             snapToGrid,
-            { components: page.components, wires: page.wires },
+            { components: page.components, wires: projectWirePolylines(page) },
           ).slice(1),
         ];
         // If we landed on a pin and have ≥1 real segment, commit the wire.
@@ -4260,7 +4271,7 @@ export function Editor() {
             { x: start[0], y: start[1] },
             target,
             snapToGrid,
-            { components: page.components, wires: page.wires },
+            { components: page.components, wires: projectWirePolylines(page) },
           ).slice(1),
         ];
         commitWireRoute(route);
@@ -4332,8 +4343,12 @@ export function Editor() {
       const componentHits = page.components
         .filter((c) => rectsIntersect({ x1, y1, x2, y2 }, componentVisualBoundsFor(c, 0.1)))
         .map((c) => c.id);
+      const marqueeIdx = pinNodeIndex(page);
       const wireHits = page.wires
-        .filter((w) => wireIntersectsRect(w.points, { x1, y1, x2, y2 }))
+        .filter((w) => {
+          const poly = wirePolyline(page, w, marqueeIdx);
+          return poly ? wireIntersectsRect(poly, { x1, y1, x2, y2 }) : false;
+        })
         .map((w) => w.id);
       const probeHits = page.probes
         .filter((pr) => pr.x >= x1 && pr.x <= x2 && pr.y >= y1 && pr.y <= y2)
@@ -4852,7 +4867,7 @@ export function Editor() {
       return;
     }
     // Auto-arrange (ELK) relocates components and RE-ROUTES wires. Rebuilding the
-    // graph from its geometric output (legacyPageToGraph) FUSED distinct nets
+    // graph from its geometric output (geometryToGraph) FUSED distinct nets
     // whenever ELK routed their wires to touch (the Nodes-4→3 bug). Instead keep
     // the graph's topology (connectivity is already correct) and apply only ELK's
     // geometry — positions + bends, matched by id.
@@ -5589,7 +5604,7 @@ export function Editor() {
 
   // Build the (legacy polyline) clipboard payload from a graph-page selection:
   // collectSelectedTopology returns graph wires (edges); project each to its
-  // polyline so the still-polyline clipboard / re-import path (legacyPageToGraph)
+  // polyline so the still-polyline clipboard / re-import path (geometryToGraph)
   // is unchanged. Connectivity of dragged-in probes is the existing geometric
   // rule, evaluated on the graph via collectSelectedTopology.
   function clipboardFromGraphSelection(
@@ -5680,7 +5695,7 @@ export function Editor() {
         // Convert the pasted fragment to graph on its own (fresh pin-nodes +
         // edges + standalone nodes), then merge. It does NOT auto-connect to the
         // existing schematic — it's an offset copy; draw a wire to connect.
-        const fragment = legacyPageToGraph({
+        const fragment = geometryToGraph({
           id: p.id,
           name: p.name,
           components: newComps,
@@ -5733,7 +5748,7 @@ export function Editor() {
     let insertedProbeIds: string[] = [];
     commit((d) =>
       updateCurrentPageGraph(d, (p) => {
-        const fragment = legacyPageToGraph({
+        const fragment = geometryToGraph({
           id: p.id,
           name: p.name,
           components: newComps,
@@ -6008,7 +6023,7 @@ export function Editor() {
   function loadDemo(id: string) {
     const demo = DEMOS.find((d) => d.id === id);
     if (!demo) return;
-    commit(() => legacyDocToGraph(demo.build()));
+    commit(() => geometryDocToGraph(demo.build()));
     resetInteractionState();
     clearSimulationState();
     setShowStartupEmptyCard(false);
@@ -6499,10 +6514,11 @@ export function Editor() {
     return obstacles;
   }, [canvasValueFontSize, graphPage, page, probeScopes]);
   const liveFlowWireReadoutObstacles = useMemo(() => {
-    const allWireBounds = page.wires.map((wire) => ({
-      id: wire.id,
-      bounds: liveFlowWireObstacleBounds(wire.points, 0.14),
-    }));
+    const obstacleIdx = pinNodeIndex(page);
+    const allWireBounds = page.wires.map((wire) => {
+      const poly = wirePolyline(page, wire, obstacleIdx);
+      return { id: wire.id, bounds: poly ? liveFlowWireObstacleBounds(poly, 0.14) : [] };
+    });
     const byWire = new Map<string, ReturnType<typeof liveFlowWireObstacleBounds>>();
     for (const wire of page.wires) {
       const obstacles = [];
@@ -6512,7 +6528,7 @@ export function Editor() {
       byWire.set(wire.id, obstacles);
     }
     return byWire;
-  }, [page.wires]);
+  }, [page]);
 
   const floatingPinMarkers = useMemo(() => {
     if (runFloatingPins.length === 0) return [];
@@ -7757,7 +7773,10 @@ export function Editor() {
             )}
             {(() => {
               const placedFlowReadouts: Array<ReturnType<typeof liveFlowReadoutBounds>> = [];
+              const idx = pinNodeIndex(page);
               return page.wires.map((w) => {
+                const poly = wirePolyline(page, w, idx);
+                if (!poly) return null;
                 const sel = selectedIds.has(w.id);
                 const hovered = hoverId === w.id;
                 const flowSample = liveActive ? wireFlowSamples.get(w.id) : undefined;
@@ -7768,7 +7787,7 @@ export function Editor() {
                 if (showFlowReadout) {
                   const readoutText = liveFlowReadoutText(flowSample, wireFlowActive);
                   flowReadoutWidth = liveFlowReadoutWidth(readoutText);
-                  flowReadout = liveFlowReadoutPosition(w.points, 0.38, {
+                  flowReadout = liveFlowReadoutPosition(poly, 0.38, {
                     width: flowReadoutWidth,
                     height: 0.64,
                     obstacles: [
@@ -7790,6 +7809,7 @@ export function Editor() {
                   <WireNode
                     key={w.id}
                     w={w}
+                    points={poly}
                     selected={sel}
                     hovered={hovered}
                     liveActive={liveActive}
@@ -7823,7 +7843,7 @@ export function Editor() {
                   { x: last[0], y: last[1] },
                   tip,
                   snapToGrid,
-                  { components: page.components, wires: page.wires },
+                  { components: page.components, wires: pageWirePolylines },
                 ).slice(1),
               ];
               return (
@@ -7911,11 +7931,11 @@ export function Editor() {
               const inlineInsertion = cutSpan
                 ? (
                 cutWireSegmentBetweenPoints(
-                  page.wires,
+                  pageWirePolylines,
                   [cutSpan.start.x, cutSpan.start.y],
                   [cutSpan.end.x, cutSpan.end.y],
                   () => "__preview-cut",
-                ) !== page.wires)
+                ) !== pageWirePolylines)
                 : false;
               // A pin "connects" if dropping the part would land it on an existing
               // wire/pin (splitWiresAtPoint changes the set ⇒ the point is on a wire
@@ -7931,7 +7951,7 @@ export function Editor() {
                 : pins.map(
                     (pin) =>
                       inlineInsertion ||
-                      splitWiresAtPoint(page.wires, [pin.x, pin.y]) !== page.wires ||
+                      splitWiresAtPoint(pageWirePolylines, [pin.x, pin.y]) !== pageWirePolylines ||
                       nearestConnection(pin.x, pin.y, 0.05, WIRING_SNAP) !== null,
                   );
               const stubs = overlaps ? [] : placementConnectionWires(
@@ -7943,7 +7963,7 @@ export function Editor() {
                 () => "__stub",
                 {
                   components: [...page.components, draft],
-                  wires: page.wires,
+                  wires: pageWirePolylines,
                   ignoreComponentIds: new Set([draft.id]),
                 },
               );
@@ -8311,15 +8331,19 @@ export function Editor() {
               );
             })}
 
-            {page.wires.map((w) => {
+            {(() => {
+              const pinIdx = pinNodeIndex(page);
+              return page.wires.map((w) => {
               const sel = selectedIds.has(w.id);
               const hovered = hoverId === w.id;
               const showHandles = tool === "select" && (sel || hovered || wireDrag?.wireId === w.id);
               if (!showHandles) return null;
+              const poly = wirePolyline(page, w, pinIdx);
+              if (!poly) return null;
               return (
                 <g key={`wire-handles-${w.id}`} className={`wire-handle-group ${sel ? "selected" : ""} ${hovered ? "hovered" : ""}`}>
-                  {w.points.map(([px, py], idx) => {
-                    const isEnd = idx === 0 || idx === w.points.length - 1;
+                  {poly.map(([px, py], idx) => {
+                    const isEnd = idx === 0 || idx === poly.length - 1;
                     return (
                       <circle
                         key={idx}
@@ -8337,7 +8361,8 @@ export function Editor() {
                   })}
                 </g>
               );
-            })}
+            });
+            })()}
 
             {tool === "node" &&
               (() => {
@@ -8750,7 +8775,7 @@ function electricalComponentCount(page: SchematicPage): number {
 
 function clipboardAnchor(
   components: CircuitComponent[],
-  wires: Wire[],
+  wires: GeometryWire[],
   probes: Probe[],
 ): { x: number; y: number } {
   if (components.length > 0) return { x: components[0].x, y: components[0].y };

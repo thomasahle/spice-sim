@@ -4,7 +4,7 @@
 
 import { DEMOS } from "./demos.ts";
 import type { Workspace } from "./projects.ts";
-import type { LegacySchematicPage as SchematicPage } from "./legacyModel.ts";
+import type { SchematicPage } from "./model.ts";
 import { IconGlyph, SideNavIcon } from "./editorChrome.tsx";
 
 interface EditorLeftSidebarProps {

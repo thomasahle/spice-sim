@@ -17,7 +17,7 @@ import {
   pinWorldPos,
   rotatePoint,
 } from "./model.ts";
-import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel.ts";
+import type { GeometryDoc as CircuitDoc } from "./geometryModel.ts";
 import {
   componentBoundsFor,
   componentVisualBoundsFor,

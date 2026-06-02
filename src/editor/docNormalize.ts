@@ -8,15 +8,15 @@ import type {
   SimSettings,
   Wire,
 } from "./model.ts";
-import type { LegacyCircuitDoc, LegacyWire } from "./legacyModel.ts";
+import type { GeometryDoc, GeometryWire } from "./geometryModel.ts";
 import { GRAPH_DOC_VERSION, makeId } from "./model.ts";
-import { legacyDocToGraph } from "./graphConvert.ts";
+import { geometryDocToGraph } from "./graphConvert.ts";
 
 // normalizeDoc is WIRE-SHAPE-AGNOSTIC: it only ensures the pages structure
 // (migrating pre-hierarchy single-page docs) and copies `wires`/`nodes` through
 // untouched. That makes it valid for BOTH the legacy v1 polyline shape and the
 // Model-C graph shape, so the input page/wire types are intentionally loose.
-type AnyWire = Wire | LegacyWire;
+type AnyWire = Wire | GeometryWire;
 interface AnyPage {
   id?: string;
   name?: string;
@@ -42,7 +42,7 @@ interface AnyDoc {
 /**
  * Ensure the pages structure (and migrate pre-hierarchy single-page docs).
  * Wire-shape-agnostic — see note above. Returns a graph-typed `CircuitDoc`;
- * for v1 input the wires are still polylines until `legacyDocToGraph` runs, so
+ * for v1 input the wires are still polylines until `geometryDocToGraph` runs, so
  * callers that need a true graph doc go through `migrateToGraphDoc`.
  */
 export function normalizeDoc(d: AnyDoc): CircuitDoc {
@@ -105,7 +105,7 @@ function looksLikeGraphDoc(raw: AnyDoc): boolean {
     for (const w of page.wires ?? []) {
       // A wire that has edge endpoints (and no polyline) is graph-shaped.
       if ((w as Wire).a !== undefined || (w as Wire).b !== undefined) return true;
-      if ((w as LegacyWire).points !== undefined) return false;
+      if ((w as GeometryWire).points !== undefined) return false;
     }
     if ((page.nodes?.length ?? 0) > 0) return true;
     for (const c of page.components ?? []) {
@@ -113,7 +113,7 @@ function looksLikeGraphDoc(raw: AnyDoc): boolean {
     }
   }
   // 3. Truly ambiguous (no wires, no nodes, no pin ids, no version): an empty
-  //    doc. legacyDocToGraph on a doc with no wires only materializes pin-nodes
+  //    doc. geometryDocToGraph on a doc with no wires only materializes pin-nodes
   //    for components (none here) and is a no-op on connectivity, so treating
   //    it as legacy is safe and yields an equivalent empty graph doc.
   return false;
@@ -127,7 +127,7 @@ function looksLikeGraphDoc(raw: AnyDoc): boolean {
  * Why it cannot lose data:
  *  - v2 docs are passed straight through `normalizeDoc` (wire-agnostic), which
  *    copies wires/nodes/pins verbatim — no conversion, nothing dropped.
- *  - v1 docs go through `legacyDocToGraph(normalizeDoc(...))`, the trusted,
+ *  - v1 docs go through `geometryDocToGraph(normalizeDoc(...))`, the trusted,
  *    connectivity-lossless converter already covered by graphRoundTrip tests.
  *  - The v1/v2 discriminator prefers the explicit `version` tag and otherwise
  *    keys off structural markers that are mutually exclusive between the two
@@ -142,5 +142,5 @@ export function migrateToGraphDoc(raw: unknown): CircuitDoc {
     return normalizeDoc(doc);
   }
   // Legacy v1: normalize the pages structure, then convert to the graph model.
-  return legacyDocToGraph(normalizeDoc(doc) as unknown as LegacyCircuitDoc);
+  return geometryDocToGraph(normalizeDoc(doc) as unknown as GeometryDoc);
 }

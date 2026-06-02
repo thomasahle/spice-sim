@@ -130,7 +130,7 @@ test("deleteNode refuses a component pin-node", () => {
 
 test("applyArrangeGeometry preserves topology even when relayout geometry coincides", () => {
   // Two SEPARATE nets. The auto-arrange bug: ELK routes them to touch, and the
-  // old legacyPageToGraph rebuild fused them (Nodes 4→3). The graph-native apply
+  // old geometryToGraph rebuild fused them (Nodes 4→3). The graph-native apply
   // must keep them apart because it preserves edges, not geometry coincidence.
   const nodes: CircuitNode[] = [
     { id: "a", x: 0, y: 0 },

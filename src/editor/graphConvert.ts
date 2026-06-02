@@ -1,18 +1,20 @@
-// Legacy (polyline) → Model-C (node-graph) conversion. See wire-edge-design.md
-// §16.3. Deterministic and connectivity-lossless: it reuses the legacy pin
-// geometry and coordinate key, materializes junctions, and turns each polyline
-// into edges between *anchor* nodes (pins / probes / endpoints / shared
-// vertices) with the in-between vertices kept as bends.
+// Geometry (polyline) → Model-C (node-graph) conversion, and its inverse. See
+// wire-edge-design.md §16.3. Deterministic and connectivity-lossless: it reuses
+// the geometry pin layout and coordinate key, materializes junctions, and turns
+// each polyline into edges between *anchor* nodes (pins / probes / endpoints /
+// shared vertices) with the in-between vertices kept as bends. This is the
+// editor's import/export/migration boundary: everything that speaks geometry
+// ({wires with points}) crosses through here to/from the graph document model.
 
 import { getPinLayout, pinWorldPos } from "./model.ts";
 import type { CircuitDoc } from "./model.ts";
 import type {
-  LegacyCircuitComponent as LegacyComponent,
-  LegacyCircuitDoc,
-  LegacyProbe,
-  LegacySchematicPage as LegacyPage,
-  LegacyWire,
-} from "./legacyModel.ts";
+  GeometryComponent,
+  GeometryDoc,
+  GeometryPage,
+  GeometryProbe,
+  GeometryWire,
+} from "./geometryModel.ts";
 import { coordKey } from "./netlist.ts";
 import { pointOnSegment, samePoint } from "./geometry.ts";
 import {
@@ -73,7 +75,7 @@ function insertBreaks(points: Pt[], breaks: { x: number; y: number }[]): Pt[] {
   return dedup;
 }
 
-export function legacyPageToGraph(legacy: LegacyPage): SchematicPage {
+export function geometryToGraph(legacy: GeometryPage): SchematicPage {
   // 1. Pin-nodes (one per component pin); remember the pin-node at each coord.
   const pinNodeAt = new Map<string, NodeId>();
   const components: CircuitComponent[] = legacy.components.map((c) => {
@@ -218,14 +220,15 @@ export function legacyPageToGraph(legacy: LegacyPage): SchematicPage {
   };
 }
 
-/** Inverse of legacyPageToGraph: render a graph page back to the legacy polyline
+/** Inverse of geometryToGraph: render a graph page back to the geometry polyline
  *  shape. Edges become polylines (nodePos(a) → bends → nodePos(b)); a named
- *  standalone node becomes a LABEL component so the legacy netlist names the net.
- *  Lets the proven legacy emitters (SPICE netlist, SVG export) run unchanged. */
-export function graphToLegacyPage(page: SchematicPage): LegacyPage {
+ *  standalone node becomes a LABEL component so the geometry netlist names the
+ *  net. Lets the proven geometry emitters (SPICE netlist, SVG export) run on a
+ *  flat {points} projection, and feeds the clipboard / re-import path. */
+export function graphToGeometry(page: SchematicPage): GeometryPage {
   const idx = pinNodeIndex(page);
 
-  const components: LegacyComponent[] = page.components.map((c) => ({
+  const components: GeometryComponent[] = page.components.map((c) => ({
     id: c.id,
     kind: c.kind,
     x: c.x,
@@ -250,13 +253,13 @@ export function graphToLegacyPage(page: SchematicPage): LegacyPage {
     }
   }
 
-  const wires: LegacyWire[] = [];
+  const wires: GeometryWire[] = [];
   for (const wire of page.wires) {
     const pts = wirePolyline(page, wire, idx);
     if (pts && pts.length >= 2) wires.push({ id: wire.id, points: pts });
   }
 
-  const probes: LegacyProbe[] = page.probes.map((pr) => {
+  const probes: GeometryProbe[] = page.probes.map((pr) => {
     const p = (pr.node ? nodePos(page, pr.node, idx) : null) ?? { x: pr.x, y: pr.y };
     return {
       id: pr.id,
@@ -281,15 +284,15 @@ export function graphToLegacyPage(page: SchematicPage): LegacyPage {
 
 // Doc-level converters: map every page through the page converters, preserving
 // the doc-level fields (activePageId / directives / analysis / simSettings).
-// Used by the editor to migrate a loaded legacy (v1) doc to the graph model on
-// load, and to emit a legacy doc for v1 persistence / legacy emitters.
-export function legacyDocToGraph(doc: LegacyCircuitDoc): CircuitDoc {
-  return { ...doc, pages: doc.pages.map((p) => legacyPageToGraph(p)) };
+// Used to migrate a loaded geometry (v1) doc to the graph model on load, and to
+// project a graph doc back to the geometry shape (v1 persistence / emitters).
+export function geometryDocToGraph(doc: GeometryDoc): CircuitDoc {
+  return { ...doc, pages: doc.pages.map((p) => geometryToGraph(p)) };
 }
 
-export function graphDocToLegacy(doc: CircuitDoc): LegacyCircuitDoc {
-  return { ...doc, pages: doc.pages.map((p) => graphToLegacyPage(p)) };
+export function graphDocToGeometry(doc: CircuitDoc): GeometryDoc {
+  return { ...doc, pages: doc.pages.map((p) => graphToGeometry(p)) };
 }
 
 // re-export for convenience
-export type { LegacyPage };
+export type { GeometryPage };

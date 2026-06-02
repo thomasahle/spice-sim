@@ -6,13 +6,13 @@ import {
   netLabelNearMisses,
   snapNetLabelDrag,
 } from "../src/editor/netLabelConnections.ts";
-import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
+import { geometryToGraph } from "../src/editor/graphConvert.ts";
 
 // These consumers read wire geometry from the graph (Model C); fixtures are real
 // graph pages built from the legacy polyline shape via the production converter.
 
 test("net label connection state includes labels placed on wire interiors", () => {
-  const page = legacyPageToGraph({
+  const page = geometryToGraph({
     id: "p",
     name: "main",
     components: [
@@ -26,7 +26,7 @@ test("net label connection state includes labels placed on wire interiors", () =
 });
 
 test("net label connection state leaves floating labels visually distinct", () => {
-  const page = legacyPageToGraph({
+  const page = geometryToGraph({
     id: "p",
     name: "main",
     components: [
@@ -40,7 +40,7 @@ test("net label connection state leaves floating labels visually distinct", () =
 });
 
 test("net label near-miss detection catches labels close to pins", () => {
-  const page = legacyPageToGraph({
+  const page = geometryToGraph({
     id: "p",
     name: "main",
     components: [
@@ -62,7 +62,7 @@ test("net label near-miss detection catches labels close to pins", () => {
 });
 
 test("connected net labels are not near misses", () => {
-  const page = legacyPageToGraph({
+  const page = geometryToGraph({
     id: "p",
     name: "main",
     components: [
@@ -77,7 +77,7 @@ test("connected net labels are not near misses", () => {
 });
 
 test("net label drag snaps by pointer when the visible chip is dragged onto a pin", () => {
-  const page = legacyPageToGraph({
+  const page = geometryToGraph({
     id: "p",
     name: "main",
     components: [
@@ -103,7 +103,7 @@ test("net label drag snaps by pointer when the visible chip is dragged onto a pi
 });
 
 test("net label drag still prefers direct anchor snaps", () => {
-  const page = legacyPageToGraph({
+  const page = geometryToGraph({
     id: "p",
     name: "main",
     components: [

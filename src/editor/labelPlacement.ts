@@ -119,9 +119,9 @@ export function netLabelLayouts(
 }
 
 /** A directly-named graph node (`node.name`, only from netlist import) renders
- *  as a net-label chip exactly like a `kind:"LABEL"` component. The legacy view
- *  synthesized these into LABELs (see graphConvert.graphToLegacyPage); on the
- *  graph page they live as nodes, so we materialize the same pseudo-LABEL here
+ *  as a net-label chip exactly like a `kind:"LABEL"` component. The geometry
+ *  projection synthesizes these into LABELs (see graphConvert.graphToGeometry);
+ *  on the graph page they live as nodes, so we materialize the same pseudo-LABEL here
  *  (same id / coordinate / value) to keep geometry identical. */
 export function namedNodeLabelComponent(node: CircuitNode): CircuitComponent {
   return {
@@ -459,8 +459,8 @@ function wireTouchesComponentPin(points: [number, number][], component: CircuitC
 
 /** Components that act as label/obstacle sources during placement scoring: the
  *  page's real components plus the pseudo-LABELs from directly-named nodes. The
- *  legacy view fed these as real LABEL components (graphToLegacyPage), so we add
- *  them here to keep obstacle geometry identical on the graph page. */
+ *  geometry projection emits these as real LABEL components (graphToGeometry), so
+ *  we add them here to keep obstacle geometry identical on the graph page. */
 function obstacleComponents(page: SchematicPage): CircuitComponent[] {
   const named = page.nodes?.filter((node) => node.name) ?? [];
   if (named.length === 0) return page.components;

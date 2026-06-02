@@ -6,8 +6,8 @@
 
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type { ComponentKind } from "./model.ts";
-import type { LegacySchematicPage as SchematicPage } from "./legacyModel.ts";
-import { subcircuitPortLabels } from "./legacyModel.ts";
+import type { SchematicPage } from "./model.ts";
+import { subcircuitPortLabels } from "./model.ts";
 import type { MosfetPreset } from "./modelPresets.ts";
 import { PaletteGlyph } from "./symbols.tsx";
 import { ToolIcon } from "./editorChrome.tsx";

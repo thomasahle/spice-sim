@@ -77,9 +77,9 @@ export function collectPageBounds(p: SchematicPage, selected?: Set<string>): { x
     if (selected && !selected.has(c.id)) continue;
     pushComponentBounds(c);
   }
-  // Directly-named graph nodes render as net-label chips; the legacy view
-  // synthesized them as LABEL components appended after the real ones (see
-  // graphConvert.graphToLegacyPage), so they also contributed their LABEL body +
+  // Directly-named graph nodes render as net-label chips; the geometry
+  // projection emits them as LABEL components appended after the real ones (see
+  // graphConvert.graphToGeometry), so they also contributed their LABEL body +
   // pin bounds here. Mirror that (after real components) for whole-page bounds.
   // Their synthetic id is never in `selected`, so they drop out of selection bounds.
   for (const node of p.nodes ?? []) {
@@ -148,9 +148,9 @@ function includeCanvasLabelBounds(
     xs.push(bounds.x1, bounds.x2);
     ys.push(bounds.y1, bounds.y2);
   }
-  // Directly-named graph nodes render as net-label chips (legacy synthesized
-  // them as LABEL components — see graphConvert.graphToLegacyPage). Their
-  // synthetic id is never in `selected`, so like the legacy LABELs they only
+  // Directly-named graph nodes render as net-label chips (the geometry projection
+  // emits them as LABEL components — see graphConvert.graphToGeometry). Their
+  // synthetic id is never in `selected`, so like those LABELs they only
   // contribute to whole-page (fit-to-content) bounds, not selection bounds.
   for (const node of p.nodes ?? []) {
     if (!node.name) continue;

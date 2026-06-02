@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
+import { geometryToGraph } from "../src/editor/graphConvert.ts";
 import { buildGraphNets } from "../src/editor/graphNetlist.ts";
 import { wirePolyline, type SchematicPage } from "../src/editor/graphModel.ts";
 import { pinWorldPos } from "../src/editor/model.ts";
 import type {
-  LegacyCircuitComponent as LegacyComponent,
-  LegacySchematicPage as LegacyPage,
-} from "../src/editor/legacyModel.ts";
+  GeometryComponent,
+  GeometryPage,
+} from "../src/editor/geometryModel.ts";
 
-function legacy(over: Partial<LegacyPage>): LegacyPage {
+function legacy(over: Partial<GeometryPage>): GeometryPage {
   return { id: "main", name: "main", components: [], wires: [], probes: [], ...over };
 }
 function nodeAt(g: SchematicPage, x: number, y: number): string | undefined {
@@ -18,7 +18,7 @@ function nodeAt(g: SchematicPage, x: number, y: number): string | undefined {
 }
 
 test("converter collapses a pure bend into a waypoint", () => {
-  const g = legacyPageToGraph(legacy({ wires: [{ id: "w1", points: [[0, 0], [0, 2], [3, 2]] }] }));
+  const g = geometryToGraph(legacy({ wires: [{ id: "w1", points: [[0, 0], [0, 2], [3, 2]] }] }));
   assert.equal(g.wires.length, 1, "one edge");
   assert.deepEqual(g.wires[0].bends, [[0, 2]], "the corner is a bend, not a node");
   assert.ok(nodeAt(g, 0, 0) && nodeAt(g, 3, 2), "endpoints are nodes");
@@ -26,7 +26,7 @@ test("converter collapses a pure bend into a waypoint", () => {
 });
 
 test("converter splits a T-junction and connects all three ends", () => {
-  const g = legacyPageToGraph(
+  const g = geometryToGraph(
     legacy({
       wires: [
         { id: "w1", points: [[0, 0], [4, 0]] },
@@ -43,7 +43,7 @@ test("converter splits a T-junction and connects all three ends", () => {
 });
 
 test("a bare crossing does NOT connect (no vertex at the intersection)", () => {
-  const g = legacyPageToGraph(
+  const g = geometryToGraph(
     legacy({
       wires: [
         { id: "w1", points: [[0, 0], [4, 0]] },
@@ -57,7 +57,7 @@ test("a bare crossing does NOT connect (no vertex at the intersection)", () => {
 });
 
 test("a probe on a wire splits it and joins that net", () => {
-  const g = legacyPageToGraph(
+  const g = geometryToGraph(
     legacy({
       wires: [{ id: "w1", points: [[0, 0], [4, 0]] }],
       probes: [{ id: "pr1", x: 2, y: 0, color: "#f00" }],
@@ -70,9 +70,9 @@ test("a probe on a wire splits it and joins that net", () => {
 });
 
 test("a component pin connects through a wire to a standalone node", () => {
-  const r: LegacyComponent = { id: "R1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" };
+  const r: GeometryComponent = { id: "R1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" };
   const p0 = pinWorldPos(r, 0);
-  const g = legacyPageToGraph(
+  const g = geometryToGraph(
     legacy({ components: [r], wires: [{ id: "w1", points: [[p0.x, p0.y], [7, 7]] }] }),
   );
   const nets = buildGraphNets(g);

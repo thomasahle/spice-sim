@@ -5,15 +5,15 @@
 // Part A — demo parity vs a captured legacy baseline:
 //   The converted consumers now read wire geometry from the graph
 //   (`wirePolyline`) instead of `wire.points`. In production they run on the
-//   editor's graph page; the old code ran on `graphToLegacyPage(graphPage)` (the
+//   editor's graph page; the old code ran on `graphToGeometry(graphPage)` (the
 //   legacy projection of that same page). So the behavior-preservation reference
 //   is the *pre-conversion* (legacy) functions applied to
-//   `graphToLegacyPage(legacyDocToGraph(demo))`. EXPECTED below is exactly that,
+//   `graphToGeometry(geometryDocToGraph(demo))`. EXPECTED below is exactly that,
 //   captured by running the unmodified modules from a clean `git stash` of the
 //   converted files. This test rebuilds each demo, converts with
-//   `legacyDocToGraph`, runs the now-graph-based consumers on the graph page, and
+//   `geometryDocToGraph`, runs the now-graph-based consumers on the graph page, and
 //   asserts byte-identical output (float epsilon) — including array length and
-//   order, since graphToLegacyPage and the converted code both walk `page.wires`
+//   order, since graphToGeometry and the converted code both walk `page.wires`
 //   and emit `wirePolyline` per wire. If `wirePolyline` ever returned null
 //   (wires dropped) or the named-node handling regressed, the values diverge.
 //
@@ -23,13 +23,13 @@
 //   with a named node and an equivalent page where the same name is a real LABEL
 //   component at the same coordinate, and asserts the converted consumers emit
 //   identical net-label layout + page bounds — i.e. a named node lays out
-//   exactly like the LABEL the legacy view synthesized (graphToLegacyPage).
+//   exactly like the LABEL the legacy view synthesized (graphToGeometry).
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import { DEMOS } from "../src/editor/demos.ts";
-import { graphToLegacyPage, legacyDocToGraph } from "../src/editor/graphConvert.ts";
+import { graphToGeometry, geometryDocToGraph } from "../src/editor/graphConvert.ts";
 import { canvasValueLabel } from "../src/editor/labelFormatting.ts";
 import { netLabelLayouts, valueLabelOffsets } from "../src/editor/labelPlacement.ts";
 import { layoutProbeScopes } from "../src/editor/scopeLayout.ts";
@@ -88,7 +88,7 @@ for (const demo of DEMOS) {
     const expected = EXPECTED[demo.id];
     assert.ok(expected, `missing baseline for demo ${demo.id}`);
 
-    const graphPage = legacyDocToGraph(demo.build()).pages[0];
+    const graphPage = geometryDocToGraph(demo.build()).pages[0];
 
     // collectPageBounds (selectionBounds)
     const bounds = collectPageBounds(graphPage);
@@ -160,11 +160,11 @@ function labelComponentPage(
 }
 
 // The legacy projection of a graph page: this is what the pre-conversion code
-// consumed. `graphToLegacyPage` turns each named node into a LABEL component, so
+// consumed. `graphToGeometry` turns each named node into a LABEL component, so
 // feeding this back through the converted (graph-typed) functions reproduces the
 // exact legacy reference — proving the named-node path matches legacy.
 function legacyRef(page: SchematicPage): SchematicPage {
-  return graphToLegacyPage(page) as unknown as SchematicPage;
+  return graphToGeometry(page) as unknown as SchematicPage;
 }
 
 test("named node lays out like the LABEL the legacy view synthesized (netLabelLayouts)", () => {
@@ -189,7 +189,7 @@ test("named node contributes the same page bounds as the legacy synthesized LABE
   const named = collectPageBounds(page);
   const legacy = collectPageBounds(legacyRef(page));
 
-  // Same multiset and order: graphToLegacyPage appends the LABEL after the real
+  // Same multiset and order: graphToGeometry appends the LABEL after the real
   // components, and collectPageBounds appends named nodes after real components.
   approxArray(named.xs, legacy.xs, "named-node bounds.xs");
   approxArray(named.ys, legacy.ys, "named-node bounds.ys");

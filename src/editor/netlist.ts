@@ -14,8 +14,8 @@
 // when the user hasn't supplied a custom model name in the component value.
 
 import type { CircuitComponent, ComponentKind, CircuitDoc as GraphDoc } from "./model.ts";
-import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel.ts";
-import { legacyDocToGraph } from "./graphConvert.ts";
+import type { GeometryDoc as CircuitDoc } from "./geometryModel.ts";
+import { geometryDocToGraph } from "./graphConvert.ts";
 import {
   pinNodeIndex,
   wirePolyline,
@@ -225,7 +225,7 @@ export function buildNetlist(
   doc: CircuitDoc,
   stableNames?: Map<string, string>,
 ): NetlistResult {
-  return buildNetlistGraph(legacyDocToGraph(doc), stableNames);
+  return buildNetlistGraph(geometryDocToGraph(doc), stableNames);
 }
 
 /** Build a SPICE netlist from a Model-C graph doc. Connectivity is taken from

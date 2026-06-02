@@ -3,7 +3,7 @@ import test from "node:test";
 
 import type { Probe, SchematicPage } from "../src/editor/model.ts";
 import { componentBoundsFor } from "../src/editor/geometry.ts";
-import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
+import { geometryToGraph } from "../src/editor/graphConvert.ts";
 import { netLabelLayouts } from "../src/editor/labelPlacement.ts";
 import { estimateInlineMathTextWidth } from "../src/editor/mathText.ts";
 import { layoutProbeScopes, probeScopeLabelBounds } from "../src/editor/scopeLayout.ts";
@@ -98,7 +98,7 @@ test("probe scopes avoid net labels and probe label chips in dense areas", () =>
 test("probe scopes avoid routed net label positions", () => {
   // Author the wire as a legacy polyline, then convert: the placement code reads
   // wire geometry from the graph (wirePolyline), so the wire must be a real edge.
-  const page = legacyPageToGraph({
+  const page = geometryToGraph({
     id: "main",
     name: "main",
     components: [

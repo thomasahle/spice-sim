@@ -8,7 +8,7 @@ import test from "node:test";
 import { DEMOS } from "../src/editor/demos.ts";
 import { buildNetlist, coordKey } from "../src/editor/netlist.ts";
 import { getPinLayout, pinWorldPos } from "../src/editor/model.ts";
-import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
+import { geometryToGraph } from "../src/editor/graphConvert.ts";
 import { buildGraphNets } from "../src/editor/graphNetlist.ts";
 
 /** Canonical partition: the set of nets, each rendered as its sorted pin list,
@@ -41,7 +41,7 @@ for (const demo of DEMOS) {
     }
 
     // Graph: each pin's net via the stored graph.
-    const g = legacyPageToGraph(page);
+    const g = geometryToGraph(page);
     const nets = buildGraphNets(g);
     const graphPinNet = new Map<string, string>();
     for (const c of g.components) {

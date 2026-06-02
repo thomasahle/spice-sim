@@ -8,10 +8,10 @@ import {
   valueLabelOffset,
   valueLabelOffsets,
 } from "../src/editor/labelPlacement.ts";
-import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
+import { geometryToGraph } from "../src/editor/graphConvert.ts";
 import { pinNodeIndex, wirePolyline } from "../src/editor/graphModel.ts";
 import type { CircuitComponent, SchematicPage } from "../src/editor/model.ts";
-import type { LegacyWire } from "../src/editor/legacyModel.ts";
+import type { GeometryWire } from "../src/editor/geometryModel.ts";
 
 function page(components: CircuitComponent[]): SchematicPage {
   return { id: "main", name: "Main", components, wires: [], probes: [] };
@@ -20,8 +20,8 @@ function page(components: CircuitComponent[]): SchematicPage {
 // Wires are authored as legacy polylines and converted to the graph model so the
 // placement code (which now reads wire geometry via wirePolyline) sees real
 // graph edges — exactly as production does.
-function pageWithWires(components: CircuitComponent[], wires: LegacyWire[]): SchematicPage {
-  return legacyPageToGraph({ id: "main", name: "Main", components, wires, probes: [] });
+function pageWithWires(components: CircuitComponent[], wires: GeometryWire[]): SchematicPage {
+  return geometryToGraph({ id: "main", name: "Main", components, wires, probes: [] });
 }
 
 function pageWithProbes(components: CircuitComponent[], probes: SchematicPage["probes"]): SchematicPage {
