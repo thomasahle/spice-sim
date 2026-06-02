@@ -172,6 +172,62 @@ export function addNode(page: SchematicPage, node: CircuitNode): SchematicPage {
   return { ...page, nodes: [...(page.nodes ?? []), node] };
 }
 
+/** Minimal geometry result for {@link applyArrangeGeometry} — the shape an ELK
+ *  auto-arrange (or any relayout) emits: new component positions + new wire
+ *  polylines, keyed by id. A legacy SchematicPage satisfies this structurally. */
+export interface ArrangeGeometry {
+  components: { id: string; x: number; y: number }[];
+  wires: { id: string; points: [number, number][] }[];
+}
+
+/** Apply a relayout's GEOMETRY onto the graph while PRESERVING its topology.
+ *  Auto-arrange (ELK) used to rebuild the graph from its geometric output via a
+ *  coincidence-merge importer, which fused two distinct nets whenever ELK routed
+ *  their wires to touch (the Nodes-4→3 bug). Instead, keep the graph's nodes +
+ *  edges (connectivity is already known-correct) and only move things:
+ *   - component positions (pin-nodes derive, so incident wires rubber-band);
+ *   - wire bends = the interior points of the matching result polyline;
+ *   - standalone node positions = the matching result wire's endpoint.
+ *  Wires/components are matched by id (the relayout preserves ids). */
+export function applyArrangeGeometry(
+  page: SchematicPage,
+  result: ArrangeGeometry,
+): SchematicPage {
+  const compById = new Map(result.components.map((c) => [c.id, c]));
+  const wireById = new Map(result.wires.map((w) => [w.id, w]));
+
+  const components = page.components.map((c) => {
+    const moved = compById.get(c.id);
+    return moved ? { ...c, x: moved.x, y: moved.y } : c;
+  });
+
+  const wires = page.wires.map((w) => {
+    const rw = wireById.get(w.id);
+    if (!rw || rw.points.length < 2) return w;
+    const bends = rw.points.slice(1, -1).map(([x, y]) => [x, y] as [number, number]);
+    return { ...w, bends };
+  });
+
+  // Standalone node positions come from the matching result wire's endpoint
+  // (poly[0] = the a-end, poly[last] = the b-end, per wirePolyline's order).
+  // Pin-node ids never appear in page.nodes, so writing them here is harmless.
+  const nodePos = new Map<NodeId, { x: number; y: number }>();
+  for (const w of page.wires) {
+    const rw = wireById.get(w.id);
+    if (!rw || rw.points.length < 2) continue;
+    const first = rw.points[0];
+    const last = rw.points[rw.points.length - 1];
+    if (!nodePos.has(w.a)) nodePos.set(w.a, { x: first[0], y: first[1] });
+    if (!nodePos.has(w.b)) nodePos.set(w.b, { x: last[0], y: last[1] });
+  }
+  const nodes = (page.nodes ?? []).map((n) => {
+    const np = nodePos.get(n.id);
+    return np ? { ...n, x: np.x, y: np.y } : n;
+  });
+
+  return { ...page, components, nodes, wires };
+}
+
 /** Split the edge whose polyline passes through (x,y) at an INTERIOR point into
  *  two edges meeting at a new junction node — the T-junction primitive used by
  *  draw-onto-wire (§10), probe-on-wire (§11/§9d), and node-tool segment ops.

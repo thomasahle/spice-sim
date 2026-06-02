@@ -237,7 +237,7 @@ import {
   graphDocToLegacy,
 } from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline } from "./graphModel";
-import { deleteNode as graphDeleteNode, splitEdgeAtPoint, splitEdgeAtSegment } from "./graphEdit";
+import { applyArrangeGeometry, deleteNode as graphDeleteNode, splitEdgeAtPoint, splitEdgeAtSegment } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -4839,12 +4839,13 @@ export function Editor() {
       setStatus("No components to arrange");
       return;
     }
-    // Auto-arrange (ELK) relocates components and RE-ROUTES wires — it can change
-    // topology (new junctions, remapped stops), so mapping positions onto the old
-    // graph by id is unsound. The ELK result is a clean legacy page with
-    // connectivity preserved, so rebuild the graph from it wholesale.
+    // Auto-arrange (ELK) relocates components and RE-ROUTES wires. Rebuilding the
+    // graph from its geometric output (legacyPageToGraph) FUSED distinct nets
+    // whenever ELK routed their wires to touch (the Nodes-4→3 bug). Instead keep
+    // the graph's topology (connectivity is already correct) and apply only ELK's
+    // geometry — positions + bends, matched by id.
     commit((d) =>
-      updateCurrentPageGraph(d, (p) => (p.id === sourcePage.id ? legacyPageToGraph(result.page) : p)),
+      updateCurrentPageGraph(d, (p) => (p.id === sourcePage.id ? applyArrangeGeometry(p, result.page) : p)),
     );
     const scope = selection.size > 0 ? "selection" : "schematic";
     const wireText = result.formattedWireIds.length === 1 ? "wire" : "wires";
