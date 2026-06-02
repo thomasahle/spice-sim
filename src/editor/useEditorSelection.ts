@@ -1,6 +1,5 @@
 import { useMemo } from "react";
-import type { CircuitComponent, Probe } from "./model";
-import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel";
+import type { CircuitComponent, Probe, SchematicPage, Wire } from "./model";
 
 export interface EditorSelection {
   selectedList: CircuitComponent[];

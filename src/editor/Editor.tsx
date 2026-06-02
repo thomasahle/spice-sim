@@ -1562,6 +1562,9 @@ export function Editor() {
   // Derive the active page once per render so most editor code can treat
   // `page.components` etc as the source of truth.
   const page = currentPage(doc);
+  // Graph-native active page (Model C). Render/read consumers are being migrated
+  // off the legacy `page` view onto this; geometry comes from wirePolyline.
+  const graphPage = useMemo(() => currentPageGraph(graphDoc), [graphDoc]);
   const stableNodeScope = `${workspace.active ?? "shared"}:${doc.pages[0]?.id ?? "root"}`;
   if (stableNodeScopeRef.current !== stableNodeScope) {
     stableNodeScopeRef.current = stableNodeScope;
@@ -5984,7 +5987,13 @@ export function Editor() {
     lastSelectedWire,
     lastSelectedProbe,
     selectedObjectCount,
-  } = useEditorSelection(page, selectedIds);
+  } = useEditorSelection(graphPage, selectedIds);
+  // Polyline of the inspected wire (graph wires have no `.points`; geometry is
+  // derived from the node graph).
+  const lastSelectedWirePoly = useMemo(
+    () => (lastSelectedWire ? wirePolyline(graphPage, lastSelectedWire) : null),
+    [graphPage, lastSelectedWire],
+  );
   const selectedAutoFormatWireCount = useMemo(
     () => wireIdsForAutoFormat(page, selectedIds).size,
     [page, selectedIds],
@@ -7140,18 +7149,18 @@ export function Editor() {
                     <span className="mono">Wire</span>
                   </Row>
                   <Row label="Points">
-                    <span className="mono">{lastSelectedWire.points.length}</span>
+                    <span className="mono">{lastSelectedWirePoly?.length ?? 0}</span>
                   </Row>
                   <Row label="Start">
                     <span className="mono">
-                      ({formatCoord(lastSelectedWire.points[0]?.[0] ?? 0)},{" "}
-                      {formatCoord(lastSelectedWire.points[0]?.[1] ?? 0)})
+                      ({formatCoord(lastSelectedWirePoly?.[0]?.[0] ?? 0)},{" "}
+                      {formatCoord(lastSelectedWirePoly?.[0]?.[1] ?? 0)})
                     </span>
                   </Row>
                   <Row label="End">
                     <span className="mono">
-                      ({formatCoord(lastSelectedWire.points[lastSelectedWire.points.length - 1]?.[0] ?? 0)},{" "}
-                      {formatCoord(lastSelectedWire.points[lastSelectedWire.points.length - 1]?.[1] ?? 0)})
+                      ({formatCoord(lastSelectedWirePoly?.[(lastSelectedWirePoly?.length ?? 1) - 1]?.[0] ?? 0)},{" "}
+                      {formatCoord(lastSelectedWirePoly?.[(lastSelectedWirePoly?.length ?? 1) - 1]?.[1] ?? 0)})
                     </span>
                   </Row>
                 </>
