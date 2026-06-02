@@ -114,7 +114,7 @@ import {
   wireIntersectsRect,
 } from "./geometry";
 import {
-  buildNetlist,
+  buildNetlistGraph,
   coordKey,
   type FloatingPinDiagnostic,
   type ModelDiagnostic,
@@ -2342,7 +2342,7 @@ export function Editor() {
         break;
       }
       case "file:export_netlist": {
-        const r = buildNetlist(docRef.current, stableNodeNamesRef.current);
+        const r = buildNetlistGraph(graphDocRef.current, stableNodeNamesRef.current);
         const p = await exportNetlist(r.netlist);
         if (p) setStatus(`Exported netlist to ${p}`);
         break;
@@ -5840,7 +5840,7 @@ export function Editor() {
     const runGeneration = editGenerationRef.current;
     setRunning(true);
     setStatus("Building netlist…");
-    const result = buildNetlist(docRef.current, stableNodeNamesRef.current);
+    const result = buildNetlistGraph(graphDocRef.current, stableNodeNamesRef.current);
     const runIssues = [...result.errors, ...result.warnings];
     setRunWarnings(runIssues);
     setRunFloatingPins(result.floatingPins);
@@ -6032,9 +6032,9 @@ export function Editor() {
       : runningVisible
         ? "Simulation is running"
         : "Run (⌘R)";
-  // buildNetlist walks every page's components/wires/labels and is invoked
-  // again every time `doc` changes. During a drag we mutate `doc` on every
-  // pointermove — so without gating, every move triggers a full netlist
+  // buildNetlistGraph walks every page's components/wires/labels and is invoked
+  // again every time the graph doc changes. During a drag we mutate the doc on
+  // every pointermove — so without gating, every move triggers a full netlist
   // rebuild. The annotations driven from this (refdes labels, hover node
   // names) don't materially change while a component is being moved; reuse
   // the previous result until the drag commits at pointerup.
@@ -6046,7 +6046,7 @@ export function Editor() {
     subxResize !== null;
   const { pinAnnotations, wireJunctionDots, componentValueLabelOffsets, netLabelLayoutMap } =
     usePinAnnotations({
-      doc,
+      doc: graphDoc,
       page,
       isDragging,
       canvasValueFontSize,
@@ -8720,7 +8720,7 @@ function NodeReadingsOverlay({
   showAllNodes,
 }: {
   page: SchematicPage;
-  netlist: ReturnType<typeof buildNetlist>;
+  netlist: ReturnType<typeof buildNetlistGraph>;
   readings: Map<string, number>;
   /** OP: true (annotate every node). Tran/AC: false (only probed nodes). */
   showAllNodes: boolean;

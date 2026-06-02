@@ -1,21 +1,31 @@
 // Convert the editor's CircuitDoc into a SPICE netlist string.
 //
-// Nodes are derived from grid coordinates: any pin or wire vertex at the same
-// (x,y) is the same node; wire polylines union all of their vertices; probes
-// and net labels that sit along a wire segment are also mapped onto that node.
-// Component pins intentionally connect only to explicit wire vertices/junctions,
-// not arbitrary segment pass-throughs; any node containing a GND pin becomes
-// node "0" (SPICE ground).
+// Connectivity comes from the explicit node GRAPH (Model C): a net is a
+// connected component of (standalone nodes ∪ pin-nodes) joined by wire edges.
+// `buildNetlistGraph` is the real implementation and consumes a graph doc;
+// `buildNetlist` is a thin wrapper that converts a legacy (polyline) doc to a
+// graph doc first, so existing legacy fixtures/callers keep working unchanged.
+// Component pins connect only through explicit graph edges, not arbitrary wire
+// segment pass-throughs; any node containing a GND pin becomes node "0" (SPICE
+// ground). Net labels / ports / power rails are still LABEL *components* and are
+// resolved from the component list exactly as before.
 //
 // Models for D / NPN / PNP / NMOS / PMOS are auto-emitted with sane defaults
 // when the user hasn't supplied a custom model name in the component value.
 
-import type { CircuitComponent, ComponentKind } from "./model.ts";
+import type { CircuitComponent, ComponentKind, CircuitDoc as GraphDoc } from "./model.ts";
 import type {
   LegacyCircuitDoc as CircuitDoc,
-  LegacySchematicPage as SchematicPage,
-  LegacyWire as Wire,
+  LegacySchematicPage as LegacyPage,
 } from "./legacyModel.ts";
+import { graphToLegacyPage, legacyDocToGraph } from "./graphConvert.ts";
+import {
+  pinNodeIndex,
+  wirePolyline,
+  type NodeId,
+  type PinNodeOwner,
+  type SchematicPage,
+} from "./graphModel.ts";
 import { getPinLayout, parsePortOrder, pinLabelForKind, pinWorldPos, refdesPrefix } from "./model.ts";
 import {
   normalizeDeviceValue,
@@ -211,8 +221,21 @@ interface PageOpts {
   stableNames?: Map<string, string>;
 }
 
+/** Build a SPICE netlist from a legacy (polyline) doc. Thin wrapper that
+ *  converts the doc to the Model-C graph first, then defers to
+ *  `buildNetlistGraph`. Keeps every legacy fixture/caller working unchanged. */
 export function buildNetlist(
   doc: CircuitDoc,
+  stableNames?: Map<string, string>,
+): NetlistResult {
+  return buildNetlistGraph(legacyDocToGraph(doc), stableNames);
+}
+
+/** Build a SPICE netlist from a Model-C graph doc. Connectivity is taken from
+ *  the stored graph edges (no coordinate coincidence). This is the real
+ *  implementation; `buildNetlist` is a legacy-doc wrapper around it. */
+export function buildNetlistGraph(
+  doc: GraphDoc,
   stableNames?: Map<string, string>,
 ): NetlistResult {
   const usedModels = new Set<ComponentKind>();
@@ -372,7 +395,7 @@ function liveFlowSaveTokens(component: CircuitComponent, refdes: string): string
 // internals are intentionally outside this map.
 function applyStableAutoNames(
   rootToName: Map<string, string>,
-  compPinKeys: { compId: string; pinIdx: number; posKey: string; kind: ComponentKind }[],
+  compPinKeys: { compId: string; pinIdx: number; nodeId: NodeId; kind: ComponentKind }[],
   dsu: DSU,
   stableNames: Map<string, string>,
 ): void {
@@ -381,7 +404,7 @@ function applyStableAutoNames(
 
   for (const cp of compPinKeys) {
     if (cp.kind === "LABEL" || cp.kind === "GND" || cp.kind === "NOTE") continue;
-    const root = dsu.find(cp.posKey);
+    const root = dsu.find(cp.nodeId);
     const list = members.get(root);
     const member = `${cp.compId}:${cp.pinIdx}`;
     if (list) list.push(member);
@@ -467,7 +490,7 @@ function liveFlowSensedSubcircuitNodes(
   });
 }
 
-function subcircuitCycleErrors(doc: CircuitDoc): string[] {
+function subcircuitCycleErrors(doc: GraphDoc): string[] {
   const subPages = doc.pages.slice(1);
   if (subPages.length === 0) return [];
 
@@ -549,74 +572,60 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
   const floatingPins: FloatingPinDiagnostic[] = [];
   const modelDiagnostics: ModelDiagnostic[] = [];
   const isSubckt = opts.isSubckt;
+  const pinIdx = pinNodeIndex(page);
 
-  const compPinKeys: { compId: string; pinIdx: number; posKey: string; kind: ComponentKind }[] = [];
+  // Connectivity comes from the explicit node graph: each pin owns a pin-node
+  // (component.pins[i]); wires are edges between node ids. We DSU over node ids.
+  //
+  // compPinKeys is built in the SAME component/pin order as before so that the
+  // auto n1/n2 numbering (assigned in this order over the device pins) is
+  // identical to the legacy coordinate-keyed build. We also remember each pin's
+  // world position for the coordinate-indexed `posToNode` map and the geometric
+  // pass-through diagnostic below.
+  const compPinKeys: {
+    compId: string;
+    pinIdx: number;
+    nodeId: NodeId;
+    kind: ComponentKind;
+    x: number;
+    y: number;
+  }[] = [];
   for (const c of page.components) {
     const pins = getPinLayout(c);
     for (let i = 0; i < pins.length; i++) {
+      const nodeId = (c.pins ?? [])[i];
+      if (nodeId === undefined) continue;
       const wp = pinWorldPos(c, i);
-      const k = key(wp.x, wp.y);
-      dsu.ensure(k);
-      compPinKeys.push({ compId: c.id, pinIdx: i, posKey: k, kind: c.kind });
+      dsu.ensure(nodeId);
+      compPinKeys.push({ compId: c.id, pinIdx: i, nodeId, kind: c.kind, x: wp.x, y: wp.y });
     }
   }
 
+  // Wire edges + standalone nodes.
   for (const w of page.wires) {
-    if (w.points.length < 2) continue;
-    let prev: string | null = null;
-    for (const [x, y] of w.points) {
-      const k = key(x, y);
-      dsu.ensure(k);
-      if (prev !== null) dsu.union(prev, k);
-      prev = k;
-    }
+    dsu.ensure(w.a);
+    dsu.ensure(w.b);
+    dsu.union(w.a, w.b);
   }
-  unionWirePointsOnWireSegments(page.wires, dsu);
+  for (const node of page.nodes ?? []) dsu.ensure(node.id);
 
-  const wirePassThroughPins: Array<{ compId: string; pinIdx: number; wireId: string }> = [];
-  for (const cp of compPinKeys) {
-    const [px, py] = parseCoordKey(cp.posKey);
-    for (const w of page.wires) {
-      for (let idx = 0; idx < w.points.length - 1; idx++) {
-        const [x1, y1] = w.points[idx];
-        const [x2, y2] = w.points[idx + 1];
-        if (!pointOnSegment(px, py, x1, y1, x2, y2)) continue;
-        if (!wireHasPoint(w, px, py) && cp.kind !== "LABEL") {
-          wirePassThroughPins.push({ compId: cp.compId, pinIdx: cp.pinIdx, wireId: w.id });
-          continue;
-        }
-        dsu.union(cp.posKey, key(x1, y1));
-        dsu.union(cp.posKey, key(x2, y2));
-      }
-    }
-  }
-
+  // Probes connect through their explicit node reference.
   for (const probe of page.probes) {
-    const probeKey = key(probe.x, probe.y);
-    for (const w of page.wires) {
-      for (let idx = 0; idx < w.points.length - 1; idx++) {
-        const [x1, y1] = w.points[idx];
-        const [x2, y2] = w.points[idx + 1];
-        if (!pointOnSegment(probe.x, probe.y, x1, y1, x2, y2)) continue;
-        dsu.ensure(probeKey);
-        dsu.union(probeKey, key(x1, y1));
-        dsu.union(probeKey, key(x2, y2));
-      }
-    }
+    if (probe.node) dsu.ensure(probe.node);
   }
 
   dsu.ensure(GND_KEY);
   for (const c of page.components) {
     if (c.kind !== "GND") continue;
-    const wp = pinWorldPos(c, 0);
-    dsu.union(key(wp.x, wp.y), GND_KEY);
+    const gndNode = (c.pins ?? [])[0];
+    if (gndNode !== undefined) dsu.union(gndNode, GND_KEY);
   }
 
-  // Net labels: union pin position with a sentinel keyed by the label value so
-  // multiple LABEL components with the same value share a node and the chosen
-  // node name uses the label text. For subcircuit pages, labels marked as ports
-  // become external (.subckt) pins; old schematics without explicit ports keep
-  // treating every label as external for compatibility.
+  // Net labels: union the label pin-node with a sentinel keyed by the label
+  // value so multiple LABEL components with the same value share a node and the
+  // chosen node name uses the label text. For subcircuit pages, labels marked as
+  // ports become external (.subckt) pins; old schematics without explicit ports
+  // keep treating every label as external for compatibility.
   const labelSentinel = (name: string) => `__LABEL:${name.trim().toLowerCase()}`;
   const labelNames = new Map<string, string>(); // sentinel → display name
   const labelVoltages = new Map<string, string>(); // sentinel → DC voltage for power-label nets
@@ -626,13 +635,15 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
     if (c.kind !== "LABEL") continue;
     const lbl = c.value.trim();
     if (!lbl) continue;
+    const labelNode = (c.pins ?? [])[0];
+    if (labelNode === undefined) continue;
     const sentinel = labelSentinel(lbl);
     dsu.ensure(sentinel);
     labelNames.set(sentinel, sanitizeNodeName(lbl));
     const labelVoltage = parsePowerLabelVoltage(lbl);
     if (!isSubckt && labelVoltage) labelVoltages.set(sentinel, labelVoltage);
     const wp = pinWorldPos(c, 0);
-    dsu.union(key(wp.x, wp.y), sentinel);
+    dsu.union(labelNode, sentinel);
     const isExternalPort = isSubckt && (!hasExplicitPorts || c.params?.port === "1");
     if (isExternalPort && !externalPins.has(sentinel)) {
       externalPins.set(sentinel, {
@@ -642,6 +653,23 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
         order: parsePortOrder(c.params?.portOrder),
       });
     }
+  }
+
+  // Directly-named standalone nodes (node.name) name their net just like a
+  // label. Mirror graphConvert's legacy emission (a named node became a LABEL
+  // component): give each a label sentinel so a named node and a same-named
+  // LABEL collapse to one net and share the collision/naming pass below.
+  for (const node of page.nodes ?? []) {
+    const name = node.name?.trim();
+    if (!name) continue;
+    const sentinel = labelSentinel(name);
+    dsu.ensure(sentinel);
+    if (!labelNames.has(sentinel)) labelNames.set(sentinel, sanitizeNodeName(name));
+    const labelVoltage = parsePowerLabelVoltage(name);
+    if (!isSubckt && labelVoltage && !labelVoltages.has(sentinel)) {
+      labelVoltages.set(sentinel, labelVoltage);
+    }
+    dsu.union(node.id, sentinel);
   }
 
   const rootToName = new Map<string, string>();
@@ -673,7 +701,7 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
   }
   let nodeCounter = 1;
   for (const cp of compPinKeys) {
-    const r = dsu.find(cp.posKey);
+    const r = dsu.find(cp.nodeId);
     if (!rootToName.has(r)) rootToName.set(r, `n${nodeCounter++}`);
   }
   if (opts.stableNames) {
@@ -684,16 +712,29 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
   for (const cp of compPinKeys) {
     pinToNode.set(
       pinKey(cp.compId, cp.pinIdx),
-      rootToName.get(dsu.find(cp.posKey))!,
+      rootToName.get(dsu.find(cp.nodeId))!,
     );
   }
+  // Coordinate-indexed view of the resolved nets, so lookups by (x,y) — probes,
+  // hover, labels — still resolve. Built from every node's coordinate and every
+  // component pin's world coordinate (plus probe coords).
   const posToNode = new Map<string, string>();
-  for (const [k] of dsu.parent) {
-    if (k === GND_KEY) continue;
-    const root = dsu.find(k);
-    const name = rootToName.get(root);
-    if (name) posToNode.set(k, name);
+  const setPos = (x: number, y: number, nodeId: NodeId) => {
+    const name = rootToName.get(dsu.find(nodeId));
+    if (name) posToNode.set(key(x, y), name);
+  };
+  for (const node of page.nodes ?? []) setPos(node.x, node.y, node.id);
+  for (const cp of compPinKeys) setPos(cp.x, cp.y, cp.nodeId);
+  for (const probe of page.probes) {
+    if (probe.node) setPos(probe.x, probe.y, probe.node);
   }
+
+  // Pass-through diagnostic: a component pin that lies on the interior of some
+  // wire's polyline but is NOT electrically part of that wire's net (no graph
+  // edge joins them). Preserves the legacy "pin sits on a wire but isn't
+  // connected — add a junction" warning. Net labels are exempt (a label on a
+  // wire body is a valid attach point and is connected by the converter).
+  const wirePassThroughPins = collectWirePassThroughPins(page, compPinKeys, dsu, pinIdx);
 
   // Refdes assignment + lines emission. Root uses shared global counters so
   // the model can also have R/V from subcircuits later if extended; each
@@ -924,8 +965,11 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
     });
   }
 
-  for (const nearMiss of netLabelNearMisses(page)) {
-    warnings.push(formatNetLabelNearMissWarning(nearMiss, refdes, page));
+  // Net-label near-miss detection is a geometric check over wire polylines, so
+  // run it on the legacy (polyline) projection of this graph page.
+  const legacyPage = graphToLegacyPage(page);
+  for (const nearMiss of netLabelNearMisses(legacyPage)) {
+    warnings.push(formatNetLabelNearMissWarning(nearMiss, refdes, legacyPage));
   }
 
   for (const passThrough of dedupeWirePassThroughPins(wirePassThroughPins)) {
@@ -944,8 +988,36 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
   };
 }
 
-function wireHasPoint(wire: Wire, x: number, y: number): boolean {
-  return wire.points.some(([px, py]) => key(px, py) === key(x, y));
+/** Find component pins that sit on a wire's polyline interior but are NOT in
+ *  that wire's net (no explicit graph edge connects them). These are the
+ *  "pin on a wire, but not actually wired" cases that get a connectivity
+ *  warning. Net labels are exempt — a label on a wire body is a valid attach
+ *  point and is connected through the graph by the converter. The geometry uses
+ *  `wirePolyline` (node positions + bends). */
+function collectWirePassThroughPins(
+  page: SchematicPage,
+  compPinKeys: Array<{ compId: string; pinIdx: number; nodeId: NodeId; kind: ComponentKind; x: number; y: number }>,
+  dsu: DSU,
+  pinIdx: Map<NodeId, PinNodeOwner>,
+): Array<{ compId: string; pinIdx: number; wireId: string }> {
+  const out: Array<{ compId: string; pinIdx: number; wireId: string }> = [];
+  const polylines = page.wires.map((w) => ({ wire: w, pts: wirePolyline(page, w, pinIdx) }));
+  for (const cp of compPinKeys) {
+    if (cp.kind === "LABEL") continue;
+    for (const { wire, pts } of polylines) {
+      if (!pts) continue;
+      // Skip wires this pin is already electrically part of.
+      if (dsu.find(cp.nodeId) === dsu.find(wire.a)) continue;
+      for (let idx = 0; idx < pts.length - 1; idx++) {
+        const [x1, y1] = pts[idx];
+        const [x2, y2] = pts[idx + 1];
+        if (!pointOnSegment(cp.x, cp.y, x1, y1, x2, y2)) continue;
+        out.push({ compId: cp.compId, pinIdx: cp.pinIdx, wireId: wire.id });
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 function dedupeWirePassThroughPins(
@@ -1006,7 +1078,7 @@ function layoutToken(value: string | undefined): string | null {
 function formatNetLabelNearMissWarning(
   nearMiss: NetLabelNearMiss,
   refdes: Map<string, string>,
-  page: SchematicPage,
+  page: LegacyPage,
 ): string {
   const distance = nearMiss.distance < 0.01 ? "<0.01" : nearMiss.distance.toFixed(2);
   const nearMissTarget = nearMiss.target;
@@ -1048,26 +1120,6 @@ function orderedExternalPins(pins: ExternalPinCandidate[]): string[] {
       return a.name.localeCompare(b.name);
     })
     .map((pin) => pin.name);
-}
-
-function unionWirePointsOnWireSegments(wires: Wire[], dsu: DSU) {
-  const points: [number, number][] = [];
-  for (const wire of wires) {
-    for (const point of wire.points) points.push(point);
-  }
-
-  for (const [px, py] of points) {
-    const pointKey = key(px, py);
-    for (const wire of wires) {
-      for (let idx = 0; idx < wire.points.length - 1; idx++) {
-        const [x1, y1] = wire.points[idx];
-        const [x2, y2] = wire.points[idx + 1];
-        if (!pointOnSegment(px, py, x1, y1, x2, y2)) continue;
-        dsu.union(pointKey, key(x1, y1));
-        dsu.union(pointKey, key(x2, y2));
-      }
-    }
-  }
 }
 
 function sanitizeNodeName(s: string): string {
@@ -1147,11 +1199,6 @@ function pointOnSegment(
   if (Math.abs(cross) > 1e-6) return false;
   const dot = (px - x1) * (px - x2) + (py - y1) * (py - y2);
   return dot <= 1e-6;
-}
-
-function parseCoordKey(posKey: string): [number, number] {
-  const [x, y] = posKey.split(",").map(Number);
-  return [x, y];
 }
 
 function hasGroundComponent(page: SchematicPage): boolean {

@@ -5,11 +5,12 @@
 // stays a one-liner.
 
 import { useMemo, useRef } from "react";
-import { buildNetlist } from "./netlist.ts";
+import { buildNetlistGraph } from "./netlist.ts";
 import { buildWireJunctionDots } from "./wireGeometry.ts";
 import { canvasValueLabel } from "./labelFormatting.ts";
 import { netLabelLayouts, valueLabelBounds, valueLabelOffsets } from "./labelPlacement.ts";
-import type { LegacyCircuitDoc as CircuitDoc, LegacySchematicPage as SchematicPage } from "./legacyModel.ts";
+import type { CircuitDoc as GraphDoc } from "./model.ts";
+import type { LegacySchematicPage as SchematicPage } from "./legacyModel.ts";
 
 export function useStableDuringDrag<T>(
   compute: () => T,
@@ -27,7 +28,7 @@ export function useStableDuringDrag<T>(
 }
 
 export interface PinAnnotationLayouts {
-  pinAnnotations: ReturnType<typeof buildNetlist>;
+  pinAnnotations: ReturnType<typeof buildNetlistGraph>;
   wireJunctionDots: { x: number; y: number }[];
   componentValueLabelOffsets: ReturnType<typeof valueLabelOffsets>;
   netLabelLayoutMap: ReturnType<typeof netLabelLayouts>;
@@ -40,17 +41,19 @@ export function usePinAnnotations({
   canvasValueFontSize,
   stableNodeNames,
 }: {
-  doc: CircuitDoc;
+  /** Graph (Model C) doc — connectivity comes from explicit edges. */
+  doc: GraphDoc;
+  /** Legacy (polyline) projection of the active page, for cheap layout derivations. */
   page: SchematicPage;
   isDragging: boolean;
   canvasValueFontSize: number;
   stableNodeNames?: Map<string, string>;
 }): PinAnnotationLayouts {
-  // Only buildNetlist is genuinely expensive — it walks every page to resolve
-  // the whole netlist. Freeze just this one while a drag is in flight so we
-  // don't rebuild it per pointer-move frame. (The cost: node-name hover text
+  // Only buildNetlistGraph is genuinely expensive — it walks every page to
+  // resolve the whole netlist. Freeze just this one while a drag is in flight so
+  // we don't rebuild it per pointer-move frame. (The cost: node-name hover text
   // on adjacent wires reads the pre-drag mapping until the drag commits.)
-  const pinAnnotations = useStableDuringDrag(() => buildNetlist(doc, stableNodeNames), [doc, stableNodeNames], isDragging);
+  const pinAnnotations = useStableDuringDrag(() => buildNetlistGraph(doc, stableNodeNames), [doc, stableNodeNames], isDragging);
   // The layout derivations below are cheap single-page traversals, so they run
   // live during a drag — junction dots track the moving wire, value labels and
   // net-label placement reflow as the component moves, instead of snapping into

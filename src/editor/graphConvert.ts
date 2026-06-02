@@ -99,8 +99,16 @@ export function legacyPageToGraph(legacy: LegacyPage): SchematicPage {
     };
   });
 
-  // Break points = all pins + probes + wire endpoints, so wires split there.
+  // Break points = LABEL pins + probes + wire endpoints, so wires split there.
+  // NOTE: only LABEL pins are break points. A *device* pin that merely lies on a
+  // wire's interior is intentionally NOT a junction — that is the legacy
+  // "pass-through" rule (the netlist warns and leaves it unconnected). A device
+  // pin that coincides with a wire endpoint or an explicit wire vertex still
+  // connects, because those coords are already wire vertices and `isAnchor`
+  // resolves them to the pin-node via `pinNodeAt`. A net label on a wire body is
+  // a valid attach point, so LABEL pins remain break points.
   const pinPts = legacy.components.flatMap((c) => {
+    if (c.kind !== "LABEL") return [];
     const count = getPinLayout(c).length;
     const out: { x: number; y: number }[] = [];
     for (let i = 0; i < count; i++) out.push(pinWorldPos(c, i));
