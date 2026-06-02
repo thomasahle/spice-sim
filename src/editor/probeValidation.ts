@@ -3,7 +3,8 @@
 // component pin or wire segment. Pulled out of Editor.tsx; these are pure
 // helpers with model/geometry dependencies only.
 
-import type { CircuitComponent, Probe, Wire } from "./model.ts";
+import type { CircuitComponent, Probe } from "./model.ts";
+import type { LegacyWire as Wire } from "./legacyModel.ts";
 import { getPinLayout, makeId, pinWorldPos } from "./model.ts";
 import { normalizeCoord, pointOnSegment, samePoint } from "./geometry.ts";
 import type { FloatingPinDiagnostic } from "./netlist.ts";

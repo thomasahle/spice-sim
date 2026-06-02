@@ -4,7 +4,7 @@
 
 import type { ComponentKind } from "./model.ts";
 
-export type Tool = "select" | "pan" | "wire" | "probe" | ComponentKind;
+export type Tool = "select" | "node" | "wire" | "probe" | ComponentKind;
 
 /** Tools that snap to a single connection point (one-pin components like
  *  GND / LABEL — wiring rules treat them as terminal-only anchors). */

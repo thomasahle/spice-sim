@@ -5,7 +5,7 @@
 // ref so this hook doesn't depend on its identity.
 
 import { useEffect, useRef } from "react";
-import type { CircuitDoc } from "./model.ts";
+import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel.ts";
 import type { Tool } from "./toolPredicates.ts";
 
 // The idle window scales with how long the last run took: small circuits feel

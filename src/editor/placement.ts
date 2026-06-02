@@ -1,11 +1,14 @@
-import type { CircuitComponent, ComponentKind, Probe, Rotation, Wire } from "./model.ts";
+import type { CircuitComponent, ComponentKind, Probe, Rotation } from "./model.ts";
+import type { LegacyWire as Wire } from "./legacyModel.ts";
 import { defaultValue, getPinLayout, pinWorldPos, rotatePoint } from "./model.ts";
 import {
+  componentBoundsFor,
   componentVisualBoundsFor,
   normalizeCoord,
   normalizePoint,
   normalizeTuple,
   pointOnSegment,
+  rectsIntersect,
   wireIntersectsRect,
   type Rect,
 } from "./geometry.ts";
@@ -145,16 +148,21 @@ export function connectedPlacementWires(
     return wires.filter((w) => w.points.length >= 2);
   }
 
-  if (pins.length >= 2) {
+  // P1 "outward-stub" rule: only synthesize a stub for an endpoint that is
+  // *outward* of its pin (beyond the pin, away from the other pin). A click
+  // (start === end === body center) projects between the pins, so neither stub
+  // is made → no self-short. A span/long drag projects beyond the pins → outward
+  // stubs. Restricted to exactly 2 pins so 3+/SUBX parts never auto-stub.
+  if (pins.length === 2) {
     const firstPin = pinWorldPos(c, 0);
-    const secondPin = pinWorldPos(c, pins.length - 1);
-    if (!samePoint(firstPin, start)) {
+    const secondPin = pinWorldPos(c, 1);
+    if (!samePoint(firstPin, start) && pointIsOutwardFromTerminal(firstPin, secondPin, start)) {
       wires.push({
         id: makeWireId(),
         points: routeWireSegmentForContext(firstPin, start, orthogonal, context),
       });
     }
-    if (!samePoint(secondPin, end)) {
+    if (!samePoint(secondPin, end) && pointIsOutwardFromTerminal(secondPin, firstPin, end)) {
       wires.push({
         id: makeWireId(),
         points: routeWireSegmentForContext(secondPin, end, orthogonal, context),
@@ -181,6 +189,96 @@ export function placementWireCutSpan(
     start: normalizePoint(sorted[0]),
     end: normalizePoint(sorted[sorted.length - 1]),
   };
+}
+
+/**
+ * The wire span an inline insertion (splice) would consume, decided by
+ * **geometry, not gesture length** — so a *click* that lands a 2-pin part on a
+ * collinear wire still splices, and therefore cannot leave a bypass short across
+ * the component. Returns `null` (do not splice) unless the part has exactly two
+ * distinct pins that are collinear with the gesture; this excludes 3+/SUBX parts
+ * and diagonal-pin parts (e.g. transistors), so a click on a crossing wire never
+ * triggers a spurious/degenerate split. The caller still gates on whether an
+ * actual wire contains the returned span.
+ */
+export function placementInlineCutSpan(
+  c: CircuitComponent,
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+): { start: { x: number; y: number }; end: { x: number; y: number } } | null {
+  if (getPinLayout(c).length !== 2) return null;
+  const firstPin = pinWorldPos(c, 0);
+  const secondPin = pinWorldPos(c, 1);
+  if (samePoint(firstPin, secondPin)) return null;
+  const points = [firstPin, secondPin, start, end];
+  if (!pointsShareLine(firstPin, secondPin, points)) return null;
+  const sorted = [...points].sort(
+    (a, b) => projectionAlong(firstPin, secondPin, a) - projectionAlong(firstPin, secondPin, b),
+  );
+  return {
+    start: normalizePoint(sorted[0]),
+    end: normalizePoint(sorted[sorted.length - 1]),
+  };
+}
+
+/**
+ * Endpoints for dropping a part **onto a wire**, oriented *along* that wire so a
+ * 2-pin part splices into it instead of merely crossing it. Returns a
+ * `{ start, end }` separated by the part's own pin span along the wire's local
+ * axis (centred on `drop`); the placement math then derives the matching
+ * rotation. Falls back to a coincident `{ drop, drop }` (default orientation)
+ * when the part isn't a 2-pin device or the segment direction is degenerate, so
+ * GND/multi-pin/SUBX are unaffected. `segment` is the wire segment under the
+ * drop (its two endpoints, in world coords).
+ */
+export function placementDropOnWire(
+  kind: ComponentKind,
+  drop: { x: number; y: number },
+  segment: { a: { x: number; y: number }; b: { x: number; y: number } } | null,
+): { start: { x: number; y: number }; end: { x: number; y: number } } {
+  const coincident = { start: { ...drop }, end: { ...drop } };
+  if (!segment) return coincident;
+  const layout = getPinLayout({ id: "__d", kind, x: 0, y: 0, rotation: 0, value: defaultValue(kind) });
+  if (layout.length !== 2) return coincident;
+  const dx = segment.b.x - segment.a.x;
+  const dy = segment.b.y - segment.a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) return coincident;
+  const ux = dx / len;
+  const uy = dy / len;
+  // Half the pin-to-pin span of the (unrotated) part.
+  const halfSpan = Math.hypot(layout[1].x - layout[0].x, layout[1].y - layout[0].y) / 2;
+  if (halfSpan < 1e-6) return coincident;
+  return {
+    start: normalizePoint({ x: drop.x - ux * halfSpan, y: drop.y - uy * halfSpan }),
+    end: normalizePoint({ x: drop.x + ux * halfSpan, y: drop.y + uy * halfSpan }),
+  };
+}
+
+/** Inset applied to component *body* bounds when testing whether a freshly
+ *  placed part collides with an existing one. The body extends 0.5 cell past
+ *  each pin, so two in-line parts sharing a pin overlap by ~1 cell legitimately;
+ *  insetting each side by 0.6 (>0.5) clears that shared-pin touch while still
+ *  catching any real body-on-body overlap (≥ ~2 cells, the "no room" case). */
+export const PLACEMENT_OVERLAP_INSET = 0.6;
+
+/**
+ * True when placing `c` would overlap the *body* of an existing component — the
+ * "no room" case (e.g. dropping a resistor on top of another collinear
+ * resistor). Wires are intentionally ignored so splicing into / connecting onto
+ * a wire stays allowed; only component-on-component body overlap is refused.
+ */
+export function placementOverlapsComponent(
+  c: CircuitComponent,
+  existing: CircuitComponent[],
+): boolean {
+  const a = componentBoundsFor(c, -PLACEMENT_OVERLAP_INSET);
+  for (const other of existing) {
+    if (other.id === c.id) continue;
+    if (other.kind === "LABEL" || other.kind === "NOTE") continue; // annotations don't block
+    if (rectsIntersect(a, componentBoundsFor(other, -PLACEMENT_OVERLAP_INSET))) return true;
+  }
+  return false;
 }
 
 export function connectedInlinePlacementWires(
@@ -963,8 +1061,13 @@ function orthogonalRouteCandidates(
     [to.x, to.y],
   ]);
 
-  const midX = normalizeCoord((from.x + to.x) / 2);
-  const midY = normalizeCoord((from.y + to.y) / 2);
+  // Snap the mid-route bend to the integer grid. The raw midpoint is half-grid
+  // when the endpoints differ by an odd number of cells (e.g. x = 7 and 4 →
+  // 5.5), which would put the corner — and the whole centred vertical/horizontal
+  // segment — off the grid. Endpoints stay exact (they're pins); only the bend
+  // is rounded so the routed segment lands on a grid line.
+  const midX = Math.round((from.x + to.x) / 2);
+  const midY = Math.round((from.y + to.y) / 2);
   add([
     [from.x, from.y],
     [midX, from.y],
@@ -978,8 +1081,12 @@ function orthogonalRouteCandidates(
     [to.x, to.y],
   ]);
 
+  // Detour lanes run just outside an obstacle's bounding box. The box edges are
+  // fractional (symbol radius + pad), so a lane used as a wire bend would sit
+  // off-grid — round each lane coordinate *away* from the obstacle to the next
+  // grid line so the bend lands on the grid while still clearing the body.
   for (const rect of obstacleRects(context, from, to)) {
-    for (const y of [rect.y1 - ROUTE_LANE_SPACING, rect.y2 + ROUTE_LANE_SPACING]) {
+    for (const y of [Math.floor(rect.y1 - ROUTE_LANE_SPACING), Math.ceil(rect.y2 + ROUTE_LANE_SPACING)]) {
       add([
         [from.x, from.y],
         [from.x, y],
@@ -987,7 +1094,7 @@ function orthogonalRouteCandidates(
         [to.x, to.y],
       ]);
     }
-    for (const x of [rect.x1 - ROUTE_LANE_SPACING, rect.x2 + ROUTE_LANE_SPACING]) {
+    for (const x of [Math.floor(rect.x1 - ROUTE_LANE_SPACING), Math.ceil(rect.x2 + ROUTE_LANE_SPACING)]) {
       add([
         [from.x, from.y],
         [x, from.y],
@@ -1074,15 +1181,20 @@ function gridRouteCandidate(
   const rects = obstacleRects(context, from, to);
   if (rects.length === 0 && (context.wires?.length ?? 0) === 0) return null;
 
-  const xs = new Set<number>([from.x, to.x, normalizeCoord((from.x + to.x) / 2)]);
-  const ys = new Set<number>([from.y, to.y, normalizeCoord((from.y + to.y) / 2)]);
-  const addX = (x: number) => Number.isFinite(x) && xs.add(normalizeCoord(x));
-  const addY = (y: number) => Number.isFinite(y) && ys.add(normalizeCoord(y));
+  // Endpoints (pins) are kept exact; every *interior* lattice coordinate is
+  // snapped to the integer grid so any bend the router picks lands on a grid
+  // line (obstacle-box edges are fractional, which previously produced off-grid
+  // wire corners). Lanes round away from the obstacle (floor below / ceil above)
+  // so they still clear the body.
+  const xs = new Set<number>([from.x, to.x, Math.round((from.x + to.x) / 2)]);
+  const ys = new Set<number>([from.y, to.y, Math.round((from.y + to.y) / 2)]);
+  const addX = (x: number) => Number.isFinite(x) && xs.add(Math.round(x));
+  const addY = (y: number) => Number.isFinite(y) && ys.add(Math.round(y));
   for (const rect of rects) {
-    for (const x of [rect.x1 - ROUTE_LANE_SPACING, rect.x1, rect.x2, rect.x2 + ROUTE_LANE_SPACING]) {
+    for (const x of [Math.floor(rect.x1 - ROUTE_LANE_SPACING), Math.ceil(rect.x2 + ROUTE_LANE_SPACING)]) {
       addX(x);
     }
-    for (const y of [rect.y1 - ROUTE_LANE_SPACING, rect.y1, rect.y2, rect.y2 + ROUTE_LANE_SPACING]) {
+    for (const y of [Math.floor(rect.y1 - ROUTE_LANE_SPACING), Math.ceil(rect.y2 + ROUTE_LANE_SPACING)]) {
       addY(y);
     }
   }

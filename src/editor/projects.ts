@@ -2,7 +2,7 @@
 // Persisted to localStorage so projects survive reloads without requiring
 // disk save. Disk save (.spicesim) still works for export/share.
 
-import type { CircuitDoc } from "./model";
+import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel";
 
 export interface ProjectEntry {
   id: string;

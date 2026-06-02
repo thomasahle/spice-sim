@@ -1,5 +1,6 @@
-import type { CircuitDoc, AnalysisSpec, CircuitComponent, Probe, Wire } from "./model";
-import { makeId } from "./model";
+import type { AnalysisSpec, CircuitComponent, Probe } from "./model.ts";
+import type { LegacyCircuitDoc as CircuitDoc, LegacyWire as Wire } from "./legacyModel.ts";
+import { makeId } from "./model.ts";
 
 export interface Demo {
   id: string;

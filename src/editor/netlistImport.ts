@@ -8,7 +8,6 @@ import type {
 import {
   type AnalysisSpec,
   type CircuitComponent,
-  type CircuitDoc,
   type ComponentKind,
   type Rotation,
   emptyDoc,
@@ -18,6 +17,7 @@ import {
   pinWorldPos,
   rotatePoint,
 } from "./model.ts";
+import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel.ts";
 import {
   componentBoundsFor,
   componentVisualBoundsFor,

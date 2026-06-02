@@ -1,4 +1,5 @@
-import type { CircuitComponent, Probe, Wire } from "./model";
+import type { CircuitComponent, Probe } from "./model.ts";
+import type { LegacyWire as Wire } from "./legacyModel.ts";
 
 const CLIPBOARD_PREFIX = "application/x-spicesim-selection+json;version=1";
 

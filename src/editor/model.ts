@@ -36,18 +36,35 @@ export interface CircuitComponent {
   label?: string;
   /** Device-specific parameters: MOS L/W, BJT area, etc. */
   params?: Record<string, string>;
+  /** Model C: pins[i] is this component's pin-node id (position = pinWorldPos(c, i)). */
+  pins?: string[];
 }
 
+/** Model C electrical node: a junction, free wire end, or named-net point.
+ *  Pin connection points are owned by components (CircuitComponent.pins). */
+export interface CircuitNode {
+  id: string;
+  x: number;
+  y: number;
+  name?: string;
+}
+
+/** Model C: a wire is an EDGE between two nodes (`a`/`b` are node ids); `bends`
+ *  are routing waypoints (geometry only). */
 export interface Wire {
   id: string;
-  points: [number, number][];
+  a: string;
+  b: string;
+  bends: [number, number][];
 }
 
 export interface Probe {
   id: string;
-  /** Grid coordinate of the probed pin / wire vertex. */
+  /** Legacy grid coordinate of the probed point (kept during migration). */
   x: number;
   y: number;
+  /** Model C: the node this probe samples. */
+  node?: string;
   /** Inline mini-scope offset from the probe point. */
   scopeDx?: number;
   scopeDy?: number;
@@ -78,6 +95,8 @@ export interface SchematicPage {
   /** User-facing summary shown in places that list this schematic as a reusable block. */
   description?: string;
   components: CircuitComponent[];
+  /** Model C standalone nodes (junctions / free ends / named). Pin-nodes live on components. */
+  nodes?: CircuitNode[];
   wires: Wire[];
   probes: Probe[];
 }
@@ -502,6 +521,12 @@ function mirrorPinLayoutIfNeeded(
   layout: { x: number; y: number }[],
   mirrored: boolean | undefined,
 ): { x: number; y: number }[] {
+  // `mirrored` is a true geometric reflection across the local vertical axis
+  // (x→−x). Transform composition (group rotate/flip) relies on this clean
+  // dihedral meaning, so it is kept exact for every kind. The "swap a 2-pin
+  // part's terminals in place" affordance is implemented separately as
+  // rotation+=180 (see swapTwoPinTerminals), which for our left-right-symmetric
+  // 2-pin symbols visibly trades the +/− ends while keeping both pins put.
   return mirrored ? layout.map((pin) => ({ x: -pin.x, y: pin.y })) : layout;
 }
 
@@ -563,6 +588,22 @@ export function pinLabelForKind(kind: ComponentKind, idx: number): string | null
 
 export function rotateNext(r: Rotation): Rotation {
   return ((r + 90) % 360) as Rotation;
+}
+
+export function rotatePrev(r: Rotation): Rotation {
+  return ((r + 270) % 360) as Rotation;
+}
+
+// Swap a 2-pin part's two terminals *in place* (reverse polarity): for our
+// left-right-symmetric 2-pin symbols (R/C/L/V/I/D), a 180° turn maps each pin
+// onto the other's position, so the pin *set* is unchanged (attached wires stay
+// put) while pin index 0↔1 and the +/− glyph marks swap ends. Returns the
+// component unchanged for non-2-pin kinds. This keeps the `mirrored` flag a
+// clean geometric reflection (needed by group transforms) while still giving
+// Mirror/Flip a useful meaning on an isolated 2-pin part.
+export function swapTwoPinTerminals(c: CircuitComponent): CircuitComponent {
+  if (PIN_LAYOUTS[c.kind]?.length !== 2) return c;
+  return { ...c, rotation: ((c.rotation + 180) % 360) as Rotation };
 }
 
 // Flipping a component about its horizontal axis (top↔bottom) is equivalent

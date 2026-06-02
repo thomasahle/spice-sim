@@ -2,7 +2,8 @@ import { componentVisualBoundsFor, wireIntersectsRect } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
 import { estimateInlineMathTextWidth } from "./mathText.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
-import type { CircuitComponent, Probe, SchematicPage, Wire } from "./model.ts";
+import type { CircuitComponent, Probe } from "./model.ts";
+import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
 
 export type LabelAnchor = "start" | "middle" | "end";
 
@@ -30,6 +31,7 @@ const NET_LABEL_STEM = 0.42;
 const NET_LABEL_LONG_STEM = 1.35;
 const NET_LABEL_CHIP_H = 0.88;
 const NET_LABEL_SCRIPT_CHIP_H = 1.6;
+const VALUE_LABEL_INLINE_PAD = 0.2;
 
 export function valueLabelOffset(
   component: CircuitComponent,
@@ -352,7 +354,7 @@ function netLabelWidth(text: string): number {
   // source-estimate used for normal value labels. Give net chips enough
   // horizontal room so the rendered foreignObject never visually escapes the
   // chip when centered.
-  return Math.max(1.8, estimateInlineMathTextWidth(text) * 0.82 + 1.05);
+  return Math.max(1.9, estimateInlineMathTextWidth(text) * 0.95 + 1.22);
 }
 
 function netLabelHeight(text: string): number {
@@ -437,20 +439,29 @@ function labelBounds(c: CircuitComponent, offset: LabelOffset, text: string, ren
   // too-small model is what causes dense labels to visually collide.
   const placementWidth =
     componentUsesCompactLabelModel(c)
-      ? Math.max(0.95, estimateInlineMathTextWidth(text) * 0.41 + 0.42)
+      ? Math.max(0.95, estimateInlineMathTextWidth(text) * 0.38 + 0.36)
       : Math.max(0.95, estimateInlineMathTextWidth(text) * 0.44 + 0.44);
   const renderedWidth = renderedFontSize == null
     ? 0
-    : estimateInlineMathTextWidth(text) * renderedFontSize * 0.72 + renderedFontSize * 0.78;
+    : componentUsesCompactLabelModel(c)
+      ? estimateInlineMathTextWidth(text) * renderedFontSize * 0.62 + renderedFontSize * 0.78
+      : estimateInlineMathTextWidth(text) * renderedFontSize * 0.76 + renderedFontSize * 0.88;
   const width = Math.max(placementWidth, renderedWidth);
   const height = 0.92;
   const baseline = c.y + offset.y;
   const y1 = baseline - height;
   const y2 = baseline + 0.12;
   const x = c.x + offset.x;
-  if (offset.anchor === "middle") return { x1: x - width / 2, y1, x2: x + width / 2, y2 };
-  if (offset.anchor === "end") return { x1: x - width, y1, x2: x, y2 };
-  return { x1: x, y1, x2: x + width, y2 };
+  if (offset.anchor === "middle") {
+    return {
+      x1: x - width / 2 - VALUE_LABEL_INLINE_PAD,
+      y1,
+      x2: x + width / 2 + VALUE_LABEL_INLINE_PAD,
+      y2,
+    };
+  }
+  if (offset.anchor === "end") return { x1: x - width - VALUE_LABEL_INLINE_PAD, y1, x2: x, y2 };
+  return { x1: x, y1, x2: x + width + VALUE_LABEL_INLINE_PAD, y2 };
 }
 
 function componentUsesCompactLabelModel(c: CircuitComponent): boolean {

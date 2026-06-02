@@ -1,5 +1,5 @@
 import { normalizeTuple, pointOnSegment, sameTuple } from "./geometry.ts";
-import type { Wire } from "./model.ts";
+import type { LegacyWire as Wire } from "./legacyModel.ts";
 
 export function insertWireEndpointJunctions(
   wires: Wire[],

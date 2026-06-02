@@ -4,9 +4,10 @@
 // pins to stationary geometry. Pulled out of Editor.tsx so the editor file
 // shrinks and these become unit-testable in isolation.
 
-import type { CircuitComponent, SchematicPage, Wire } from "./model.ts";
-import { getPinLayout, makeId, pinWorldPos } from "./model.ts";
-import { samePoint } from "./geometry.ts";
+import type { CircuitComponent, Rotation } from "./model.ts";
+import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
+import { getPinLayout, makeId, pinWorldPos, rotateNext, rotatePrev } from "./model.ts";
+import { normalizePoint, samePoint } from "./geometry.ts";
 import { coordKey } from "./netlist.ts";
 import { pointTouchesWireInterior, pointTouchesWirePath } from "./wireGeometry.ts";
 import {
@@ -24,6 +25,108 @@ export type PinMove = {
   from: { x: number; y: number };
   to: { x: number; y: number };
 };
+
+// A geometric transform applied to a multi-element selection as a rigid group,
+// about a shared pivot (Inkscape/Figma/Illustrator semantics: the whole
+// selection turns/reflects together, relative layout preserved).
+export type SelectionTransform = "rotate-cw" | "rotate-ccw" | "flip-h" | "flip-v";
+
+/** Transform a world point about `pivot` per the group op. */
+export function transformPointAboutPivot(
+  p: { x: number; y: number },
+  op: SelectionTransform,
+  pivot: { x: number; y: number },
+): { x: number; y: number } {
+  const dx = p.x - pivot.x;
+  const dy = p.y - pivot.y;
+  switch (op) {
+    case "rotate-cw": // screen y-down: CW maps (dx,dy)→(−dy,dx)
+      return normalizePoint({ x: pivot.x - dy, y: pivot.y + dx });
+    case "rotate-ccw":
+      return normalizePoint({ x: pivot.x + dy, y: pivot.y - dx });
+    case "flip-h": // reflect across the vertical axis through the pivot
+      return normalizePoint({ x: pivot.x - dx, y: p.y });
+    case "flip-v": // reflect across the horizontal axis through the pivot
+      return normalizePoint({ x: p.x, y: pivot.y - dy });
+  }
+}
+
+/** How a component's own orientation changes under a group op (its body must
+ *  re-orient, not just relocate). Mirror stays a clean geometric reflection. */
+export function reorientComponent(c: CircuitComponent, op: SelectionTransform): CircuitComponent {
+  switch (op) {
+    case "rotate-cw":
+      return { ...c, rotation: rotateNext(c.rotation) };
+    case "rotate-ccw":
+      return { ...c, rotation: rotatePrev(c.rotation) };
+    case "flip-h":
+      // Horizontal reflection: toggle the vertical-axis mirror; rotation negates
+      // (M ∘ R_θ = R_−θ ∘ M).
+      return { ...c, mirrored: c.mirrored ? undefined : true, rotation: ((360 - c.rotation) % 360) as Rotation };
+    case "flip-v":
+      // Vertical reflection = R₁₈₀ ∘ (horizontal reflection).
+      return { ...c, mirrored: c.mirrored ? undefined : true, rotation: ((540 - c.rotation) % 360) as Rotation };
+  }
+}
+
+/** Full group transform of one component: re-orient it AND orbit its centre
+ *  about the pivot, then re-snap to the grid so it lands on-grid. */
+export function transformComponentInGroup(
+  c: CircuitComponent,
+  op: SelectionTransform,
+  pivot: { x: number; y: number },
+  snapToGrid: boolean,
+): CircuitComponent {
+  const reoriented = reorientComponent(c, op);
+  const moved = transformPointAboutPivot({ x: c.x, y: c.y }, op, pivot);
+  const at = snapToGrid ? { x: Math.round(moved.x), y: Math.round(moved.y) } : moved;
+  return { ...reoriented, x: at.x, y: at.y };
+}
+
+/** Transform every wire under a group op, preserving connectivity:
+ *   • selected wires ride rigidly (all points orbit the pivot);
+ *   • an unselected wire whose BOTH endpoints sit on moved pins is "internal"
+ *     to the moving set, so it also rides rigidly — NOT deleted as the
+ *     single-element path would (that path treats two-moved-pin wires as
+ *     degenerate self-loops);
+ *   • an unselected wire with ONE endpoint on a moved pin is a "boundary"
+ *     wire: that endpoint follows its pin while the far end stays put;
+ *   • wires touching no moved pin are untouched.
+ *  `pinMoves` are the selected components' pin displacements (old→new). */
+export function transformGroupWires(
+  wires: Wire[],
+  selected: Set<string>,
+  pinMoves: PinMove[],
+  op: SelectionTransform,
+  pivot: { x: number; y: number },
+  snapToGrid: boolean,
+): Wire[] {
+  const rigidPoint = ([x, y]: [number, number]): [number, number] => {
+    const t = transformPointAboutPivot({ x, y }, op, pivot);
+    const at = snapToGrid ? { x: Math.round(t.x), y: Math.round(t.y) } : t;
+    return [at.x, at.y];
+  };
+  const onMovedPin = (x: number, y: number) =>
+    pinMoves.some((m) => samePoint(m.from, { x, y }));
+  return wires.map((w) => {
+    if (selected.has(w.id)) return { ...w, points: w.points.map(rigidPoint) };
+    if (w.points.length < 2) return w;
+    const first = w.points[0];
+    const last = w.points[w.points.length - 1];
+    const firstMoved = onMovedPin(first[0], first[1]);
+    const lastMoved = onMovedPin(last[0], last[1]);
+    if (!firstMoved && !lastMoved) return w;
+    const degenerate = samePoint({ x: first[0], y: first[1] }, { x: last[0], y: last[1] });
+    if (firstMoved && lastMoved && !degenerate) {
+      // Internal wire — both ends belong to the group; move it rigidly.
+      return { ...w, points: w.points.map(rigidPoint) };
+    }
+    // Boundary wire — reroute only the moved endpoint(s).
+    const targets = wireEndpointMoveTargets(w.points, pinMoves);
+    if (targets.size === 0) return w;
+    return { ...w, points: moveWirePointsToTargets(w.points, targets, snapToGrid) };
+  });
+}
 
 export type DirectContactPin = {
   componentId: string;
@@ -43,10 +146,21 @@ export function collectTransformedPinMoves(
   for (const c of components) {
     if (!selected.has(c.id)) continue;
     const transformed = mutate(c);
-    for (let i = 0; i < getPinLayout(c).length; i++) {
-      const from = pinWorldPos(c, i);
+    const pinCount = getPinLayout(c).length;
+    // The component's original pin world-positions. A transform that merely
+    // *permutes* pins among these same positions (e.g. a 2-pin polarity swap /
+    // mirror, which keeps both pins put and only swaps their identity) must not
+    // drag attached wires: per-index a pin "moves" from one occupied point to
+    // another, but physically nothing relocated. Skip any destination that is
+    // still an original pin of this component.
+    const originalPins: { x: number; y: number }[] = [];
+    for (let i = 0; i < pinCount; i++) originalPins.push(pinWorldPos(c, i));
+    for (let i = 0; i < pinCount; i++) {
+      const from = originalPins[i];
       const to = pinWorldPos(transformed, i);
-      if (!samePoint(from, to)) moves.push({ from, to });
+      if (samePoint(from, to)) continue;
+      if (originalPins.some((p) => samePoint(p, to))) continue; // permutation, not a relocation
+      moves.push({ from, to });
     }
   }
   return moves;

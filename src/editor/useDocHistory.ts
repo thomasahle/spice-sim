@@ -5,31 +5,30 @@
 // here so it's no longer ~15 lines of state plumbing inside Editor.tsx.
 
 import { useRef, useState } from "react";
-import type { CircuitDoc } from "./model.ts";
 import {
   popLatestHistorySnapshot,
   pushBoundedHistory,
   type HistorySnapshot,
 } from "./editorHistory.ts";
 
-export interface DocHistory {
-  doc: CircuitDoc;
+export interface DocHistory<D> {
+  doc: D;
   past: HistorySnapshot[];
   future: HistorySnapshot[];
-  setDoc: (next: CircuitDoc | ((cur: CircuitDoc) => CircuitDoc)) => void;
+  setDoc: (next: D | ((cur: D) => D)) => void;
   setPast: (next: HistorySnapshot[]) => void;
   setFuture: (next: HistorySnapshot[]) => void;
   /** Bounded push onto the past stack. */
   pushPast: (snapshot: HistorySnapshot) => void;
   /** Pop the most recent snapshot from past; returns null if empty. */
   popLatestPast: () => HistorySnapshot | null;
-  docRef: React.MutableRefObject<CircuitDoc>;
+  docRef: React.MutableRefObject<D>;
   pastRef: React.MutableRefObject<HistorySnapshot[]>;
   futureRef: React.MutableRefObject<HistorySnapshot[]>;
 }
 
-export function useDocHistory(initialDoc: CircuitDoc, historyLimit: number): DocHistory {
-  const [doc, setDocState] = useState<CircuitDoc>(initialDoc);
+export function useDocHistory<D>(initialDoc: D, historyLimit: number): DocHistory<D> {
+  const [doc, setDocState] = useState<D>(initialDoc);
   const [past, setPast] = useState<HistorySnapshot[]>([]);
   const [future, setFuture] = useState<HistorySnapshot[]>([]);
   const docRef = useRef(doc);

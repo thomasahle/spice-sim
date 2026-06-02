@@ -5,7 +5,8 @@ import {
   pointToSegmentDist,
   projectPointToSegment,
 } from "./geometry.ts";
-import type { CircuitComponent, Probe, SchematicPage, Wire } from "./model.ts";
+import type { CircuitComponent, Probe } from "./model.ts";
+import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
 
 export interface ConnectionTarget {

@@ -5,7 +5,7 @@
 // editor doesn't carry the four useEffects directly.
 
 import { useEffect, type RefObject } from "react";
-import type { CircuitDoc } from "./model.ts";
+import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel.ts";
 import { saveProject, saveWorkspace, type Workspace } from "./projects.ts";
 
 export function useWorkspacePersistence(

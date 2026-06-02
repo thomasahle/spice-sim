@@ -3,7 +3,8 @@
 // that depend only on label / geometry / probe-display modules, so they can
 // live (and be unit-tested) in isolation.
 
-import type { CircuitComponent, SchematicPage } from "./model.ts";
+import type { CircuitComponent } from "./model.ts";
+import type { LegacySchematicPage as SchematicPage } from "./legacyModel.ts";
 import { getPinLayout, pinLabelForKind, pinWorldPos } from "./model.ts";
 import { componentBoundsFor, componentVisualBoundsFor } from "./geometry.ts";
 import { netLabelLayout, valueLabelBounds, valueLabelOffsets } from "./labelPlacement.ts";

@@ -1,4 +1,4 @@
-import type { CircuitDoc } from "./model.ts";
+import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel.ts";
 
 const SHARE_KEY = "doc";
 

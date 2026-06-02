@@ -1,7 +1,7 @@
 // File I/O bridge: save/load .spicesim JSON documents, export .cir netlist.
 // Falls back to gracefully no-op behaviour when not running inside Tauri.
 
-import type { CircuitDoc } from "../editor/model";
+import type { LegacyCircuitDoc as CircuitDoc } from "../editor/legacyModel";
 
 function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

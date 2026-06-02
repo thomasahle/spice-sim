@@ -4,7 +4,7 @@
 // Editor.tsx; pulled out so the editor file shrinks and these become unit-
 // testable in isolation.
 
-import type { SchematicPage, Wire } from "./model.ts";
+import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
 import {
   normalizeTuple,
   pointOnPolylineBody,

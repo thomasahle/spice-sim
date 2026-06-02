@@ -151,6 +151,10 @@ button[disabled] {
 .app {
   display: grid;
   grid-template-rows: 42px 1fr 26px;
+  /* Explicit column (the default is an implicit `auto`/max-content column) so a
+     wide descendant — e.g. the docked canvas toolbar — can't stretch the whole
+     app past the viewport; it scrolls within its own bar instead. */
+  grid-template-columns: minmax(0, 1fr);
   height: 100vh;
   background:
     radial-gradient(1200px 800px at 50% -10%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
@@ -287,25 +291,28 @@ button[disabled] {
    canvas. Positioned absolutely so it overlays the schematic without
    eating editor real-estate. */
 .canvas-actions {
-  position: absolute;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
+  /* Docked top toolbar row (occupies canvas-area's first grid row) — attached
+     chrome rather than a floating pill. Controls are centred in the bar. */
+  position: relative;
   z-index: 6;
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: center;
+  /* min-width:0 lets this grid item shrink to the canvas column instead of
+     growing to its content width — required for the mobile horizontal-scroll
+     (overflow-x) to engage rather than overflowing the viewport. */
+  min-width: 0;
   gap: 10px;
-  padding: 6px 8px;
-  background: color-mix(in srgb, var(--bg-window) 92%, transparent);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-pill);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.6) inset,
-    0 8px 24px rgba(15, 23, 42, 0.10),
-    0 2px 6px rgba(15, 23, 42, 0.06);
-  backdrop-filter: blur(12px) saturate(180%);
-  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  padding: 3px 12px;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--hairline);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
 }
+/* Compact the controls so the docked bar stays short. */
+.canvas-actions .tb-icon-btn { width: 28px; height: 28px; }
+.canvas-actions .tb-run { padding-top: 4px; padding-bottom: 4px; }
+.canvas-actions .tb-sep { height: 20px; }
 .tb-pane-toggle {
   color: var(--ink-muted);
 }
@@ -2637,10 +2644,14 @@ button[disabled] {
 .canvas-area {
   position: relative;
   display: grid;
-  /* canvas (flex) · play bar (auto) · waveform pane (auto) — no toolbar
-     row, since brand / Run / pane toggles all live in the app header or
-     float over the canvas. */
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  /* toolbar (auto) · canvas (flex) · play bar (auto) · waveform pane (auto).
+     The toolbar row holds the docked analysis / Run / transform controls;
+     brand + pane toggles still live in the app header. */
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  /* minmax(0, 1fr) (not the implicit `auto`/min-content column) so the docked
+     toolbar's wide content can't blow out the column past the viewport — it
+     scrolls horizontally inside the bar instead. */
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   background: var(--bg-canvas);
   overflow: hidden;
@@ -3314,6 +3325,31 @@ button[disabled] {
   fill: color-mix(in srgb, var(--accent) 14%, transparent);
   stroke: var(--accent);
   stroke-width: 0.06;
+  vector-effect: non-scaling-stroke;
+}
+/* A pin that will actually connect (lands on a wire/pin, or is a splice end):
+   solid accent dot — the same affordance the GND/wire snap ring gives. */
+.placement-draft-endpoint-connected {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+/* The wire segment an inline splice will consume — painted in the canvas
+   colour to preview the cut/gap before commit. */
+.placement-draft-cut {
+  stroke: var(--bg-canvas);
+  stroke-width: 0.16;
+  stroke-linecap: round;
+}
+/* "No room" — the ghost overlaps an existing component and a press is refused.
+   Dim the whole ghost and turn the footprint danger-coloured. */
+.placement-draft-blocked {
+  opacity: 0.6;
+}
+.placement-draft-footprint-blocked {
+  fill: color-mix(in srgb, var(--danger) 10%, transparent);
+  stroke: color-mix(in srgb, var(--danger) 70%, transparent);
+  stroke-width: 0.08;
+  stroke-dasharray: 0.22 0.16;
   vector-effect: non-scaling-stroke;
 }
 .canvas-issue-banner {
@@ -5394,7 +5430,9 @@ button[disabled] {
   .editor-root.pages-collapsed,
   .editor-root.inspector-collapsed,
   .editor-root.pages-collapsed.inspector-collapsed {
-    grid-template-columns: 1fr;
+    /* minmax(0, …) keeps a wide canvas child (e.g. the docked toolbar) from
+       expanding the single column past the viewport. */
+    grid-template-columns: minmax(0, 1fr);
     grid-template-areas: "canvas";
     position: relative;
   }
@@ -5451,6 +5489,17 @@ button[disabled] {
   .toolbar { gap: 6px; }
   /* Brand shrinks to just the logo on phones. */
   .toolbar .tb-brand { padding: 4px; flex: 0 0 auto; }
+  /* Docked analysis / Run / transform bar: its groups are wider than a phone,
+     so left-align and scroll horizontally instead of clipping the transform
+     icons off the right edge (same pattern as .toolbar / .statusbar). */
+  .canvas-actions {
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: visible;
+    scrollbar-width: none;
+    padding: 3px 8px;
+  }
+  .canvas-actions::-webkit-scrollbar { display: none; }
   /* Status bar can shrink — allow horizontal scroll so chips don't wrap. */
   .statusbar {
     font-size: 10.5px;

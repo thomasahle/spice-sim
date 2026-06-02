@@ -1,4 +1,5 @@
-import type { CircuitComponent, Probe, SchematicPage, Wire } from "./model";
+import type { CircuitComponent, Probe } from "./model.ts";
+import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
 import { componentBoundsFor as geometryComponentBoundsFor } from "./geometry.ts";
 import { canvasValueLabel } from "./labelFormatting.ts";
 import { netLabelLayouts, valueLabelBounds, valueLabelOffsets } from "./labelPlacement.ts";

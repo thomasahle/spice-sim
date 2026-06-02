@@ -9,7 +9,7 @@ import { buildNetlist } from "./netlist.ts";
 import { buildWireJunctionDots } from "./wireGeometry.ts";
 import { canvasValueLabel } from "./labelFormatting.ts";
 import { netLabelLayouts, valueLabelBounds, valueLabelOffsets } from "./labelPlacement.ts";
-import type { CircuitDoc, SchematicPage } from "./model.ts";
+import type { LegacyCircuitDoc as CircuitDoc, LegacySchematicPage as SchematicPage } from "./legacyModel.ts";
 
 export function useStableDuringDrag<T>(
   compute: () => T,

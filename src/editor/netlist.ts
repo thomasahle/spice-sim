@@ -10,7 +10,12 @@
 // Models for D / NPN / PNP / NMOS / PMOS are auto-emitted with sane defaults
 // when the user hasn't supplied a custom model name in the component value.
 
-import type { CircuitComponent, CircuitDoc, ComponentKind, SchematicPage, Wire } from "./model.ts";
+import type { CircuitComponent, ComponentKind } from "./model.ts";
+import type {
+  LegacyCircuitDoc as CircuitDoc,
+  LegacySchematicPage as SchematicPage,
+  LegacyWire as Wire,
+} from "./legacyModel.ts";
 import { getPinLayout, parsePortOrder, pinLabelForKind, pinWorldPos, refdesPrefix } from "./model.ts";
 import {
   normalizeDeviceValue,

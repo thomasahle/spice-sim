@@ -15,6 +15,7 @@ import {
   subcircuitPortCount,
   subcircuitPortLabels,
   subcircuitPageForInstance,
+  swapTwoPinTerminals,
   SWAPPABLE_PASSIVE_KINDS,
   updatePageMeta,
   uniquePageName,
@@ -22,8 +23,15 @@ import {
   type CircuitComponent,
   type ComponentKind,
   type Rotation,
+  type Wire,
   effectiveSubcircuitPinSidesForInstance,
 } from "../src/editor/model.ts";
+import {
+  reorientComponent,
+  transformGroupWires,
+  transformPointAboutPivot,
+  type PinMove,
+} from "../src/editor/dragMath.ts";
 
 function docWithPages(activePageId = "main"): CircuitDoc {
   return {
@@ -94,6 +102,94 @@ test("mirrored components flip pin positions before rotation", () => {
   const rotated: CircuitComponent = { ...opamp, rotation: 90 };
   assert.deepEqual(pinWorldPos(rotated, 0), { x: 11, y: 8 });
   assert.deepEqual(pinWorldPos(rotated, 2), { x: 10, y: 2 });
+});
+
+test("swapTwoPinTerminals reverses a 2-pin part's polarity in place (rotation+180, pin set unchanged)", () => {
+  // The in-place polarity swap used by Flip/Mirror on a lone 2-pin part: it is
+  // rotation+=180, which for our left-right-symmetric symbols maps each pin onto
+  // the other's position. The *set* of pin world-points is unchanged (so an
+  // attached wire stays put) while pin index 0↔1 swaps (so +/− / netlist order
+  // flip).
+  const v: CircuitComponent = { id: "v1", kind: "V", x: 4, y: 3, rotation: 0, value: "5" };
+  const swapped = swapTwoPinTerminals(v);
+  assert.equal(swapped.rotation, 180);
+  assert.deepEqual(pinWorldPos(v, 0), pinWorldPos(swapped, 1));
+  assert.deepEqual(pinWorldPos(v, 1), pinWorldPos(swapped, 0));
+  const setOf = (c: CircuitComponent) =>
+    getPinLayout(c).map((_, i) => pinWorldPos(c, i)).sort((a, b) => a.x - b.x || a.y - b.y);
+  assert.deepEqual(setOf(v), setOf(swapped));
+  // Non-2-pin parts are returned unchanged.
+  const npn: CircuitComponent = { id: "q1", kind: "NPN", x: 0, y: 0, rotation: 0, value: "" };
+  assert.deepEqual(swapTwoPinTerminals(npn), npn);
+});
+
+test("the `mirrored` flag is a clean geometric reflection (x→−x) for every kind", () => {
+  // Kept geometric so group rotate/flip composition stays correct.
+  const npn: CircuitComponent = { id: "q1", kind: "NPN", x: 10, y: 0, rotation: 0, value: "" };
+  assert.deepEqual(pinWorldPos(npn, 1), { x: 8, y: 0 }); // base at x−2
+  assert.deepEqual(pinWorldPos({ ...npn, mirrored: true }, 1), { x: 12, y: 0 }); // reflected to x+2
+});
+
+test("transformPointAboutPivot rotates/reflects a group rigidly about the pivot", () => {
+  const pivot = { x: 2, y: 2 };
+  // Rotate CW about pivot (screen y-down): (dx,dy)→(−dy,dx).
+  assert.deepEqual(transformPointAboutPivot({ x: 5, y: 2 }, "rotate-cw", pivot), { x: 2, y: 5 });
+  assert.deepEqual(transformPointAboutPivot({ x: 5, y: 2 }, "rotate-ccw", pivot), { x: 2, y: -1 });
+  // Flip across vertical / horizontal axis through the pivot.
+  assert.deepEqual(transformPointAboutPivot({ x: 5, y: 7 }, "flip-h", pivot), { x: -1, y: 7 });
+  assert.deepEqual(transformPointAboutPivot({ x: 5, y: 7 }, "flip-v", pivot), { x: 5, y: -3 });
+  // Two opposite rotations return to start (rigidity).
+  const p = { x: 4, y: 9 };
+  assert.deepEqual(
+    transformPointAboutPivot(transformPointAboutPivot(p, "rotate-cw", pivot), "rotate-ccw", pivot),
+    p,
+  );
+});
+
+test("transformGroupWires: selected & internal wires ride rigidly, boundary wires reroute, free wires untouched", () => {
+  const pivot = { x: 0, y: 0 };
+  // Two component pins move under a CW group rotation about the origin.
+  const pinMoves: PinMove[] = [
+    { from: { x: 2, y: 0 }, to: { x: 0, y: 2 } },
+    { from: { x: -2, y: 0 }, to: { x: 0, y: -2 } },
+  ];
+  const wires: Wire[] = [
+    { id: "wsel", points: [[1, 1], [1, 3]] }, // selected → rigid
+    { id: "wint", points: [[2, 0], [-2, 0]] }, // both ends on moved pins → rigid (NOT deleted)
+    { id: "wbnd", points: [[2, 0], [5, 0]] }, // one end on a moved pin → reroute that end
+    { id: "wfree", points: [[10, 10], [12, 10]] }, // touches nothing moving → untouched
+  ];
+  const out = transformGroupWires(
+    wires,
+    new Set(["wsel"]),
+    pinMoves,
+    "rotate-cw",
+    pivot,
+    true,
+  );
+  const byId = Object.fromEntries(out.map((w) => [w.id, w.points]));
+  // Every input wire survives — none collapsed to a degenerate self-loop.
+  assert.equal(out.length, 4);
+  assert.deepEqual(byId.wsel, [[-1, 1], [-3, 1]]);
+  assert.deepEqual(byId.wint, [[0, 2], [0, -2]]);
+  // Boundary wire: moved end follows its pin to (0,2), far end stays at (5,0).
+  assert.deepEqual(byId.wbnd[0], [0, 2]);
+  assert.deepEqual(byId.wbnd[byId.wbnd.length - 1], [5, 0]);
+  assert.deepEqual(byId.wfree, [[10, 10], [12, 10]]);
+});
+
+test("reorientComponent flip-h / flip-v are clean geometric reflections", () => {
+  // flip-h = reflect across the vertical axis: toggle mirror, rotation→(360−r).
+  // flip-v = R₁₈₀ ∘ flip-h: toggle mirror, rotation→(540−r)%360.
+  const c: CircuitComponent = { id: "x1", kind: "NMOS", x: 0, y: 0, rotation: 90, value: "" };
+  const h = reorientComponent(c, "flip-h");
+  assert.equal(h.mirrored, true);
+  assert.equal(h.rotation, 270); // 360−90
+  const v = reorientComponent(c, "flip-v");
+  assert.equal(v.mirrored, true);
+  assert.equal(v.rotation, 90); // (540−90)%360
+  // Reflecting twice on the same axis is identity.
+  assert.deepEqual(reorientComponent(h, "flip-h"), { ...c, mirrored: undefined });
 });
 
 test("uniquePageName sanitizes schematic names and avoids collisions", () => {

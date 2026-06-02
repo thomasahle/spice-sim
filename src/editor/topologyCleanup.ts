@@ -1,6 +1,7 @@
 import { getPinLayout, pinWorldPos } from "./model.ts";
 import { pointOnSegment } from "./geometry.ts";
-import type { CircuitComponent, Probe, Wire } from "./model.ts";
+import type { CircuitComponent, Probe } from "./model.ts";
+import type { LegacyWire as Wire } from "./legacyModel.ts";
 import {
   dedupeWirePointsPreservingJunctions,
   normalizeWireListPreservingJunctions,

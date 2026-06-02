@@ -7,7 +7,8 @@ import {
   sameTuple,
 } from "./geometry.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
-import type { CircuitComponent, Probe, Wire } from "./model.ts";
+import type { CircuitComponent, Probe } from "./model.ts";
+import type { LegacyWire as Wire } from "./legacyModel.ts";
 import { routeWireSegment } from "./placement.ts";
 import { dedupeWirePointsPreservingJunctions } from "./wireTopology.ts";
 

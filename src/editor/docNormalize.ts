@@ -1,12 +1,9 @@
+import type { AnalysisSpec, CircuitComponent, Probe, SimSettings } from "./model.ts";
 import type {
-  AnalysisSpec,
-  CircuitComponent,
-  CircuitDoc,
-  Probe,
-  SchematicPage,
-  SimSettings,
-  Wire,
-} from "./model.ts";
+  LegacyCircuitDoc as CircuitDoc,
+  LegacySchematicPage as SchematicPage,
+  LegacyWire as Wire,
+} from "./legacyModel.ts";
 import { makeId } from "./model.ts";
 
 export function normalizeDoc(

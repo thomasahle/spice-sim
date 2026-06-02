@@ -323,6 +323,40 @@ export function IconGlyph({ kind }: { kind: string }) {
           <path d="M9 2.5v3h3" />
         </svg>
       );
+    case "rotate-cw":
+      // Three-quarter circular arrow turning clockwise; arrowhead leads at top.
+      return (
+        <svg {...props}>
+          <path d="M8 3a5 5 0 1 1-5 5" />
+          <path d="M7.6 1.1 11 3 7.6 4.9Z" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "rotate-ccw":
+      // Mirror of rotate-cw across the vertical axis — turns counter-clockwise.
+      return (
+        <svg {...props}>
+          <path d="M8 3a5 5 0 1 0 5 5" />
+          <path d="M8.4 1.1 5 3 8.4 4.9Z" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "flip-h":
+      // Reflect across a vertical axis: dashed mirror line, arrowheads out.
+      return (
+        <svg {...props}>
+          <path d="M8 2v12" strokeDasharray="1.6 1.6" />
+          <path d="M5.5 5 5.5 11 2.5 8Z" fill="currentColor" stroke="none" />
+          <path d="M10.5 5 10.5 11 13.5 8Z" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "flip-v":
+      // Reflect across a horizontal axis: dashed mirror line, arrowheads out.
+      return (
+        <svg {...props}>
+          <path d="M2 8h12" strokeDasharray="1.6 1.6" />
+          <path d="M5 5.5 11 5.5 8 2.5Z" fill="currentColor" stroke="none" />
+          <path d="M5 10.5 11 10.5 8 13.5Z" fill="currentColor" stroke="none" />
+        </svg>
+      );
   }
   return null;
 }
@@ -364,13 +398,14 @@ export function ToolIcon({ tool }: { tool: Tool }) {
       </svg>
     );
   }
-  if (tool === "pan") {
+  if (tool === "node") {
+    // A path with square node handles — the Inkscape-style node-edit glyph.
     return (
       <svg {...common}>
-        <path d="M8.5 12.5V6.5a1.3 1.3 0 0 1 2.6 0v5" />
-        <path d="M11.1 11.5V5a1.3 1.3 0 0 1 2.6 0v6.5" />
-        <path d="M13.7 11.6V6.3a1.3 1.3 0 0 1 2.6 0v5.3" />
-        <path d="M16.3 12.4V8.7a1.3 1.3 0 0 1 2.6 0v5c0 4-2.6 6.5-6 6.5h-1.2c-2.3 0-3.6-1.1-4.9-3.1l-1.5-2.4a1.3 1.3 0 0 1 2.2-1.4l1 1.2" />
+        <path d="M5 17l6-9 8 5" />
+        <rect x="3.4" y="15.4" width="3.2" height="3.2" rx="0.4" />
+        <rect x="9.4" y="6.4" width="3.2" height="3.2" rx="0.4" fill="currentColor" />
+        <rect x="17.4" y="10.4" width="3.2" height="3.2" rx="0.4" />
       </svg>
     );
   }

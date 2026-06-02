@@ -4,7 +4,8 @@ import type {
   ElkNode,
   ElkPort,
 } from "elkjs/lib/elk.bundled.js";
-import type { CircuitComponent, SchematicPage, Wire } from "./model.ts";
+import type { CircuitComponent } from "./model.ts";
+import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
 import {
   componentBoundsFor,
   boundsFromPoints,

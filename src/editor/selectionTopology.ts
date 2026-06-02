@@ -4,9 +4,8 @@ import {
   pinWorldPos,
   type CircuitComponent,
   type Probe,
-  type SchematicPage,
-  type Wire,
 } from "./model.ts";
+import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
 
 export interface SelectedTopology {
   components: CircuitComponent[];

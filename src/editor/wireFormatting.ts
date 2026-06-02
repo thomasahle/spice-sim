@@ -1,4 +1,4 @@
-import type { SchematicPage, Wire } from "./model.ts";
+import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
 import {
   normalizePoint,
   normalizeTuple,

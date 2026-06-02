@@ -24,7 +24,7 @@ import {
   type LiveFlowSampleSource,
   type WireFlowCandidate,
 } from "./liveFlow.ts";
-import type { CircuitDoc, SchematicPage } from "./model.ts";
+import type { LegacyCircuitDoc as CircuitDoc, LegacySchematicPage as SchematicPage } from "./legacyModel.ts";
 import type { SimResult } from "../sim/api.ts";
 
 type PinAnnotations = ReturnType<typeof buildNetlist>;

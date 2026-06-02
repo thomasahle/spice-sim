@@ -17,6 +17,8 @@ interface SvgInlineMathTextProps {
   verticalAnchor?: "baseline" | "middle";
   overflow?: CSSProperties["overflow"];
   pointerEvents?: CSSProperties["pointerEvents"];
+  paddingX?: number;
+  paddingY?: number;
 }
 
 export function SvgInlineMathText({
@@ -33,6 +35,8 @@ export function SvgInlineMathText({
   verticalAnchor = "baseline",
   overflow = "visible",
   pointerEvents = "none",
+  paddingX = 0,
+  paddingY = 0,
 }: SvgInlineMathTextProps) {
   const isDisplayMath = /\\begin\{/.test(text);
   const estimatedWidth = Math.max(
@@ -66,6 +70,7 @@ export function SvgInlineMathText({
           fontWeight,
           width: "100%",
           height: "100%",
+          padding: `${paddingY}px ${paddingX}px`,
           overflow,
           display: "flex",
           lineHeight: 1,

@@ -9,32 +9,36 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type CSSProperties,
 } from "react";
+import type { CircuitComponent, ComponentKind, Probe } from "./model";
 import type {
-  CircuitDoc,
-  CircuitComponent,
-  ComponentKind,
-  Probe,
-  SchematicPage,
-  Wire,
-} from "./model";
+  LegacyCircuitDoc as CircuitDoc,
+  LegacySchematicPage as SchematicPage,
+  LegacyWire as Wire,
+} from "./legacyModel";
 import {
   COMPONENT_LABELS,
-  currentPage,
   defaultValue,
   effectiveSubcircuitPinSidesForInstance,
-  emptyDoc,
   getPinLayout,
   makeId,
-  makePage,
-  flipRotation,
   parsePortOrder,
   pinWorldPos,
   rotateNext,
+  rotatePrev,
   rotationForKindSwap,
+  swapTwoPinTerminals,
   SWAPPABLE_PASSIVE_KINDS,
   rotatePoint,
   subcircuitBodyHeight,
   subcircuitBodyWidth,
+} from "./model";
+// Doc/page plumbing the editor uses while it still edits legacy (polyline)
+// docs internally — legacy-typed wrappers over the graph helpers (see
+// legacyModel.ts). These move back to ./model when the editor edits the graph.
+import {
+  currentPage,
+  emptyDoc,
+  makePage,
   subcircuitInstanceParamsForPage,
   subcircuitPinLabelsForInstance,
   subcircuitPortCount,
@@ -43,7 +47,7 @@ import {
   subcircuitPageForInstance,
   updatePageMeta,
   updateCurrentPage,
-} from "./model";
+} from "./legacyModel";
 import { ComponentGlyph } from "./symbols";
 import {
   canStartCanvasValueEditFromTyping,
@@ -222,9 +226,17 @@ import {
   collectDirectContactPins,
   collectTransformedPinMoves,
   moveWiresToRotatedPins,
+  reorientComponent,
+  transformComponentInGroup,
+  transformGroupWires,
+  transformPointAboutPivot,
   wireEndpointAnchors,
   type DirectContactPin,
+  type SelectionTransform,
 } from "./dragMath";
+import { graphToLegacyPage, legacyPageToGraph } from "./graphConvert";
+import { allNodeIds, nodePos, pinNodeIndex } from "./graphModel";
+import { deleteNode as graphDeleteNode } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -270,8 +282,9 @@ import {
   moveWirePointsWithAnchors,
   moveWirePointsWithAnchorsAvoiding,
   placementConnectionWires,
-  placementLength,
-  placementWireCutSpan,
+  placementDropOnWire,
+  placementInlineCutSpan,
+  placementOverlapsComponent,
   removeLastWireDraftPoint,
   reshapeDraggedWirePointAvoiding,
   routeWireSegmentAvoiding,
@@ -301,11 +314,11 @@ import {
 } from "./canvasViewport";
 import {
   CANVAS_DRAG_START_THRESHOLD,
+  CANVAS_PLACEMENT_INSERT_THRESHOLD,
   canvasDragDelta,
   canvasDragDeltaAfterThreshold,
   hasActiveCanvasInteraction,
   movedBeyondThreshold,
-  placementCanInsertInline,
   placementShouldBeginTextEdit,
   placementShouldSnapToConnections,
   pinTargetTone,
@@ -402,10 +415,10 @@ const PALETTE_SECTIONS: { label: string; items: PaletteItem[] }[] = [
         desc: "Click to select, drag to move. Shift-click to add to selection. Rubber-band to multi-select.",
       },
       {
-        tool: "pan",
-        name: "Pan",
-        hint: "H",
-        desc: "Drag the canvas to move around the schematic.",
+        tool: "node",
+        name: "Edit nodes",
+        hint: "N",
+        desc: "Edit wire nodes: click a node to select, Delete to remove (the wire heals); click a segment then Delete to split it. Pan with space-drag, middle-drag, or the scroll wheel.",
       },
       {
         tool: "wire",
@@ -865,7 +878,7 @@ const RegularComponentNode = memo(function RegularComponentNode({
         const labelBounds = valueLabelBounds(c, off, valueLabelText, valueFontSize);
         const labelBoxHeight = labelBounds.y2 - labelBounds.y1;
         const labelCenterY = (labelBounds.y1 + labelBounds.y2) / 2;
-        const inlinePad = 0.18;
+        const inlinePad = 0.24;
         const labelBoxWidth = labelBounds.x2 - labelBounds.x1;
         const labelX =
           off.anchor === "start"
@@ -898,6 +911,8 @@ const RegularComponentNode = memo(function RegularComponentNode({
                 maxWidth={labelMaxWidth}
                 boxHeight={labelBoxHeight}
                 verticalAnchor="middle"
+                overflow="hidden"
+                paddingX={0.1}
               />
             )}
           </g>
@@ -1326,6 +1341,11 @@ export function Editor() {
     kind: ComponentKind;
     start: { x: number; y: number };
     end: { x: number; y: number };
+    // The raw pointer-down point. While the gesture is a click (hasn't moved past
+    // threshold) the draft is oriented along the wire under `press`; once the
+    // pointer pulls away, orientation reverts to a normal start→cursor drag
+    // anchored at `press`.
+    press?: { x: number; y: number };
   }>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -1884,6 +1904,15 @@ export function Editor() {
   }
   const selRef = useRef(selectedIds);
   selRef.current = selectedIds;
+  // Node-tool ("Edit nodes") selection — a node's grid coordinate. Stored by
+  // coordinate (not id) because the on-demand graph is recomputed with fresh
+  // node ids each call; the coordinate is stable. Refs mirror state for the
+  // mount-once global keydown handler.
+  const [nodeSel, setNodeSel] = useState<{ x: number; y: number } | null>(null);
+  const toolRef = useRef(tool);
+  toolRef.current = tool;
+  const nodeSelRef = useRef(nodeSel);
+  nodeSelRef.current = nodeSel;
   // Tracks the most recent merge-keyed commit so bursts of same-source edits
   // (e.g. typing into a field) coalesce into one undo step. See `commit`.
   const lastCommitMergeRef = useRef<{ key: string; at: number } | null>(null);
@@ -2460,6 +2489,11 @@ export function Editor() {
           return;
         }
       }
+      // Type-to-edit a selected text object / component value. Runs BEFORE the
+      // tool shortcuts below so typing into a selected LABEL/NOTE (or a digit
+      // into a component value) edits it rather than triggering a tool shortcut
+      // ("o" → edit the selected label, not select the OpAmp tool). Keys that
+      // don't start an edit return false here and fall through to the shortcuts.
       if (!meta && selRef.current.size === 1 && beginSelectedTextEditFromTyping(e)) {
         e.preventDefault();
         return;
@@ -2505,8 +2539,8 @@ export function Editor() {
         selectTool("probe");
         return;
       }
-      if (k === "h" && !meta) {
-        selectTool("pan");
+      if (k === "n" && !meta) {
+        selectTool("node");
         return;
       }
       if (k === "v" && !meta) {
@@ -2559,6 +2593,38 @@ export function Editor() {
       }
       if (k === "t" && !meta) {
         selectTool("NOTE");
+        return;
+      }
+      if (
+        (k === "backspace" || k === "delete") &&
+        toolRef.current === "node" &&
+        nodeSelRef.current
+      ) {
+        // Delete the selected node, healing the wire (graph-native; §16.8).
+        // Pin-nodes aren't deletable — skip the commit entirely so a refused
+        // delete doesn't dirty the doc.
+        e.preventDefault();
+        const sel = nodeSelRef.current;
+        const previewGraph = legacyPageToGraph(currentPage(docRef.current));
+        const previewIdx = pinNodeIndex(previewGraph);
+        const hit = allNodeIds(previewGraph).find((id) => {
+          const pos = nodePos(previewGraph, id, previewIdx);
+          return pos !== null && Math.hypot(pos.x - sel.x, pos.y - sel.y) < 1e-6;
+        });
+        if (hit && !previewIdx.has(hit)) {
+          commit((d) =>
+            updateCurrentPage(d, (p) => {
+              const g = legacyPageToGraph(p);
+              const idx = pinNodeIndex(g);
+              const target = allNodeIds(g).find((id) => {
+                const pos = nodePos(g, id, idx);
+                return pos !== null && Math.hypot(pos.x - sel.x, pos.y - sel.y) < 1e-6;
+              });
+              return target ? graphToLegacyPage(graphDeleteNode(g, target)) : p;
+            }),
+          );
+        }
+        setNodeSel(null);
         return;
       }
       if ((k === "backspace" || k === "delete") && selRef.current.size > 0) {
@@ -2663,6 +2729,26 @@ export function Editor() {
     opts: { handleVisible?: boolean } = {},
   ): { wireId: string; idx: number } | null {
     return wireVertexDragHitAt(page, gx, gy, radius, opts);
+  }
+
+  // Turn a snapped drop point into a placement draft, orienting a 2-pin part
+  // *along* the wire under it (so it splices) when the snap landed on a wire
+  // segment. Otherwise the draft is a coincident point → default orientation.
+  function placementDraftAt(
+    kind: ComponentKind,
+    snapped: ConnectionTarget | { x: number; y: number },
+  ): { start: { x: number; y: number }; end: { x: number; y: number } } {
+    const drop = { x: snapped.x, y: snapped.y };
+    const wireId = "wireId" in snapped ? snapped.wireId : undefined;
+    const segmentIdx = "segmentIdx" in snapped ? snapped.segmentIdx : undefined;
+    if (wireId === undefined || segmentIdx === undefined) {
+      return { start: drop, end: drop };
+    }
+    const wire = page.wires.find((w) => w.id === wireId);
+    const a = wire?.points[segmentIdx];
+    const b = wire?.points[segmentIdx + 1];
+    const segment = a && b ? { a: { x: a[0], y: a[1] }, b: { x: b[0], y: b[1] } } : null;
+    return placementDropOnWire(kind, drop, segment);
   }
 
   function nextSelectionForHit(id: string, additive: boolean): Set<string> {
@@ -3144,13 +3230,21 @@ export function Editor() {
         ? docRef.current.pages.find((p) => p.id === selectedSubcircuitPageId && p.id !== docRef.current.activePageId)
         : null;
     const subcircuitParams = subcircuitPage ? subcircuitInstanceParamsForPage(subcircuitPage) : undefined;
-    const base = componentFromDrag(
+    const dragged = componentFromDrag(
       draft.kind,
       draft.start,
       draft.end,
       id,
       subcircuitParams,
     );
+    // A drag/splice midpoint can be half-grid (endpoints an odd number of cells
+    // apart), which puts the centre — and thus every pin — off-grid, after which
+    // the part can never be re-aligned. Pin offsets are all integers, so snapping
+    // the centre to the grid guarantees grid-aligned pins. We compromise exact
+    // centring for alignment (per design), only when grid-snap is on.
+    const base = snapToGridRef.current
+      ? { ...dragged, x: Math.round(dragged.x), y: Math.round(dragged.y) }
+      : dragged;
     const noteCount = currentPage(docRef.current).components.filter((component) => component.kind === "NOTE").length;
     const withNoteDefaults = withDefaultNoteColor(base, noteCount);
     const withSubcircuit: CircuitComponent = subcircuitPage
@@ -3258,10 +3352,32 @@ export function Editor() {
         return;
       }
     }
-    if (e.button === 1 || (e.button === 0 && (tool === "pan" || e.altKey || spacePanRef.current))) {
+    if (e.button === 1 || (e.button === 0 && (e.altKey || spacePanRef.current))) {
       e.preventDefault();
       capturePointer(e);
       setPanning({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      return;
+    }
+    if (tool === "node") {
+      // Edit-nodes tool: click selects the nearest graph node (junction /
+      // endpoint / pin). Bends aren't nodes, so they get no handle. Delete
+      // heals (see the keydown handler). Pan stays on space/middle/wheel.
+      e.preventDefault();
+      const raw = screenToWorld(e.clientX, e.clientY);
+      const g = legacyPageToGraph(page);
+      const idx = pinNodeIndex(g);
+      let best: { x: number; y: number } | null = null;
+      let bestD = 0.45;
+      for (const id of allNodeIds(g)) {
+        const p = nodePos(g, id, idx);
+        if (!p) continue;
+        const d = Math.hypot(p.x - raw.x, p.y - raw.y);
+        if (d < bestD) {
+          bestD = d;
+          best = { x: p.x, y: p.y };
+        }
+      }
+      setNodeSel(best);
       return;
     }
     // Touch on empty canvas pans instead of starting a rubber-band selection.
@@ -3557,10 +3673,19 @@ export function Editor() {
       return;
     }
     const pinCount = getPinLayout({ id: "__draft", kind: kindTool, x: 0, y: 0, rotation: 0, value: "" }).length;
-    const start = placementShouldSnapToConnections(pinCount)
+    const snapped = placementShouldSnapToConnections(pinCount)
       ? pointerConnectionPoint(e.clientX, e.clientY, 1.0, WIRING_SNAP)
       : g;
-    setPlacementDraft({ kind: kindTool, start, end: start });
+    // Orient the (still-clickable) draft along the wire under the drop so a tap
+    // on a wire splices regardless of the wire's direction. A subsequent drag
+    // overwrites `end` and takes over orientation as before.
+    const oriented = placementDraftAt(kindTool, snapped);
+    setPlacementDraft({
+      kind: kindTool,
+      start: oriented.start,
+      end: oriented.end,
+      press: { x: snapped.x, y: snapped.y },
+    });
     setSelectedIds(new Set());
     setHoverId(null);
   }
@@ -3641,7 +3766,24 @@ export function Editor() {
         ? nearestConnection(raw.x, raw.y, 1.0, WIRING_SNAP)
         : null;
       setSnapTarget(snap ? { x: snap.x, y: snap.y } : null);
-      setPlacementDraft({ ...placementDraft, end: normalizePoint(snap ?? g) });
+      const press = placementDraft.press;
+      const draggedAway =
+        press !== undefined &&
+        movedBeyondThreshold(press, raw, CANVAS_PLACEMENT_INSERT_THRESHOLD);
+      if (draggedAway) {
+        // Directional drag: orient from the press point to the cursor (the
+        // original behaviour), overriding any wire-aligned click orientation.
+        setPlacementDraft({
+          ...placementDraft,
+          start: press,
+          end: normalizePoint(snap ?? g),
+        });
+      } else {
+        // Still a click hovering near the press point: keep the wire-oriented
+        // (or default) draft so the splice preview stays put.
+        const oriented = placementDraftAt(placementDraft.kind, snap ?? { x: g.x, y: g.y });
+        setPlacementDraft({ ...placementDraft, start: oriented.start, end: oriented.end });
+      }
       setHoverId(null);
       return;
     }
@@ -3985,15 +4127,24 @@ export function Editor() {
         placementDraft,
         makeId(placementDraft.kind.toLowerCase()),
       );
+      // Refuse a drop that would overlap an existing component's body — there's
+      // no room for it. Keep the tool armed so the user can retry elsewhere.
+      if (placementOverlapsComponent(c, currentPage(docRef.current).components)) {
+        showCanvasNotice(`No room to place ${COMPONENT_LABELS[c.kind]} here`);
+        setPlacementDraft(null);
+        setSnapTarget(null);
+        return;
+      }
       let insertedInline = false;
       let addedStubCount = 0;
+      let connectedByContact = false;
       commit((d) => {
         const nextDoc = updateCurrentPage(d, (p) => {
           const pinCount = getPinLayout(c).length;
-          const canInsertInline = placementCanInsertInline(pinCount, placementLength(placementDraft));
-          const cutSpan = canInsertInline
-            ? placementWireCutSpan(c, placementDraft.start, placementDraft.end)
-            : null;
+          // Inline-splice is gated by GEOMETRY (a collinear 2-pin part whose pin
+          // span lies on an existing wire), not gesture length — so a click that
+          // drops a part onto a wire splices instead of leaving a bypass short.
+          const cutSpan = placementInlineCutSpan(c, placementDraft.start, placementDraft.end);
           let nextWires = cutSpan
             ? cutWireSegmentBetweenPoints(
                 p.wires,
@@ -4023,7 +4174,10 @@ export function Editor() {
           if (pinCount > 0) {
             for (let pinIdx = 0; pinIdx < pinCount; pinIdx++) {
               const pin = pinWorldPos(c, pinIdx);
-              nextWires = splitWiresAtPoint(nextWires, [pin.x, pin.y]);
+              const splitWires = splitWiresAtPoint(nextWires, [pin.x, pin.y]);
+              // A pin that splits an existing wire has joined that net by contact.
+              if (splitWires !== nextWires) connectedByContact = true;
+              nextWires = splitWires;
             }
           }
           const nextProbes = insertedInline && cutSpan
@@ -4035,10 +4189,10 @@ export function Editor() {
       });
       if (insertedInline) {
         setStatus(`Inserted ${COMPONENT_LABELS[c.kind]} into wire`);
-      } else if (addedStubCount > 0) {
-        setStatus(`Added ${COMPONENT_LABELS[c.kind]} with connection stubs`);
+      } else if (connectedByContact || addedStubCount > 0) {
+        setStatus(`Placed ${COMPONENT_LABELS[c.kind]} connected to wire`);
       } else {
-        setStatus(`Added ${COMPONENT_LABELS[c.kind]}`);
+        setStatus(`Placed ${COMPONENT_LABELS[c.kind]}`);
       }
       setSelectedIds(new Set([c.id]));
       setPlacementDraft(null);
@@ -4105,9 +4259,10 @@ export function Editor() {
       const hasSelectedComponents = page.components.some((c) => working.has(c.id));
       const autoFormatCount = wireIdsForAutoFormat(page, working).size;
       if (hasSelectedComponents) {
-        items.push({ label: "Rotate", shortcut: "⇧R", onSelect: () => rotateSelected() });
-        items.push({ label: "Mirror ↔ (horizontal)", onSelect: () => mirrorSelected() });
-        items.push({ label: "Flip ↕ (vertical)", onSelect: () => flipVerticalSelected() });
+        items.push({ label: "Rotate CW", shortcut: "⇧R", onSelect: () => rotateSelected() });
+        items.push({ label: "Rotate CCW", onSelect: () => rotateSelectedCcw() });
+        items.push({ label: "Flip Horizontal", onSelect: () => flipHorizontalSelected() });
+        items.push({ label: "Flip Vertical", onSelect: () => flipVerticalSelected() });
       }
       items.push(
         { label: "Fit Selection", shortcut: "⇧2", onSelect: () => fitSelectionToContent() },
@@ -4404,19 +4559,122 @@ export function Editor() {
     );
   }
 
-  function rotateSelected(selection: Set<string> = selectedIds) {
-    transformSelected((c) => ({ ...c, rotation: rotateNext(c.rotation) }), selection);
+  // True when the selection should transform as a rigid GROUP about a shared
+  // pivot (Inkscape/Figma: >1 component, or any wire/probe selected). A lone
+  // component transforms in place about its own centre.
+  function selectionIsGroup(selection: Set<string>, p: SchematicPage): boolean {
+    const compIds = p.components.filter((c) => selection.has(c.id));
+    if (compIds.length > 1) return true;
+    const hasWire = p.wires.some((w) => selection.has(w.id));
+    const hasProbe = p.probes.some((pr) => selection.has(pr.id));
+    return (compIds.length === 1 && (hasWire || hasProbe)) || ((hasWire || hasProbe) && compIds.length === 0 && selection.size > 1);
   }
 
-  function mirrorSelected(selection: Set<string> = selectedIds) {
-    transformSelected((c) => ({ ...c, mirrored: c.mirrored ? undefined : true }), selection);
+  // Pivot for a group transform: centre of the selection's bounding box,
+  // snapped to the grid so transformed integer points stay on-grid.
+  function selectionPivot(selection: Set<string>, p: SchematicPage): { x: number; y: number } {
+    const { xs, ys } = collectPageBounds(p, selection);
+    if (xs.length === 0) return { x: 0, y: 0 };
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    return snapToGridRef.current ? { x: Math.round(cx), y: Math.round(cy) } : { x: cx, y: cy };
+  }
+
+  // The single source of truth for the toolbar's Rotate CW/CCW + Flip H/V.
+  function transformSelection(op: SelectionTransform, selection: Set<string> = selectedIds) {
+    if (selection.size === 0) return;
+    const selected = new Set(selection);
+    const page0 = currentPage(docRef.current);
+
+    if (!selectionIsGroup(selected, page0)) {
+      // Single element, in place. Rotate spins about its own centre. Flip H/V on
+      // a 2-pin part swaps its terminals (rotation+=180, pins stay → wires stay);
+      // on a multi-pin part it's a geometric reflection about its own centre.
+      const mutate = (c: CircuitComponent): CircuitComponent => {
+        if (op === "rotate-cw") return { ...c, rotation: rotateNext(c.rotation) };
+        if (op === "rotate-ccw") return { ...c, rotation: rotatePrev(c.rotation) };
+        if (getPinLayout(c).length === 2) return swapTwoPinTerminals(c);
+        return reorientComponent(c, op);
+      };
+      transformSelected(mutate, selected);
+      return;
+    }
+
+    // Group transform about a shared pivot: components orbit + re-orient, and
+    // selected wires & probes ride rigidly with them. Wires/probes attached to
+    // the moved component pins follow so connectivity survives (same promise as
+    // a single-element rotate — see transformGroupWires for the per-wire rules).
+    const pivot = selectionPivot(selected, page0);
+    const groupMutate = (c: CircuitComponent) =>
+      transformComponentInGroup(c, op, pivot, snapToGridRef.current);
+    const xform = (x: number, y: number): { x: number; y: number } => {
+      const t = transformPointAboutPivot({ x, y }, op, pivot);
+      return snapToGridRef.current ? { x: Math.round(t.x), y: Math.round(t.y) } : t;
+    };
+    commit((d) =>
+      updateCurrentPage(d, (p) => {
+        const pinMoves = collectTransformedPinMoves(p.components, selected, groupMutate);
+        const contactWires = buildRotatedPinContactWires(
+          p.components,
+          p.wires,
+          selected,
+          pinMoves,
+          snapToGridRef.current,
+        );
+        let nextWires = transformGroupWires(
+          p.wires,
+          selected,
+          pinMoves,
+          op,
+          pivot,
+          snapToGridRef.current,
+        );
+        for (const wire of contactWires) {
+          nextWires = addWireWithJunctions({ wires: nextWires }, wire).wires;
+        }
+        const nextComponents = p.components.map((c) => (selected.has(c.id) ? groupMutate(c) : c));
+        // Selected probes ride rigidly; unselected probes follow moved pins /
+        // rerouted wire paths.
+        const rigidProbes = p.probes.map((pr) =>
+          selected.has(pr.id) ? { ...pr, ...xform(pr.x, pr.y) } : pr,
+        );
+        const movedPinProbes = moveProbesWithPinMoves(
+          rigidProbes,
+          pinMoves,
+          p.components,
+          p.wires,
+          selected,
+        );
+        const nextProbes = moveUnmovedProbesWithChangedWirePaths(
+          movedPinProbes,
+          p.probes,
+          p.wires,
+          nextWires,
+        );
+        return {
+          ...p,
+          components: nextComponents,
+          wires: pruneUnanchoredWireJunctions(nextWires, nextComponents, nextProbes),
+          probes: nextProbes,
+        };
+      }),
+    );
+  }
+
+  function rotateSelected(selection: Set<string> = selectedIds) {
+    transformSelection("rotate-cw", selection);
+  }
+
+  function rotateSelectedCcw(selection: Set<string> = selectedIds) {
+    transformSelection("rotate-ccw", selection);
+  }
+
+  function flipHorizontalSelected(selection: Set<string> = selectedIds) {
+    transformSelection("flip-h", selection);
   }
 
   function flipVerticalSelected(selection: Set<string> = selectedIds) {
-    transformSelected(
-      (c) => ({ ...c, mirrored: c.mirrored ? undefined : true, rotation: flipRotation(c.rotation) }),
-      selection,
-    );
+    transformSelection("flip-v", selection);
   }
 
   function nudgeSelection(dx: number, dy: number) {
@@ -6947,18 +7205,8 @@ export function Editor() {
                   </Row>
                 </>
               ) : null}
+              {/* Rotate / Flip moved to the top transform toolbar (group-aware). */}
               <div className="inspector-actions">
-                {selectedList.length > 0 && <button onClick={() => rotateSelected()}>Rotate</button>}
-                {selectedList.length > 0 && (
-                  <button onClick={() => mirrorSelected()} title="Mirror left ↔ right">
-                    Mirror ↔
-                  </button>
-                )}
-                {selectedList.length > 0 && (
-                  <button onClick={() => flipVerticalSelected()} title="Flip top ↕ bottom">
-                    Flip ↕
-                  </button>
-                )}
                 <button
                   onClick={() => {
                     void autoArrangeSchematic(selectedList.length > 0 ? selectedIds : new Set());
@@ -7264,13 +7512,9 @@ export function Editor() {
       </aside>
 
       <main className="canvas-area">
-        {/* Pane toggles + brand + Run + analysis pills all live outside the
-           canvas now (app header + floating cluster). Canvas-area's first
-           grid row is therefore empty for web builds — the canvas takes the
-           top slot directly. */}
-        <div className="canvas-wrap" tabIndex={-1}>
-        {/* Floating Run + analysis-type cluster — sits over the canvas at the
-           top so it's always reachable without dedicating toolbar space. */}
+        {/* Top toolbar row, docked to the top of the canvas area: analysis
+           type + Run + group-transform controls. A real grid row (not a
+           floating overlay) so it reads as attached chrome. */}
         <EditorTopRunCluster
           analysisKind={doc.analysis.kind}
           onSwitchAnalysis={switchAnalysis}
@@ -7279,7 +7523,13 @@ export function Editor() {
           runTitle={runTitle}
           engineOk={engineOk}
           onRun={runSimulation}
+          transformDisabled={selectedIds.size === 0}
+          onRotateCcw={() => rotateSelectedCcw()}
+          onRotateCw={() => rotateSelected()}
+          onFlipHorizontal={() => flipHorizontalSelected()}
+          onFlipVertical={() => flipVerticalSelected()}
         />
+        <div className="canvas-wrap" tabIndex={-1}>
         <EditorCanvasNotice
           canvasNotice={canvasNotice}
           disconnectedProbeIds={disconnectedProbeIds}
@@ -7340,11 +7590,9 @@ export function Editor() {
           className={`canvas ${
             panning
               ? "is-panning"
-              : tool === "pan"
-                ? "is-pan-tool"
-                : tool === "select"
-                  ? "is-selecting"
-                  : "is-placing"
+              : tool === "select" || tool === "node"
+                ? "is-selecting"
+                : "is-placing"
           }`}
           onPointerDown={onCanvasPointerDown}
           onPointerMove={onCanvasPointerMove}
@@ -7514,14 +7762,51 @@ export function Editor() {
               </g>
             )}
 
-            {placementDraft && (() => {
-              const { component: draft } = componentFromPlacementDraft(placementDraft, "__placement");
+            {(() => {
+              // Show the placement ghost both while pressing (placementDraft) AND
+              // on plain hover with a component tool armed, so the user sees where
+              // the part lands and what it will connect to *before* committing.
+              // Hover snaps to a connection point when the part has pins, mirroring
+              // the down-handler so the preview is WYSIWYG with the eventual press.
+              const previewDraft = placementDraft ?? (() => {
+                if (!cursor) return null;
+                if (tool === "select" || tool === "node" || tool === "wire" || tool === "probe") {
+                  return null;
+                }
+                const hoverKind = tool as ComponentKind;
+                // SUBX needs a chosen subcircuit page; skip the ghost otherwise.
+                if (
+                  hoverKind === "SUBX" &&
+                  !docRef.current.pages.find(
+                    (p) => p.id === selectedSubcircuitPageId && p.id !== docRef.current.activePageId,
+                  )
+                ) {
+                  return null;
+                }
+                const hoverPinCount = getPinLayout({
+                  id: "__hover",
+                  kind: hoverKind,
+                  x: 0,
+                  y: 0,
+                  rotation: 0,
+                  value: "",
+                }).length;
+                const snap = placementShouldSnapToConnections(hoverPinCount)
+                  ? nearestConnection(cursor.x, cursor.y, 1.0, WIRING_SNAP)
+                  : null;
+                // Orient along the wire under the cursor so the hover ghost shows
+                // the rotated splice the click would produce (WYSIWYG).
+                const oriented = placementDraftAt(hoverKind, snap ?? { x: cursor.x, y: cursor.y });
+                return { kind: hoverKind, start: oriented.start, end: oriented.end };
+              })();
+              if (!previewDraft) return null;
+              return (() => {
+              const { component: draft } = componentFromPlacementDraft(previewDraft, "__placement");
               const draftBounds = componentVisualBoundsFor(draft, 0.24);
               const pins = getPinLayout(draft).map((_, idx) => pinWorldPos(draft, idx));
-              const canInsertInline = placementCanInsertInline(pins.length, placementLength(placementDraft));
-              const cutSpan = canInsertInline
-                ? placementWireCutSpan(draft, placementDraft.start, placementDraft.end)
-                : null;
+              // Preview mirrors the commit: geometry-gated inline-splice so the
+              // WYSIWYG preview shows the cut for a click-on-wire too.
+              const cutSpan = placementInlineCutSpan(draft, previewDraft.start, previewDraft.end);
               const inlineInsertion = cutSpan
                 ? (
                 cutWireSegmentBetweenPoints(
@@ -7531,10 +7816,27 @@ export function Editor() {
                   () => "__preview-cut",
                 ) !== page.wires)
                 : false;
-              const stubs = placementConnectionWires(
+              // A pin "connects" if dropping the part would land it on an existing
+              // wire/pin (splitWiresAtPoint changes the set ⇒ the point is on a wire
+              // body) or if it's an endpoint of the inline-splice. Used to show a
+              // solid dot only where a real connection forms — so an empty-grid or
+              // perpendicular-crossing hover shows NO dots.
+              // No room: the ghost overlaps an existing component's body. Show it
+              // as invalid (a press here is refused) and suppress the connection
+              // affordances, since nothing would be created.
+              const overlaps = placementOverlapsComponent(draft, page.components);
+              const pinConnects = overlaps
+                ? pins.map(() => false)
+                : pins.map(
+                    (pin) =>
+                      inlineInsertion ||
+                      splitWiresAtPoint(page.wires, [pin.x, pin.y]) !== page.wires ||
+                      nearestConnection(pin.x, pin.y, 0.05, WIRING_SNAP) !== null,
+                  );
+              const stubs = overlaps ? [] : placementConnectionWires(
                 draft,
-                placementDraft.start,
-                placementDraft.end,
+                previewDraft.start,
+                previewDraft.end,
                 snapToGrid,
                 inlineInsertion,
                 () => "__stub",
@@ -7545,7 +7847,22 @@ export function Editor() {
                 },
               );
               return (
-                <g className="placement-draft" pointerEvents="none">
+                <g
+                  className={overlaps ? "placement-draft placement-draft-blocked" : "placement-draft"}
+                  pointerEvents="none"
+                >
+                  {!overlaps && inlineInsertion && cutSpan && (
+                    // Mask the wire segment the splice will remove, so the cut/gap
+                    // is visible in the preview (the real wire is still full
+                    // underneath until commit).
+                    <line
+                      x1={cutSpan.start.x}
+                      y1={cutSpan.start.y}
+                      x2={cutSpan.end.x}
+                      y2={cutSpan.end.y}
+                      className="placement-draft-cut"
+                    />
+                  )}
                   {stubs.map((stub, idx) => (
                     <polyline
                       key={idx}
@@ -7559,7 +7876,11 @@ export function Editor() {
                     width={draftBounds.x2 - draftBounds.x1}
                     height={draftBounds.y2 - draftBounds.y1}
                     rx={0.28}
-                    className="placement-draft-footprint"
+                    className={
+                      overlaps
+                        ? "placement-draft-footprint placement-draft-footprint-blocked"
+                        : "placement-draft-footprint"
+                    }
                   />
                   {draft.kind === "NOTE" ? (() => {
                     const lines = noteTextLines(draft.value);
@@ -7617,17 +7938,28 @@ export function Editor() {
                       ))}
                     </g>
                   )}
-                  {pins.map((pin, idx) => (
-                    <circle
-                      key={idx}
-                      cx={pin.x}
-                      cy={pin.y}
-                      r={0.34}
-                      className="placement-draft-endpoint"
-                    />
-                  ))}
+                  {pins.map((pin, idx) =>
+                    pinConnects[idx] ? (
+                      <circle
+                        key={idx}
+                        cx={pin.x}
+                        cy={pin.y}
+                        r={0.34}
+                        className="placement-draft-endpoint placement-draft-endpoint-connected"
+                      />
+                    ) : (
+                      <circle
+                        key={idx}
+                        cx={pin.x}
+                        cy={pin.y}
+                        r={0.22}
+                        className="placement-draft-endpoint"
+                      />
+                    ),
+                  )}
                 </g>
               );
+              })();
             })()}
 
             {page.components.map((c) => {
@@ -7737,10 +8069,11 @@ export function Editor() {
                             textAnchor="middle"
                             className="net-label-text"
                             text={label}
-                            maxWidth={Math.max(0.1, layout.chipW - 0.44)}
+                            maxWidth={Math.max(0.1, layout.chipW - 0.26)}
                             boxHeight={Math.max(0.1, layout.chipH - 0.12)}
                             verticalAnchor="middle"
                             overflow="hidden"
+                            paddingX={0.08}
                           />
                         )}
                       </>
@@ -7904,6 +8237,34 @@ export function Editor() {
                 </g>
               );
             })}
+
+            {tool === "node" &&
+              (() => {
+                const g = legacyPageToGraph(page);
+                const idx = pinNodeIndex(g);
+                return (
+                  <g className="node-edit-handles">
+                    {allNodeIds(g).map((id) => {
+                      const p = nodePos(g, id, idx);
+                      if (!p) return null;
+                      const selected =
+                        nodeSel !== null && Math.hypot(p.x - nodeSel.x, p.y - nodeSel.y) < 1e-6;
+                      return (
+                        <circle
+                          key={id}
+                          cx={p.x}
+                          cy={p.y}
+                          r={0.18}
+                          fill={selected ? "var(--accent)" : "var(--bg-canvas)"}
+                          stroke="var(--accent)"
+                          strokeWidth={0.05}
+                          style={{ cursor: "pointer" }}
+                        />
+                      );
+                    })}
+                  </g>
+                );
+              })()}
 
             <FloatingPinMarkers markers={floatingPinMarkers} />
             <NetLabelNearMissMarkers nearMisses={labelNearMisses} />
