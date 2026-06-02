@@ -536,7 +536,8 @@ const PALETTE_SECTIONS: { label: string; items: PaletteItem[] }[] = [
         tool: "LABEL",
         kind: "LABEL",
         name: "Net label",
-        hint: "N",
+        // Net label is palette-only: the N shortcut now selects the Node tool
+        // (wire-edge-design.md §13.2). Reassign a free key here if a shortcut is wanted.
         desc: "Drag onto a wire or pin to name that net. Two labels with the same name are electrically connected.",
       },
       {
@@ -2624,10 +2625,7 @@ export function Editor() {
         selectTool("OPAMP");
         return;
       }
-      if (k === "n" && !meta) {
-        selectTool("LABEL");
-        return;
-      }
+      // (Net label has no keyboard shortcut — N now selects the Node tool, §13.2.)
       if (k === "t" && !meta) {
         selectTool("NOTE");
         return;
@@ -2743,6 +2741,7 @@ export function Editor() {
         const rect = svgRef.current!.getBoundingClientRect();
         return { x: rect.left + pan.x + wx * CELL * zoom, y: rect.top + pan.y + wy * CELL * zoom };
       },
+      screenToWorld: (sx: number, sy: number) => screenToWorld(sx, sy),
       graphPage: () => currentPageGraph(graphDocRef.current),
       legacyPage: () => graphToLegacyPage(currentPageGraph(graphDocRef.current)),
     };
