@@ -9,7 +9,13 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type CSSProperties,
 } from "react";
-import type { CircuitComponent, ComponentKind, Probe, CircuitDoc as GraphDoc } from "./model";
+import type {
+  CircuitComponent,
+  ComponentKind,
+  Probe,
+  CircuitDoc as GraphDoc,
+  SchematicPage as GraphPage,
+} from "./model";
 import type {
   LegacyCircuitDoc as CircuitDoc,
   LegacySchematicPage as SchematicPage,
@@ -38,16 +44,22 @@ import {
 import {
   currentPage,
   emptyDoc,
-  makePage,
   subcircuitInstanceParamsForPage,
   subcircuitPinLabelsForInstance,
   subcircuitPortCount,
   subcircuitPortComponents,
   subcircuitPortLabels,
   subcircuitPageForInstance,
-  updatePageMeta,
-  updateCurrentPage,
 } from "./legacyModel";
+// Graph-side doc/page helpers for native edit ops (commitGraph): these mutate the
+// graph doc directly so connectivity comes from explicit edges, not geometry.
+import {
+  currentPage as currentPageGraph,
+  updateCurrentPage as updateCurrentPageGraph,
+  makePage as makePageGraph,
+  updatePageMeta as updatePageMetaGraph,
+  emptyDoc as emptyDocGraph,
+} from "./model";
 import { ComponentGlyph } from "./symbols";
 import {
   canStartCanvasValueEditFromTyping,
@@ -162,13 +174,7 @@ import { CheckboxField, SelectField } from "./RadixControls";
 import { readStoredBoolean, writeStoredBoolean } from "./storage";
 import { ImportNetlistModal, NetlistModal } from "./NetlistModals";
 import { useEditorSelection } from "./useEditorSelection";
-import {
-  addWireWithJunctions,
-  compactWirePoints,
-  normalizeWireList,
-  pointTouchesWirePath,
-  splitWiresAtPoint,
-} from "./wireGeometry";
+import { compactWirePoints, pointTouchesWirePath, splitWiresAtPoint } from "./wireGeometry";
 import { collectPageBounds, pinHintsFor } from "./selectionBounds";
 import {
   defaultMosfetPresetId,
@@ -214,21 +220,11 @@ import {
   NetLabelNearMissMarkers,
   SelectionBoundsOverlay,
 } from "./canvasOverlays";
+import { copyConnectedProbes, floatingPinSummary } from "./probeValidation";
 import {
-  copiedProbesForInsertedTopology,
-  copyConnectedProbes,
-  floatingPinSummary,
-  probeHasConnection,
-} from "./probeValidation";
-import {
-  buildRotatedPinContactWires,
-  buildTranslatedPinContactWires,
   collectDirectContactPins,
-  collectTransformedPinMoves,
-  moveWiresToRotatedPins,
   reorientComponent,
   transformComponentInGroup,
-  transformGroupWires,
   transformPointAboutPivot,
   wireEndpointAnchors,
   type DirectContactPin,
@@ -240,7 +236,7 @@ import {
   legacyDocToGraph,
   graphDocToLegacy,
 } from "./graphConvert";
-import { allNodeIds, nodePos, pinNodeIndex } from "./graphModel";
+import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline } from "./graphModel";
 import { deleteNode as graphDeleteNode } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
@@ -281,29 +277,17 @@ import {
 } from "./editorHistory";
 import {
   componentFromDrag,
-  moveAttachedWirePoints,
-  moveAttachedWirePointsAvoiding,
-  moveProbesFromInsertedWireSpan,
-  moveWirePointsWithAnchors,
-  moveWirePointsWithAnchorsAvoiding,
   placementConnectionWires,
   placementDropOnWire,
   placementInlineCutSpan,
   placementOverlapsComponent,
   removeLastWireDraftPoint,
-  reshapeDraggedWirePointAvoiding,
   routeWireSegmentAvoiding,
   wireMovesAsRigidShape,
   type WireEndpointAnchors,
 } from "./placement";
-import {
-  movePointBetweenWirePaths,
-  moveProbesWithPinMoves,
-  moveUnmovedProbesWithChangedWirePaths,
-  probeShouldMoveWithSelectedPin,
-} from "./wireMotion";
+import { probeShouldMoveWithSelectedPin } from "./wireMotion";
 import { autoFormatWiresAvoiding, wireIdsForAutoFormat } from "./wireFormatting";
-import { pruneUnanchoredWireJunctions, pruneWiresAfterComponentDelete } from "./topologyCleanup";
 import {
   nearestConnectionTarget,
   selectableItemAt,
@@ -1393,6 +1377,14 @@ export function Editor() {
   }, [running]);
   const [drag, setDrag] = useState<null | {
     initial: Map<string, { x: number; y: number }>;
+    // Initial graph positions captured at drag start so the live preview is
+    // idempotent: selected wires' standalone-node endpoints + bends move from
+    // these, not from the (already-previewed) current page.
+    initialNodes: Map<string, { x: number; y: number }>;
+    initialBends: Map<string, [number, number][]>;
+    // Wires explicitly in the selection — these ride rigidly (endpoints + bends
+    // move). Wires merely attached to a moving component rubber-band instead.
+    selectedWireIds: Set<string>;
     initialWires: Map<string, [number, number][]>;
     movingWireIds: Set<string>;
     movingWireAnchors: Map<string, WireEndpointAnchors>;
@@ -1720,7 +1712,7 @@ export function Editor() {
       n += 1;
       name = `sub${n}`;
     }
-    const newPage = makePage(name);
+    const newPage = makePageGraph(name);
     commit((d) => ({
       ...d,
       pages: [...d.pages, newPage],
@@ -1735,7 +1727,7 @@ export function Editor() {
     // Key the merge by which field is being typed so a name burst and a
     // description burst stay distinct undo steps.
     const field = "name" in patch ? "name" : "description";
-    commit((d) => updatePageMeta(d, d.activePageId, patch), `page-meta:${field}`);
+    commit((d) => updatePageMetaGraph(d, d.activePageId, patch), `page-meta:${field}`);
   }
 
   function resetInteractionState() {
@@ -2016,7 +2008,10 @@ export function Editor() {
   // single undo step. The first commit of a burst pushes the pre-edit doc;
   // subsequent commits with the same mergeKey within the window reuse that
   // entry (skip the push) so undo rewinds the whole burst, not one keystroke.
-  function commit(updater: (d: CircuitDoc) => CircuitDoc, mergeKey?: string) {
+  // Native graph commit: the updater mutates the graph doc directly (no legacy
+  // round-trip), so node identity is preserved and coincidence never implies
+  // connection — moving a component over a wire no longer connects it.
+  function commit(updater: (d: GraphDoc) => GraphDoc, mergeKey?: string) {
     const now = performance.now();
     const last = lastCommitMergeRef.current;
     const merge =
@@ -2024,7 +2019,7 @@ export function Editor() {
     if (!merge) pushPast(historySnapshot());
     lastCommitMergeRef.current = mergeKey != null ? { key: mergeKey, at: now } : null;
     setFuture([]);
-    setDoc(updater(docRef.current));
+    setGraphDoc(updater(graphDocRef.current));
     invalidateSimulationState();
     // Any commit dirties the disk file if one is open. Workspace localStorage
     // is the source of truth in-app, so we never block on it.
@@ -2036,8 +2031,8 @@ export function Editor() {
       "You have unsaved changes in the file. Discard and continue?",
     );
   }
-  function previewMutate(updater: (d: CircuitDoc) => CircuitDoc) {
-    setDoc(updater(docRef.current));
+  function previewMutate(updater: (d: GraphDoc) => GraphDoc) {
+    setGraphDoc(updater(graphDocRef.current));
     invalidateSimulationState();
   }
   /** Parse a SPICE-style netlist string and replace the current doc with it.
@@ -2074,7 +2069,7 @@ export function Editor() {
     // mystery freeze.
     opts.onPhase?.("rendering");
     await new Promise((r) => requestAnimationFrame(() => r(null)));
-    commit(() => normalizeDoc(imported.doc));
+    commit(() => legacyDocToGraph(normalizeDoc(imported.doc)));
     setFilePath(null);
     setDiskDirty(true);
     resetInteractionState();
@@ -2270,7 +2265,7 @@ export function Editor() {
     switch (id) {
       case "file:new":
         if (!confirmDiscardIfDirty()) return;
-        commit(() => emptyDoc);
+        commit(() => emptyDocGraph);
         setFilePath(null);
         setDiskDirty(false);
         resetInteractionState();
@@ -2284,7 +2279,7 @@ export function Editor() {
         if (!confirmDiscardIfDirty()) return;
         const r = await openDoc();
         if (!r) return;
-        commit(() => normalizeDoc(r.doc));
+        commit(() => legacyDocToGraph(normalizeDoc(r.doc)));
         setFilePath(r.path);
         setDiskDirty(false);
         resetInteractionState();
@@ -2625,7 +2620,7 @@ export function Editor() {
         // delete doesn't dirty the doc.
         e.preventDefault();
         const sel = nodeSelRef.current;
-        const previewGraph = legacyPageToGraph(currentPage(docRef.current));
+        const previewGraph = currentPageGraph(graphDocRef.current);
         const previewIdx = pinNodeIndex(previewGraph);
         const hit = allNodeIds(previewGraph).find((id) => {
           const pos = nodePos(previewGraph, id, previewIdx);
@@ -2633,14 +2628,13 @@ export function Editor() {
         });
         if (hit && !previewIdx.has(hit)) {
           commit((d) =>
-            updateCurrentPage(d, (p) => {
-              const g = legacyPageToGraph(p);
-              const idx = pinNodeIndex(g);
-              const target = allNodeIds(g).find((id) => {
-                const pos = nodePos(g, id, idx);
+            updateCurrentPageGraph(d, (p) => {
+              const idx = pinNodeIndex(p);
+              const target = allNodeIds(p).find((id) => {
+                const pos = nodePos(p, id, idx);
                 return pos !== null && Math.hypot(pos.x - sel.x, pos.y - sel.y) < 1e-6;
               });
-              return target ? graphToLegacyPage(graphDeleteNode(g, target)) : p;
+              return target ? graphDeleteNode(p, target) : p;
             }),
           );
         }
@@ -3071,149 +3065,57 @@ export function Editor() {
     return out;
   }
 
-  function applyMovedWires(
-    wires: Wire[],
-    initialWires: Map<string, [number, number][]>,
-    movingWireIds: Set<string>,
-    movingWireAnchors: Map<string, WireEndpointAnchors>,
-    attachedWirePoints: Map<string, Set<number>>,
-    dx: number,
-    dy: number,
-    orthogonal: boolean,
-    routingContext?: {
-      components: CircuitComponent[];
-      wires: Wire[];
-      ignoreComponentIds?: Set<string>;
-    },
-  ): Wire[] {
-    return normalizeWireList(
-      wires.map((w) => {
-        const init = initialWires.get(w.id);
-        if (!init) return w;
-        if (movingWireIds.has(w.id)) {
-          const anchors = movingWireAnchors.get(w.id) ?? {};
-          const ignoreWireIds = new Set<string>([w.id]);
-          return {
-            ...w,
-            points: routingContext
-              ? moveWirePointsWithAnchorsAvoiding(init, dx, dy, anchors, orthogonal, {
-                  components: routingContext.components,
-                  wires: routingContext.wires,
-                  ignoreComponentIds: routingContext.ignoreComponentIds,
-                  ignoreWireIds,
-                })
-              : moveWirePointsWithAnchors(init, dx, dy, anchors, orthogonal),
-          };
-        }
-        const attached = attachedWirePoints.get(w.id);
-        if (!attached) return w;
-        const ignoreWireIds = new Set<string>([w.id]);
-        return {
-          ...w,
-          points: routingContext
-            ? moveAttachedWirePointsAvoiding(init, attached, dx, dy, orthogonal, {
-                components: routingContext.components,
-                wires: routingContext.wires,
-                ignoreComponentIds: routingContext.ignoreComponentIds,
-                ignoreWireIds,
-              })
-            : moveAttachedWirePoints(init, attached, dx, dy, orthogonal),
-        };
-      }),
-    );
-  }
-
-  function moveProbeOnChangedWirePath(
-    attachment: { wireId: string; point: { x: number; y: number } },
-    beforeWires: Map<string, [number, number][]>,
-    afterWires: Wire[],
-    dx: number,
-    dy: number,
-  ): { x: number; y: number } {
-    const before = beforeWires.get(attachment.wireId);
-    const after = afterWires.find((wire) => wire.id === attachment.wireId)?.points;
-    if (before && after) {
-      const moved = movePointBetweenWirePaths(attachment.point, before, after);
-      if (moved) return moved;
-    }
-    return normalizePoint({ x: attachment.point.x + dx, y: attachment.point.y + dy });
-  }
-
   function applySelectionDragPreview(
-    sourcePage: SchematicPage,
+    sourcePage: GraphPage,
     activeDrag: NonNullable<typeof drag>,
     dx: number,
     dy: number,
-    orthogonal: boolean,
-    trackPreviewWires: boolean,
-  ): { page: SchematicPage; previewWireIds: string[] } {
-    const previewWireIds = new Set(activeDrag.previewWireIds);
-    const baseWires =
-      previewWireIds.size > 0
-        ? sourcePage.wires.filter((wire) => !previewWireIds.has(wire.id))
-        : sourcePage.wires;
+  ): { page: GraphPage; previewWireIds: string[] } {
+    // Graph-native drag. Everything moves from its captured initial position by
+    // the cumulative (dx,dy), so the live preview is idempotent. Pin-nodes follow
+    // their component (their positions derive from it), so incident wires
+    // rubber-band; nothing creates an edge, so dragging a component over a wire
+    // never connects to it (the old auto-connect/tangle bug).
+    const move = (x: number, y: number) => normalizePoint({ x: x + dx, y: y + dy });
     const nextComponents = sourcePage.components.map((c) => {
       const init = activeDrag.initial.get(c.id);
-      if (!init) return c;
-      return { ...c, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
+      return init ? { ...c, ...move(init.x, init.y) } : c;
     });
-    const movingComponentIds = new Set(activeDrag.initial.keys());
-    const movedWires = applyMovedWires(
-      baseWires,
-      activeDrag.initialWires,
-      activeDrag.movingWireIds,
-      activeDrag.movingWireAnchors,
-      activeDrag.attachedWirePoints,
-      dx,
-      dy,
-      orthogonal,
-      { components: nextComponents, wires: baseWires, ignoreComponentIds: movingComponentIds },
-    );
-    let nextProbes = sourcePage.probes.map((pr) => {
-      const wireAttachment = activeDrag.movingWireProbeAttachments.get(pr.id);
-      if (wireAttachment) {
-        return {
-          ...pr,
-          ...moveProbeOnChangedWirePath(
-            wireAttachment,
-            activeDrag.initialWires,
-            movedWires,
-            dx,
-            dy,
-          ),
-        };
-      }
+    // Selected wires ride rigidly: move their standalone-node endpoints + bends.
+    const movingNodeIds = new Set<string>();
+    for (const w of sourcePage.wires) {
+      if (!activeDrag.selectedWireIds.has(w.id)) continue;
+      movingNodeIds.add(w.a);
+      movingNodeIds.add(w.b);
+    }
+    const nextNodes = (sourcePage.nodes ?? []).map((n) => {
+      const init = activeDrag.initialNodes.get(n.id);
+      return init && movingNodeIds.has(n.id) ? { ...n, ...move(init.x, init.y) } : n;
+    });
+    const nextWires = sourcePage.wires.map((w) => {
+      if (!activeDrag.selectedWireIds.has(w.id)) return w;
+      const initBends = activeDrag.initialBends.get(w.id) ?? w.bends;
+      return {
+        ...w,
+        bends: initBends.map(([x, y]) => {
+          const t = move(x, y);
+          return [t.x, t.y] as [number, number];
+        }),
+      };
+    });
+    const nextProbes = sourcePage.probes.map((pr) => {
       const init = activeDrag.initial.get(pr.id);
-      if (!init) return pr;
-      return { ...pr, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
+      return init && pr.node == null ? { ...pr, ...move(init.x, init.y) } : pr;
     });
-    const contactWires = buildTranslatedPinContactWires(
-      activeDrag.directContactPins,
-      dx,
-      dy,
-      orthogonal,
-      { ...sourcePage, components: nextComponents, wires: movedWires },
-      movingComponentIds,
-    );
-    const withContacts = appendConnectionWiresWithInsertedIds(movedWires, contactWires);
-    nextProbes = moveUnmovedProbesWithChangedWirePaths(
-      nextProbes,
-      sourcePage.probes,
-      sourcePage.wires,
-      withContacts.wires,
-    );
     return {
       page: {
         ...sourcePage,
         components: nextComponents,
+        nodes: nextNodes,
+        wires: nextWires,
         probes: nextProbes,
-        wires: pruneUnanchoredWireJunctions(
-          withContacts.wires,
-          nextComponents,
-          nextProbes,
-        ),
       },
-      previewWireIds: trackPreviewWires ? withContacts.insertedIds : [],
+      previewWireIds: [],
     };
   }
 
@@ -3289,35 +3191,94 @@ export function Editor() {
     };
   }
 
-  function appendConnectionWires(wires: Wire[], additions: Wire[]): Wire[] {
-    return appendConnectionWiresWithInsertedIds(wires, additions).wires;
+  // Assign fresh pin-node ids to a newly-created component (positions stay
+  // derived from the component via pinWorldPos). Required for native component
+  // creation — placement/paste/duplicate — so the graph knows its pin-nodes.
+  function withPinNodes(c: CircuitComponent): CircuitComponent {
+    return { ...c, pins: getPinLayout(c).map(() => makeNodeId()) };
   }
 
-  function appendConnectionWiresWithInsertedIds(
-    wires: Wire[],
-    additions: Wire[],
-  ): { wires: Wire[]; insertedIds: string[] } {
-    let next = normalizeWireList(wires);
-    const insertedIds: string[] = [];
-    for (const wire of additions) {
-      const inserted = addWireWithJunctions({ wires: next }, wire).wires;
-      if (inserted.some((w) => w.id === wire.id) && !next.some((w) => w.id === wire.id)) {
-        insertedIds.push(wire.id);
-      }
-      next = inserted;
+  function pointOnPolyline(poly: [number, number][], pt: { x: number; y: number }): boolean {
+    for (let i = 0; i < poly.length - 1; i++) {
+      const [x1, y1] = poly[i];
+      const [x2, y2] = poly[i + 1];
+      const cross = (pt.x - x1) * (y2 - y1) - (pt.y - y1) * (x2 - x1);
+      if (Math.abs(cross) > 1e-6) continue;
+      const dot = (pt.x - x1) * (x2 - x1) + (pt.y - y1) * (y2 - y1);
+      const len2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
+      if (dot >= -1e-6 && dot <= len2 + 1e-6) return true;
     }
-    return { wires: next, insertedIds };
+    return false;
+  }
+
+  // Inline-splice a 2-pin component into the wire edge under its pin span: the
+  // edge (a→b) becomes (a→nearPin) + (farPin→b), with the component's pin-nodes
+  // as the new junctions. Returns null if no edge spans both pins.
+  function spliceComponentIntoWire(
+    page: GraphPage,
+    c: CircuitComponent,
+    cutSpan: { start: { x: number; y: number }; end: { x: number; y: number } },
+  ): GraphPage | null {
+    const idx = pinNodeIndex(page);
+    const pinAt = (x: number, y: number): string | null => {
+      const pins = c.pins ?? [];
+      for (let i = 0; i < pins.length; i++) {
+        const wp = pinWorldPos(c, i);
+        if (Math.abs(wp.x - x) < 1e-6 && Math.abs(wp.y - y) < 1e-6) return pins[i];
+      }
+      return null;
+    };
+    const startPin = pinAt(cutSpan.start.x, cutSpan.start.y);
+    const endPin = pinAt(cutSpan.end.x, cutSpan.end.y);
+    if (!startPin || !endPin) return null;
+    const wire = page.wires.find((w) => {
+      const poly = wirePolyline(page, w, idx);
+      return Boolean(poly && pointOnPolyline(poly, cutSpan.start) && pointOnPolyline(poly, cutSpan.end));
+    });
+    if (!wire) return null;
+    const poly = wirePolyline(page, wire, idx);
+    if (!poly || poly.length < 2) return null;
+    const dStart = Math.hypot(cutSpan.start.x - poly[0][0], cutSpan.start.y - poly[0][1]);
+    const dEnd = Math.hypot(cutSpan.end.x - poly[0][0], cutSpan.end.y - poly[0][1]);
+    const [nearPin, farPin] = dStart <= dEnd ? [startPin, endPin] : [endPin, startPin];
+    return {
+      ...page,
+      wires: [
+        ...page.wires.filter((w) => w.id !== wire.id),
+        { id: makeWireId(), a: wire.a, b: nearPin, bends: [] },
+        { id: makeWireId(), a: farPin, b: wire.b, bends: [] },
+      ],
+    };
+  }
+
+  function addWireEdgeAtCoords(page: GraphPage, route: [number, number][]): GraphPage {
+    const idx = pinNodeIndex(page);
+    const nodes = [...(page.nodes ?? [])];
+    const createdAt = new Map<string, string>();
+    const resolve = (x: number, y: number): string => {
+      for (const id of allNodeIds(page)) {
+        const pos = nodePos(page, id, idx);
+        if (pos && Math.abs(pos.x - x) < 1e-6 && Math.abs(pos.y - y) < 1e-6) return id;
+      }
+      const k = `${x},${y}`;
+      const created = createdAt.get(k);
+      if (created) return created;
+      const id = makeNodeId();
+      nodes.push({ id, x, y });
+      createdAt.set(k, id);
+      return id;
+    };
+    const a = resolve(route[0][0], route[0][1]);
+    const b = resolve(route[route.length - 1][0], route[route.length - 1][1]);
+    if (a === b) return page;
+    const bends = route.slice(1, -1).map(([x, y]) => [x, y] as [number, number]);
+    return { ...page, nodes, wires: [...page.wires, { id: makeWireId(), a, b, bends }] };
   }
 
   function commitWireRoute(points: [number, number][]) {
     const route = compactWirePoints(points);
     if (route.length < 2) return;
-    commit((d) =>
-      updateCurrentPage(d, (p) => ({
-        ...p,
-        ...addWireWithJunctions(p, { id: makeId("w"), points: route }),
-      })),
-    );
+    commit((d) => updateCurrentPageGraph(d, (p) => addWireEdgeAtCoords(p, route)));
   }
 
   function traceNameForWire(wireId: string): string | null {
@@ -3506,7 +3467,7 @@ export function Editor() {
       );
       if (existing && e.shiftKey) {
         commit((d) =>
-          updateCurrentPage(d, (p) => ({
+          updateCurrentPageGraph(d, (p) => ({
             ...p,
             probes: p.probes.filter((pr) => pr.id !== existing.id),
           })),
@@ -3523,11 +3484,17 @@ export function Editor() {
           color: PROBE_COLORS[colorIdx],
         };
         commit((d) =>
-          updateCurrentPage(d, (p) => ({
-            ...p,
-            wires: splitWiresAtPoint(p.wires, [snap.x, snap.y]),
-            probes: [...p.probes, probe],
-          })),
+          updateCurrentPageGraph(d, (p) => {
+            // Attach the probe to the graph node at the click (pin or junction),
+            // so its measured net is by node id. (Probing a bare wire interior —
+            // splitting to make a junction — is a follow-up.)
+            const idx = pinNodeIndex(p);
+            const nodeId = allNodeIds(p).find((id) => {
+              const pos = nodePos(p, id, idx);
+              return pos !== null && Math.abs(pos.x - snap.x) < 1e-6 && Math.abs(pos.y - snap.y) < 1e-6;
+            });
+            return { ...p, probes: [...p.probes, { ...probe, node: nodeId }] };
+          }),
         );
         setSelectedIds(new Set([probe.id]));
         setStatus("Probe added");
@@ -3648,8 +3615,23 @@ export function Editor() {
           directContactPins,
         } =
           collectDragMotion(nextSelected);
+        const startGraphPage = currentPageGraph(graphDocRef.current);
+        const initialNodes = new Map(
+          (startGraphPage.nodes ?? []).map((n) => [n.id, { x: n.x, y: n.y }] as const),
+        );
+        const initialBends = new Map(
+          startGraphPage.wires.map(
+            (w) => [w.id, w.bends.map(([x, y]) => [x, y] as [number, number])] as const,
+          ),
+        );
+        const selectedWireIds = new Set(
+          startGraphPage.wires.filter((w) => nextSelected.has(w.id)).map((w) => w.id),
+        );
         setDrag({
           initial,
+          initialNodes,
+          initialBends,
+          selectedWireIds,
           initialWires,
           movingWireIds,
           movingWireAnchors,
@@ -3829,7 +3811,7 @@ export function Editor() {
         setNoteResize({ ...noteResize, committed: true });
       }
       previewMutate((d) =>
-        updateCurrentPage(d, (p) => ({
+        updateCurrentPageGraph(d, (p) => ({
           ...p,
           components: p.components.map((component) =>
             component.id === noteResize.noteId
@@ -3869,7 +3851,7 @@ export function Editor() {
         setSubxResize({ ...subxResize, committed: true });
       }
       previewMutate((d) =>
-        updateCurrentPage(d, (p) => ({
+        updateCurrentPageGraph(d, (p) => ({
           ...p,
           components: p.components.map((component) =>
             component.id === subxResize.componentId && component.kind === "SUBX"
@@ -3906,7 +3888,7 @@ export function Editor() {
       const scopeDx = normalizeCoord(scopeDrag.initialDx + dx);
       const scopeDy = normalizeCoord(scopeDrag.initialDy + dy);
       previewMutate((d) =>
-        updateCurrentPage(d, (p) => ({
+        updateCurrentPageGraph(d, (p) => ({
           ...p,
           probes: p.probes.map((probe) =>
             probe.id === scopeDrag.probeId ? { ...probe, scopeDx, scopeDy } : probe,
@@ -3954,31 +3936,34 @@ export function Editor() {
         setWireDrag({ ...wireDrag, committed: true });
       }
       previewMutate((d) =>
-        updateCurrentPage(d, (p) => ({
-          ...p,
-          wires: p.wires.map((w) => {
-            if (w.id !== wireId) return w;
-            return {
-              ...w,
-              points: reshapeDraggedWirePointAvoiding(
-                wireDrag.initialPoints,
-                pointIdx,
-                [nx, ny],
-                !snapToGridRef.current,
-                {
-                  components: p.components,
-                  wires: p.wires,
-                  ignoreWireIds: new Set([wireId]),
-                },
-              ),
-            };
-          }),
-          probes: p.probes.map((pr) => {
-            const init = wireDrag.initialProbes.get(pr.id);
-            if (!init) return pr;
-            return { ...pr, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
-          }),
-        })),
+        updateCurrentPageGraph(d, (p) => {
+          const w0 = p.wires.find((w) => w.id === wireId);
+          const polyLen = w0 ? w0.bends.length + 2 : 0;
+          // Endpoint (0 / last) drags a standalone node; pin-node endpoints aren't
+          // in page.nodes so they stay put. Interior points drag a bend.
+          const endpointNodeId =
+            w0 && pointIdx === 0 ? w0.a : w0 && pointIdx === polyLen - 1 ? w0.b : null;
+          return {
+            ...p,
+            wires: p.wires.map((w) => {
+              if (w.id !== wireId || !(pointIdx > 0 && pointIdx < polyLen - 1)) return w;
+              return {
+                ...w,
+                bends: w.bends.map((b, i) =>
+                  i === pointIdx - 1 ? ([nx, ny] as [number, number]) : b,
+                ),
+              };
+            }),
+            nodes: (p.nodes ?? []).map((n) =>
+              n.id === endpointNodeId ? { ...n, x: nx, y: ny } : n,
+            ),
+            probes: p.probes.map((pr) => {
+              const init = wireDrag.initialProbes.get(pr.id);
+              if (!init) return pr;
+              return { ...pr, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
+            }),
+          };
+        }),
       );
       return;
     }
@@ -3999,15 +3984,8 @@ export function Editor() {
       }
       let previewWireIds: string[] = [];
       previewMutate((d) =>
-        updateCurrentPage(d, (p) => {
-          const preview = applySelectionDragPreview(
-            p,
-            drag,
-            dx,
-            dy,
-            snapToGridRef.current,
-            true,
-          );
+        updateCurrentPageGraph(d, (p) => {
+          const preview = applySelectionDragPreview(p, drag, dx, dy);
           previewWireIds = preview.previewWireIds;
           return preview.page;
         }),
@@ -4059,16 +4037,7 @@ export function Editor() {
         const snap = netLabelDragSnap(activeDrag, delta.x, delta.y);
         const { x: dx, y: dy } = snap.delta;
         previewMutate((d) =>
-          updateCurrentPage(d, (p) =>
-            applySelectionDragPreview(
-              p,
-              activeDrag,
-              dx,
-              dy,
-              snapToGridRef.current,
-              false,
-            ).page,
-          ),
+          updateCurrentPageGraph(d, (p) => applySelectionDragPreview(p, activeDrag, dx, dy).page),
         );
       } else if (activeDrag.clickEditTarget) {
         beginCanvasClickEditTarget(activeDrag.clickEditTarget);
@@ -4085,20 +4054,9 @@ export function Editor() {
       setSubxResize(null);
     }
     if (wireDrag) {
-      if (wireDrag.committed) {
-        const finalWire = currentPage(docRef.current).wires.find(
-          (w) => w.id === wireDrag.wireId,
-        );
-        const finalPoint = finalWire?.points[Math.min(wireDrag.pointIdx, finalWire.points.length - 1)];
-        if (finalPoint) {
-          previewMutate((d) =>
-            updateCurrentPage(d, (p) => ({
-              ...p,
-              wires: splitWiresAtPoint(p.wires, finalPoint),
-            })),
-          );
-        }
-      }
+      // Reshaping a wire vertex is committed live in the move handler; on release
+      // we just finalize the selection. (T-junction-on-release, where the dragged
+      // vertex lands on another wire, is a follow-up.)
       setSelectedIds(new Set([wireDrag.wireId]));
       setWireDrag(null);
       setSnapTarget(null);
@@ -4155,62 +4113,29 @@ export function Editor() {
         setSnapTarget(null);
         return;
       }
+      // Graph-native placement: the component gets fresh pin-nodes. If it's a
+      // 2-pin part dropped onto a wire (cutSpan), splice it in — the edge splits
+      // at its pins (explicit connection). Otherwise it's just placed; coincident
+      // overlap does NOT connect (draw a wire to connect — the move-bug rule).
       let insertedInline = false;
-      let addedStubCount = 0;
-      let connectedByContact = false;
+      const cWithPins = withPinNodes(c);
+      const cutSpan = placementInlineCutSpan(cWithPins, placementDraft.start, placementDraft.end);
       commit((d) => {
-        const nextDoc = updateCurrentPage(d, (p) => {
-          const pinCount = getPinLayout(c).length;
-          // Inline-splice is gated by GEOMETRY (a collinear 2-pin part whose pin
-          // span lies on an existing wire), not gesture length — so a click that
-          // drops a part onto a wire splices instead of leaving a bypass short.
-          const cutSpan = placementInlineCutSpan(c, placementDraft.start, placementDraft.end);
-          let nextWires = cutSpan
-            ? cutWireSegmentBetweenPoints(
-                p.wires,
-                [cutSpan.start.x, cutSpan.start.y],
-                [cutSpan.end.x, cutSpan.end.y],
-                () => makeId("w"),
-              )
-            : p.wires;
-          insertedInline = cutSpan ? nextWires !== p.wires : false;
-          const placementWires = placementConnectionWires(
-            c,
-            placementDraft.start,
-            placementDraft.end,
-            snapToGrid,
-            insertedInline,
-            () => makeId("w"),
-            {
-              components: [...p.components, c],
-              wires: nextWires,
-              ignoreComponentIds: new Set([c.id]),
-            },
-          );
-          addedStubCount = placementWires.length;
-          for (const w of placementWires) {
-            nextWires = addWireWithJunctions({ wires: nextWires }, w).wires;
-          }
-          if (pinCount > 0) {
-            for (let pinIdx = 0; pinIdx < pinCount; pinIdx++) {
-              const pin = pinWorldPos(c, pinIdx);
-              const splitWires = splitWiresAtPoint(nextWires, [pin.x, pin.y]);
-              // A pin that splits an existing wire has joined that net by contact.
-              if (splitWires !== nextWires) connectedByContact = true;
-              nextWires = splitWires;
+        const nextDoc = updateCurrentPageGraph(d, (p) => {
+          let page: GraphPage = { ...p, components: [...p.components, cWithPins] };
+          if (cutSpan) {
+            const spliced = spliceComponentIntoWire(page, cWithPins, cutSpan);
+            if (spliced) {
+              page = spliced;
+              insertedInline = true;
             }
           }
-          const nextProbes = insertedInline && cutSpan
-            ? moveProbesFromInsertedWireSpan(p.probes, c, cutSpan, placementWires)
-            : p.probes;
-          return { ...p, components: [...p.components, c], wires: nextWires, probes: nextProbes };
+          return page;
         });
         return preset ? ensureBuiltinModelDirective(nextDoc, preset.model) : nextDoc;
       });
       if (insertedInline) {
         setStatus(`Inserted ${COMPONENT_LABELS[c.kind]} into wire`);
-      } else if (connectedByContact || addedStubCount > 0) {
-        setStatus(`Placed ${COMPONENT_LABELS[c.kind]} connected to wire`);
       } else {
         setStatus(`Placed ${COMPONENT_LABELS[c.kind]}`);
       }
@@ -4541,41 +4466,14 @@ export function Editor() {
   ) {
     if (selection.size === 0) return;
     const selected = new Set(selection);
+    // Graph-native: rotating/mirroring a component just mutates the component.
+    // Its pins are nodes with derived positions, so incident wires stay attached
+    // (by node id) and rubber-band — no pin-contact rewiring, no auto-connect.
     commit((d) =>
-      updateCurrentPage(d, (p) => {
-        const pinMoves = collectTransformedPinMoves(p.components, selected, mutate);
-        const contactWires = buildRotatedPinContactWires(
-          p.components,
-          p.wires,
-          selected,
-          pinMoves,
-          snapToGridRef.current,
-        );
-        let nextWires = moveWiresToRotatedPins(p.wires, pinMoves, snapToGridRef.current);
-        for (const wire of contactWires) {
-          nextWires = addWireWithJunctions({ wires: nextWires }, wire).wires;
-        }
-        const nextComponents = p.components.map((c) => (selected.has(c.id) ? mutate(c) : c));
-        const movedPinProbes = moveProbesWithPinMoves(
-          p.probes,
-          pinMoves,
-          p.components,
-          p.wires,
-          selected,
-        );
-        const nextProbes = moveUnmovedProbesWithChangedWirePaths(
-          movedPinProbes,
-          p.probes,
-          p.wires,
-          nextWires,
-        );
-        return {
-          ...p,
-          components: nextComponents,
-          wires: pruneUnanchoredWireJunctions(nextWires, nextComponents, nextProbes),
-          probes: nextProbes,
-        };
-      }),
+      updateCurrentPageGraph(d, (p) => ({
+        ...p,
+        components: p.components.map((c) => (selected.has(c.id) ? mutate(c) : c)),
+      })),
     );
   }
 
@@ -4631,50 +4529,43 @@ export function Editor() {
       const t = transformPointAboutPivot({ x, y }, op, pivot);
       return snapToGridRef.current ? { x: Math.round(t.x), y: Math.round(t.y) } : t;
     };
+    // Graph-native group transform: selected components re-orient about the
+    // pivot (their pin-nodes follow, so incident wires rubber-band). Selected
+    // wires ride rigidly — their standalone-node endpoints + bends transform
+    // about the pivot. Pin-node endpoints aren't in page.nodes, so they're
+    // naturally excluded (they follow their component). Selected free probes
+    // transform; node-attached probes follow their node.
     commit((d) =>
-      updateCurrentPage(d, (p) => {
-        const pinMoves = collectTransformedPinMoves(p.components, selected, groupMutate);
-        const contactWires = buildRotatedPinContactWires(
-          p.components,
-          p.wires,
-          selected,
-          pinMoves,
-          snapToGridRef.current,
-        );
-        let nextWires = transformGroupWires(
-          p.wires,
-          selected,
-          pinMoves,
-          op,
-          pivot,
-          snapToGridRef.current,
-        );
-        for (const wire of contactWires) {
-          nextWires = addWireWithJunctions({ wires: nextWires }, wire).wires;
-        }
+      updateCurrentPageGraph(d, (p) => {
         const nextComponents = p.components.map((c) => (selected.has(c.id) ? groupMutate(c) : c));
-        // Selected probes ride rigidly; unselected probes follow moved pins /
-        // rerouted wire paths.
-        const rigidProbes = p.probes.map((pr) =>
-          selected.has(pr.id) ? { ...pr, ...xform(pr.x, pr.y) } : pr,
+        const movedNodeIds = new Set<string>();
+        for (const w of p.wires) {
+          if (!selected.has(w.id)) continue;
+          movedNodeIds.add(w.a);
+          movedNodeIds.add(w.b);
+        }
+        const nextNodes = (p.nodes ?? []).map((n) =>
+          movedNodeIds.has(n.id) ? { ...n, ...xform(n.x, n.y) } : n,
         );
-        const movedPinProbes = moveProbesWithPinMoves(
-          rigidProbes,
-          pinMoves,
-          p.components,
-          p.wires,
-          selected,
+        const nextWires = p.wires.map((w) =>
+          selected.has(w.id)
+            ? {
+                ...w,
+                bends: w.bends.map(([x, y]) => {
+                  const t = xform(x, y);
+                  return [t.x, t.y] as [number, number];
+                }),
+              }
+            : w,
         );
-        const nextProbes = moveUnmovedProbesWithChangedWirePaths(
-          movedPinProbes,
-          p.probes,
-          p.wires,
-          nextWires,
+        const nextProbes = p.probes.map((pr) =>
+          selected.has(pr.id) && pr.node == null ? { ...pr, ...xform(pr.x, pr.y) } : pr,
         );
         return {
           ...p,
           components: nextComponents,
-          wires: pruneUnanchoredWireJunctions(nextWires, nextComponents, nextProbes),
+          nodes: nextNodes,
+          wires: nextWires,
           probes: nextProbes,
         };
       }),
@@ -4700,82 +4591,68 @@ export function Editor() {
   function nudgeSelection(dx: number, dy: number) {
     const selected = selRef.current;
     if (selected.size === 0) return;
-    const p = currentPage(docRef.current);
-    const {
-      initial,
-      initialWires,
-      movingWireIds,
-      movingWireAnchors,
-      movingWireProbeAttachments,
-      attachedWirePoints,
-      directContactPins,
-    } =
-      collectDragMotion(selected, p);
-    if (initial.size === 0 && initialWires.size === 0) return;
+    // Graph-native: nudge selected components/probes by (dx,dy); selected wires
+    // ride (endpoints + bends). Pin-nodes follow components, so incident wires
+    // rubber-band; no auto-connect.
+    const move = (x: number, y: number) => normalizePoint({ x: x + dx, y: y + dy });
     commit((d) =>
-      updateCurrentPage(d, (page) => {
-        const nextComponents = page.components.map((c) => {
-          const init = initial.get(c.id);
-          if (!init) return c;
-          return { ...c, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
-        });
-        const movedWires = applyMovedWires(
-          page.wires,
-          initialWires,
-          movingWireIds,
-          movingWireAnchors,
-          attachedWirePoints,
-          dx,
-          dy,
-          snapToGridRef.current,
-          { components: nextComponents, wires: page.wires, ignoreComponentIds: selected },
+      updateCurrentPageGraph(d, (page) => {
+        const nextComponents = page.components.map((c) =>
+          selected.has(c.id) ? { ...c, ...move(c.x, c.y) } : c,
         );
-        let nextProbes = page.probes.map((pr) => {
-          const wireAttachment = movingWireProbeAttachments.get(pr.id);
-          if (wireAttachment) {
-            return {
-              ...pr,
-              ...moveProbeOnChangedWirePath(wireAttachment, initialWires, movedWires, dx, dy),
-            };
-          }
-          const init = initial.get(pr.id);
-          if (!init) return pr;
-          return { ...pr, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
-        });
-        const contactWires = buildTranslatedPinContactWires(
-          directContactPins,
-          dx,
-          dy,
-          snapToGridRef.current,
-          { ...page, components: nextComponents, wires: movedWires },
-          selected,
+        const movingNodeIds = new Set<string>();
+        for (const w of page.wires) {
+          if (!selected.has(w.id)) continue;
+          movingNodeIds.add(w.a);
+          movingNodeIds.add(w.b);
+        }
+        const nextNodes = (page.nodes ?? []).map((n) =>
+          movingNodeIds.has(n.id) ? { ...n, ...move(n.x, n.y) } : n,
         );
-        const nextWires = appendConnectionWires(movedWires, contactWires);
-        nextProbes = moveUnmovedProbesWithChangedWirePaths(
-          nextProbes,
-          page.probes,
-          page.wires,
-          nextWires,
+        const nextWires = page.wires.map((w) =>
+          selected.has(w.id)
+            ? {
+                ...w,
+                bends: w.bends.map(([x, y]) => {
+                  const t = move(x, y);
+                  return [t.x, t.y] as [number, number];
+                }),
+              }
+            : w,
+        );
+        const nextProbes = page.probes.map((pr) =>
+          selected.has(pr.id) && pr.node == null ? { ...pr, ...move(pr.x, pr.y) } : pr,
         );
         return {
           ...page,
           components: nextComponents,
+          nodes: nextNodes,
+          wires: nextWires,
           probes: nextProbes,
-          wires: pruneUnanchoredWireJunctions(nextWires, nextComponents, nextProbes),
         };
       }),
     );
   }
 
   function autoFormatWiring(selection: Set<string> = selectedIds) {
+    // Auto-format only reshapes wire paths (topology unchanged), so run it on a
+    // legacy view and map the reformatted polylines back to graph edge bends by
+    // id — endpoints (nodes) and connectivity are untouched.
     commit((d) =>
-      updateCurrentPage(d, (p) => {
-        const targetWireIds = wireIdsForAutoFormat(p, selection);
+      updateCurrentPageGraph(d, (p) => {
+        const legacy = graphToLegacyPage(p);
+        const targetWireIds = wireIdsForAutoFormat(legacy, selection);
         if (targetWireIds.size === 0) return p;
-        const formattedPage = autoFormatWiresAvoiding(p, targetWireIds);
+        const formatted = autoFormatWiresAvoiding(legacy, targetWireIds);
+        const pointsById = new Map(formatted.wires.map((w) => [w.id, w.points] as const));
         return {
-          ...formattedPage,
-          wires: pruneUnanchoredWireJunctions(formattedPage.wires, p.components, p.probes),
+          ...p,
+          wires: p.wires.map((w) => {
+            const pts = pointsById.get(w.id);
+            return pts && pts.length >= 2
+              ? { ...w, bends: pts.slice(1, -1).map(([x, y]) => [x, y] as [number, number]) }
+              : w;
+          }),
         };
       }),
     );
@@ -4791,8 +4668,37 @@ export function Editor() {
       setStatus("No components to arrange");
       return;
     }
+    // Auto-arrange repositions components + reroutes wires but preserves
+    // topology, so map the result back to the graph by id: component transforms,
+    // standalone-node (junction) positions from their wire endpoints, edge bends.
     commit((d) =>
-      updateCurrentPage(d, (p) => (p.id === sourcePage.id ? result.page : p)),
+      updateCurrentPageGraph(d, (p) => {
+        if (p.id !== sourcePage.id) return p;
+        const compById = new Map(result.page.components.map((c) => [c.id, c] as const));
+        const ptsByWire = new Map(result.page.wires.map((w) => [w.id, w.points] as const));
+        const nextComponents = p.components.map((c) => {
+          const rc = compById.get(c.id);
+          return rc ? { ...c, x: rc.x, y: rc.y, rotation: rc.rotation, mirrored: rc.mirrored } : c;
+        });
+        const nodeNewPos = new Map<string, { x: number; y: number }>();
+        for (const w of p.wires) {
+          const pts = ptsByWire.get(w.id);
+          if (!pts || pts.length < 2) continue;
+          nodeNewPos.set(w.a, { x: pts[0][0], y: pts[0][1] });
+          nodeNewPos.set(w.b, { x: pts[pts.length - 1][0], y: pts[pts.length - 1][1] });
+        }
+        const nextNodes = (p.nodes ?? []).map((n) => {
+          const np = nodeNewPos.get(n.id);
+          return np ? { ...n, x: np.x, y: np.y } : n;
+        });
+        const nextWires = p.wires.map((w) => {
+          const pts = ptsByWire.get(w.id);
+          return pts && pts.length >= 2
+            ? { ...w, bends: pts.slice(1, -1).map(([x, y]) => [x, y] as [number, number]) }
+            : w;
+        });
+        return { ...p, components: nextComponents, nodes: nextNodes, wires: nextWires };
+      }),
     );
     const scope = selection.size > 0 ? "selection" : "schematic";
     const wireText = result.formattedWireIds.length === 1 ? "wire" : "wires";
@@ -4814,25 +4720,40 @@ export function Editor() {
     let cleanedWireCount = 0;
     let cleanedProbeCount = 0;
     commit((d) =>
-      updateCurrentPage(d, (p) => {
-        const deletedComponents = p.components.filter((c) => sel.has(c.id));
+      updateCurrentPageGraph(d, (p) => {
+        // Pin-nodes of deleted components vanish, so edges touching them go too.
+        const deletedPinNodes = new Set<string>();
+        for (const c of p.components) {
+          if (sel.has(c.id)) for (const pin of c.pins ?? []) deletedPinNodes.add(pin);
+        }
         const nextComponents = p.components.filter((c) => !sel.has(c.id));
-        const keptWires = p.wires.filter((w) => !sel.has(w.id));
-        const nextWires = pruneWiresAfterComponentDelete(
-          keptWires,
-          deletedComponents,
-          nextComponents,
+        const afterSelWires = p.wires.filter((w) => !sel.has(w.id));
+        const keptWires = afterSelWires.filter(
+          (w) => !deletedPinNodes.has(w.a) && !deletedPinNodes.has(w.b),
         );
-        cleanedWireCount = Math.max(0, keptWires.length - nextWires.length);
+        cleanedWireCount = Math.max(0, afterSelWires.length - keptWires.length);
+        // GC standalone nodes no surviving wire references (keep named/label nodes).
+        const usedNodeIds = new Set<string>();
+        for (const w of keptWires) {
+          usedNodeIds.add(w.a);
+          usedNodeIds.add(w.b);
+        }
+        const nextNodes = (p.nodes ?? []).filter((n) => usedNodeIds.has(n.id) || Boolean(n.name));
+        // Live node ids = surviving standalone nodes ∪ surviving components' pins.
+        const liveNodeIds = new Set<string>(nextNodes.map((n) => n.id));
+        for (const w of keptWires) {
+          liveNodeIds.add(w.a);
+          liveNodeIds.add(w.b);
+        }
+        for (const c of nextComponents) for (const pin of c.pins ?? []) liveNodeIds.add(pin);
         const keptProbes = p.probes.filter((pr) => !sel.has(pr.id));
-        const nextProbes = keptProbes.filter((pr) =>
-          probeHasConnection(pr, nextComponents, nextWires),
-        );
+        const nextProbes = keptProbes.filter((pr) => pr.node == null || liveNodeIds.has(pr.node));
         cleanedProbeCount = Math.max(0, keptProbes.length - nextProbes.length);
         return {
           ...p,
           components: nextComponents,
-          wires: nextWires,
+          nodes: nextNodes,
+          wires: keptWires,
           probes: nextProbes,
         };
       }),
@@ -4852,7 +4773,7 @@ export function Editor() {
   function updateValue(id: string, value: string) {
     commit(
       (d) =>
-        updateCurrentPage(d, (p) => ({
+        updateCurrentPageGraph(d, (p) => ({
           ...p,
           components: p.components.map((c) => (c.id === id ? { ...c, value } : c)),
         })),
@@ -4865,7 +4786,7 @@ export function Editor() {
   // value resets to the new kind's default since the unit family changes.
   function changeComponentKind(id: string, kind: ComponentKind) {
     commit((d) =>
-      updateCurrentPage(d, (p) => ({
+      updateCurrentPageGraph(d, (p) => ({
         ...p,
         components: p.components.map((c) =>
           c.id === id
@@ -4885,7 +4806,7 @@ export function Editor() {
   function updateComponentLabel(id: string, label: string) {
     commit(
       (d) =>
-        updateCurrentPage(d, (p) => ({
+        updateCurrentPageGraph(d, (p) => ({
           ...p,
           components: p.components.map((c) =>
             c.id === id ? { ...c, label: label.trim() ? label : undefined } : c,
@@ -5240,7 +5161,7 @@ export function Editor() {
 
   function updateComponentModel(id: string, value: string) {
     commit((d) => {
-      const nextDoc = updateCurrentPage(d, (p) => ({
+      const nextDoc = updateCurrentPageGraph(d, (p) => ({
         ...p,
         components: p.components.map((c) => (c.id === id ? { ...c, value } : c)),
       }));
@@ -5278,69 +5199,18 @@ export function Editor() {
     const component = page.components.find((c) => c.id === id);
     if (!component) return;
     const normalizedValue = normalizeCoord(nextValue);
-    const dx = axis === "x" ? normalizedValue - component.x : 0;
-    const dy = axis === "y" ? normalizedValue - component.y : 0;
-    if (dx === 0 && dy === 0) return;
-    const {
-      initial,
-      initialWires,
-      movingWireIds,
-      movingWireAnchors,
-      movingWireProbeAttachments,
-      attachedWirePoints,
-      directContactPins,
-    } =
-      collectDragMotion(new Set([id]));
+    if (normalizedValue === component[axis]) return;
+    // Graph-native: moving a component just updates its coordinate. Its pins are
+    // nodes whose positions derive from the component, so incident wires stay
+    // attached (by node id) and rubber-band to follow — no geometry-based
+    // re-routing, no silent auto-connect to wires it happens to overlap.
     commit((d) =>
-      updateCurrentPage(d, (p) => {
-        const nextComponents = p.components.map((c) =>
-          c.id === id ? { ...c, ...normalizePoint({ x: c.x + dx, y: c.y + dy }) } : c,
-        );
-        const movedWires = applyMovedWires(
-          p.wires,
-          initialWires,
-          movingWireIds,
-          movingWireAnchors,
-          attachedWirePoints,
-          dx,
-          dy,
-          snapToGridRef.current,
-          { components: nextComponents, wires: p.wires, ignoreComponentIds: new Set([id]) },
-        );
-        let nextProbes = p.probes.map((pr) => {
-          const wireAttachment = movingWireProbeAttachments.get(pr.id);
-          if (wireAttachment) {
-            return {
-              ...pr,
-              ...moveProbeOnChangedWirePath(wireAttachment, initialWires, movedWires, dx, dy),
-            };
-          }
-          const init = initial.get(pr.id);
-          if (!init) return pr;
-          return { ...pr, ...normalizePoint({ x: init.x + dx, y: init.y + dy }) };
-        });
-        const contactWires = buildTranslatedPinContactWires(
-          directContactPins,
-          dx,
-          dy,
-          snapToGridRef.current,
-          { ...p, components: nextComponents, wires: movedWires },
-          new Set([id]),
-        );
-        const nextWires = appendConnectionWires(movedWires, contactWires);
-        nextProbes = moveUnmovedProbesWithChangedWirePaths(
-          nextProbes,
-          p.probes,
-          p.wires,
-          nextWires,
-        );
-        return {
-          ...p,
-          components: nextComponents,
-          probes: nextProbes,
-          wires: pruneUnanchoredWireJunctions(nextWires, nextComponents, nextProbes),
-        };
-      }),
+      updateCurrentPageGraph(d, (p) => ({
+        ...p,
+        components: p.components.map((c) =>
+          c.id === id ? { ...c, [axis]: normalizedValue } : c,
+        ),
+      })),
     );
   }
 
@@ -5349,7 +5219,7 @@ export function Editor() {
     if (!Number.isFinite(nextValue)) return;
     const normalizedValue = normalizeCoord(nextValue);
     commit((d) =>
-      updateCurrentPage(d, (p) => ({
+      updateCurrentPageGraph(d, (p) => ({
         ...p,
         probes: p.probes.map((probe) =>
           probe.id === id ? { ...probe, [axis]: normalizedValue } : probe,
@@ -5361,7 +5231,7 @@ export function Editor() {
   function updateParam(id: string, key: string, value: string) {
     commit(
       (d) =>
-        updateCurrentPage(d, (p) => ({
+        updateCurrentPageGraph(d, (p) => ({
           ...p,
           components: p.components.map((c) =>
             c.id === id
@@ -5375,7 +5245,7 @@ export function Editor() {
 
   function updateSubcircuitPinSides(id: string, pinSides: string) {
     commit((d) =>
-      updateCurrentPage(d, (p) => ({
+      updateCurrentPageGraph(d, (p) => ({
         ...p,
         components: p.components.map((c) => {
           if (c.id !== id || c.kind !== "SUBX") return c;
@@ -5407,7 +5277,7 @@ export function Editor() {
 
   function updateLabelPortSide(id: string, side: "L" | "R" | "T" | "B" | "") {
     commit((d) =>
-      updateCurrentPage(d, (p) => ({
+      updateCurrentPageGraph(d, (p) => ({
         ...p,
         components: p.components.map((c) => {
           if (c.id !== id || c.kind !== "LABEL") return c;
@@ -5422,7 +5292,7 @@ export function Editor() {
 
   function setLabelPort(id: string, enabled: boolean) {
     commit((d) =>
-      updateCurrentPage(d, (p) => {
+      updateCurrentPageGraph(d, (p) => {
         const existingOrders = p.components
           .filter((component) => component.id !== id && component.kind === "LABEL" && component.params?.port === "1")
           .map((component) => parsePortOrder(component.params?.portOrder) ?? 0);
@@ -5454,7 +5324,7 @@ export function Editor() {
     const preset = mosfetPresetById(mosfetPresets, presetId, presetKind);
     if (!preset) return;
     commit((d) => {
-      const nextDoc = updateCurrentPage(d, (p) => ({
+      const nextDoc = updateCurrentPageGraph(d, (p) => ({
         ...p,
         components: p.components.map((c) =>
           c.id === id ? applyMosfetPreset(c, preset) : c,
@@ -5518,7 +5388,7 @@ export function Editor() {
   function updateProbeLabel(id: string, label: string) {
     commit(
       (d) =>
-        updateCurrentPage(d, (p) => ({
+        updateCurrentPageGraph(d, (p) => ({
           ...p,
           probes: p.probes.map((probe) =>
             probe.id === id ? { ...probe, label: label.trim() ? label : undefined } : probe,
@@ -5530,7 +5400,7 @@ export function Editor() {
 
   function resetProbeScopeOffset(id: string) {
     commit((d) =>
-      updateCurrentPage(d, (p) => ({
+      updateCurrentPageGraph(d, (p) => ({
         ...p,
         probes: p.probes.map((probe) =>
           probe.id === id
@@ -5549,7 +5419,7 @@ export function Editor() {
     if (disconnectedProbeIds.size === 0) return;
     const ids = new Set(disconnectedProbeIds);
     commit((d) =>
-      updateCurrentPage(d, (p) => ({
+      updateCurrentPageGraph(d, (p) => ({
         ...p,
         probes: p.probes.filter((probe) => !ids.has(probe.id)),
       })),
@@ -5605,22 +5475,25 @@ export function Editor() {
     let insertedWireIds: string[] = [];
     let insertedProbeIds: string[] = [];
     commit((d) =>
-      updateCurrentPage(d, (p) => {
-        const wireInsert = appendConnectionWiresWithInsertedIds(p.wires, newWires);
-        insertedWireIds = wireInsert.insertedIds;
-        const insertedWires = wireInsert.wires.filter((w) => insertedWireIds.includes(w.id));
-        const insertedProbes = copiedProbesForInsertedTopology(
-          newProbes,
-          newComps,
-          insertedWires,
-          p.probes,
-        );
-        insertedProbeIds = insertedProbes.map((pr) => pr.id);
+      updateCurrentPageGraph(d, (p) => {
+        // Convert the pasted fragment to graph on its own (fresh pin-nodes +
+        // edges + standalone nodes), then merge. It does NOT auto-connect to the
+        // existing schematic — it's an offset copy; draw a wire to connect.
+        const fragment = legacyPageToGraph({
+          id: p.id,
+          name: p.name,
+          components: newComps,
+          wires: newWires,
+          probes: newProbes,
+        });
+        insertedWireIds = fragment.wires.map((w) => w.id);
+        insertedProbeIds = fragment.probes.map((pr) => pr.id);
         return {
           ...p,
-          components: [...p.components, ...newComps],
-          wires: wireInsert.wires,
-          probes: [...p.probes, ...insertedProbes],
+          components: [...p.components, ...fragment.components],
+          nodes: [...(p.nodes ?? []), ...(fragment.nodes ?? [])],
+          wires: [...p.wires, ...fragment.wires],
+          probes: [...p.probes, ...fragment.probes],
         };
       }),
     );
@@ -5658,22 +5531,22 @@ export function Editor() {
     let insertedWireIds: string[] = [];
     let insertedProbeIds: string[] = [];
     commit((d) =>
-      updateCurrentPage(d, (p) => {
-        const wireInsert = appendConnectionWiresWithInsertedIds(p.wires, newWires);
-        insertedWireIds = wireInsert.insertedIds;
-        const insertedWires = wireInsert.wires.filter((w) => insertedWireIds.includes(w.id));
-        const insertedProbes = copiedProbesForInsertedTopology(
-          newProbes,
-          newComps,
-          insertedWires,
-          p.probes,
-        );
-        insertedProbeIds = insertedProbes.map((pr) => pr.id);
+      updateCurrentPageGraph(d, (p) => {
+        const fragment = legacyPageToGraph({
+          id: p.id,
+          name: p.name,
+          components: newComps,
+          wires: newWires,
+          probes: newProbes,
+        });
+        insertedWireIds = fragment.wires.map((w) => w.id);
+        insertedProbeIds = fragment.probes.map((pr) => pr.id);
         return {
           ...p,
-          components: [...p.components, ...newComps],
-          wires: wireInsert.wires,
-          probes: [...p.probes, ...insertedProbes],
+          components: [...p.components, ...fragment.components],
+          nodes: [...(p.nodes ?? []), ...(fragment.nodes ?? [])],
+          wires: [...p.wires, ...fragment.wires],
+          probes: [...p.probes, ...fragment.probes],
         };
       }),
     );
@@ -5777,7 +5650,7 @@ export function Editor() {
 
   function setSelectedSourceForAcStimulus(id: string) {
     commit((d) =>
-      updateCurrentPage(d, (p) => ({
+      updateCurrentPageGraph(d, (p) => ({
         ...p,
         components: p.components.map((c) =>
           c.id === id ? { ...c, value: sourceValueWithAcStimulus(c.value) } : c,
@@ -5923,7 +5796,7 @@ export function Editor() {
   }
 
   function clearDoc() {
-    commit(() => emptyDoc);
+    commit(() => emptyDocGraph);
     resetInteractionState();
     clearSimulationState();
     setShowStartupEmptyCard(false);
@@ -5934,7 +5807,7 @@ export function Editor() {
   function loadDemo(id: string) {
     const demo = DEMOS.find((d) => d.id === id);
     if (!demo) return;
-    commit(() => demo.build());
+    commit(() => legacyDocToGraph(demo.build()));
     resetInteractionState();
     clearSimulationState();
     setShowStartupEmptyCard(false);

@@ -1,5 +1,4 @@
-import type { ComponentKind, CircuitComponent } from "./model";
-import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel";
+import type { ComponentKind, CircuitComponent, CircuitDoc } from "./model";
 
 export type ModelDeviceType = "D" | "NPN" | "PNP" | "NMOS" | "PMOS";
 

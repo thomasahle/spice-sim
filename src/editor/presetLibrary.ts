@@ -2,8 +2,7 @@
 // localStorage-backed preset library lives in its own file and the editor
 // doesn't carry the storage-key constants directly.
 
-import type { ComponentKind } from "./model.ts";
-import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel.ts";
+import type { CircuitDoc, ComponentKind } from "./model.ts";
 import {
   BUILTIN_MOSFET_MODELS,
   BUILTIN_MOSFET_PRESETS,
