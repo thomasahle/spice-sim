@@ -4836,37 +4836,12 @@ export function Editor() {
       setStatus("No components to arrange");
       return;
     }
-    // Auto-arrange repositions components + reroutes wires but preserves
-    // topology, so map the result back to the graph by id: component transforms,
-    // standalone-node (junction) positions from their wire endpoints, edge bends.
+    // Auto-arrange (ELK) relocates components and RE-ROUTES wires — it can change
+    // topology (new junctions, remapped stops), so mapping positions onto the old
+    // graph by id is unsound. The ELK result is a clean legacy page with
+    // connectivity preserved, so rebuild the graph from it wholesale.
     commit((d) =>
-      updateCurrentPageGraph(d, (p) => {
-        if (p.id !== sourcePage.id) return p;
-        const compById = new Map(result.page.components.map((c) => [c.id, c] as const));
-        const ptsByWire = new Map(result.page.wires.map((w) => [w.id, w.points] as const));
-        const nextComponents = p.components.map((c) => {
-          const rc = compById.get(c.id);
-          return rc ? { ...c, x: rc.x, y: rc.y, rotation: rc.rotation, mirrored: rc.mirrored } : c;
-        });
-        const nodeNewPos = new Map<string, { x: number; y: number }>();
-        for (const w of p.wires) {
-          const pts = ptsByWire.get(w.id);
-          if (!pts || pts.length < 2) continue;
-          nodeNewPos.set(w.a, { x: pts[0][0], y: pts[0][1] });
-          nodeNewPos.set(w.b, { x: pts[pts.length - 1][0], y: pts[pts.length - 1][1] });
-        }
-        const nextNodes = (p.nodes ?? []).map((n) => {
-          const np = nodeNewPos.get(n.id);
-          return np ? { ...n, x: np.x, y: np.y } : n;
-        });
-        const nextWires = p.wires.map((w) => {
-          const pts = ptsByWire.get(w.id);
-          return pts && pts.length >= 2
-            ? { ...w, bends: pts.slice(1, -1).map(([x, y]) => [x, y] as [number, number]) }
-            : w;
-        });
-        return { ...p, components: nextComponents, nodes: nextNodes, wires: nextWires };
-      }),
+      updateCurrentPageGraph(d, (p) => (p.id === sourcePage.id ? legacyPageToGraph(result.page) : p)),
     );
     const scope = selection.size > 0 ? "selection" : "schematic";
     const wireText = result.formattedWireIds.length === 1 ? "wire" : "wires";
