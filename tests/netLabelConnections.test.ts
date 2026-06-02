@@ -6,10 +6,13 @@ import {
   netLabelNearMisses,
   snapNetLabelDrag,
 } from "../src/editor/netLabelConnections.ts";
-import type { SchematicPage } from "../src/editor/model.ts";
+import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
+
+// These consumers read wire geometry from the graph (Model C); fixtures are real
+// graph pages built from the legacy polyline shape via the production converter.
 
 test("net label connection state includes labels placed on wire interiors", () => {
-  const page: SchematicPage = {
+  const page = legacyPageToGraph({
     id: "p",
     name: "main",
     components: [
@@ -17,13 +20,13 @@ test("net label connection state includes labels placed on wire interiors", () =
     ],
     wires: [{ id: "w", points: [[0, 0], [2, 0]] }],
     probes: [],
-  };
+  });
 
   assert.equal(connectedNetLabelIds(page).has("label"), true);
 });
 
 test("net label connection state leaves floating labels visually distinct", () => {
-  const page: SchematicPage = {
+  const page = legacyPageToGraph({
     id: "p",
     name: "main",
     components: [
@@ -31,13 +34,13 @@ test("net label connection state leaves floating labels visually distinct", () =
     ],
     wires: [{ id: "w", points: [[0, 0], [2, 0]] }],
     probes: [],
-  };
+  });
 
   assert.equal(connectedNetLabelIds(page).has("label"), false);
 });
 
 test("net label near-miss detection catches labels close to pins", () => {
-  const page: SchematicPage = {
+  const page = legacyPageToGraph({
     id: "p",
     name: "main",
     components: [
@@ -46,7 +49,7 @@ test("net label near-miss detection catches labels close to pins", () => {
     ],
     wires: [],
     probes: [],
-  };
+  });
 
   const [nearMiss] = netLabelNearMisses(page);
 
@@ -59,7 +62,7 @@ test("net label near-miss detection catches labels close to pins", () => {
 });
 
 test("connected net labels are not near misses", () => {
-  const page: SchematicPage = {
+  const page = legacyPageToGraph({
     id: "p",
     name: "main",
     components: [
@@ -68,13 +71,13 @@ test("connected net labels are not near misses", () => {
     ],
     wires: [],
     probes: [],
-  };
+  });
 
   assert.deepEqual(netLabelNearMisses(page), []);
 });
 
 test("net label drag snaps by pointer when the visible chip is dragged onto a pin", () => {
-  const page: SchematicPage = {
+  const page = legacyPageToGraph({
     id: "p",
     name: "main",
     components: [
@@ -83,7 +86,7 @@ test("net label drag snaps by pointer when the visible chip is dragged onto a pi
     ],
     wires: [],
     probes: [],
-  };
+  });
 
   const result = snapNetLabelDrag(
     page,
@@ -100,7 +103,7 @@ test("net label drag snaps by pointer when the visible chip is dragged onto a pi
 });
 
 test("net label drag still prefers direct anchor snaps", () => {
-  const page: SchematicPage = {
+  const page = legacyPageToGraph({
     id: "p",
     name: "main",
     components: [
@@ -109,7 +112,7 @@ test("net label drag still prefers direct anchor snaps", () => {
     ],
     wires: [],
     probes: [],
-  };
+  });
 
   const result = snapNetLabelDrag(
     page,

@@ -4,7 +4,13 @@ import {
   projectPointToSegment,
   samePoint,
 } from "./geometry.ts";
-import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
+import {
+  pinNodeIndex,
+  wirePolyline,
+  type PinNodeOwner,
+  type SchematicPage,
+  type Wire,
+} from "./graphModel.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
 import {
   nearestConnectionTarget,
@@ -78,10 +84,11 @@ export function snapNetLabelDrag(
 
 export function connectedNetLabelIds(page: SchematicPage): Set<string> {
   const ids = new Set<string>();
+  const idx = pinNodeIndex(page);
   for (const label of page.components) {
     if (label.kind !== "LABEL") continue;
     const anchor = pinWorldPos(label, 0);
-    if (pointTouchesAnyWire(anchor, page.wires)) {
+    if (pointTouchesAnyWire(anchor, page, idx)) {
       ids.add(label.id);
       continue;
     }
@@ -104,6 +111,7 @@ export function netLabelNearMisses(
   threshold = 0.35,
 ): NetLabelNearMiss[] {
   const connected = connectedNetLabelIds(page);
+  const idx = pinNodeIndex(page);
   const out: NetLabelNearMiss[] = [];
   for (const label of page.components) {
     if (label.kind !== "LABEL") continue;
@@ -133,9 +141,11 @@ export function netLabelNearMisses(
     }
 
     for (const wire of page.wires) {
-      for (let segmentIdx = 0; segmentIdx < wire.points.length - 1; segmentIdx++) {
-        const [x1, y1] = wire.points[segmentIdx];
-        const [x2, y2] = wire.points[segmentIdx + 1];
+      const points = wirePolyline(page, wire, idx);
+      if (!points) continue;
+      for (let segmentIdx = 0; segmentIdx < points.length - 1; segmentIdx++) {
+        const [x1, y1] = points[segmentIdx];
+        const [x2, y2] = points[segmentIdx + 1];
         const distance = pointToSegmentDist(anchor.x, anchor.y, x1, y1, x2, y2);
         if (distance <= 1e-6 || distance > threshold) continue;
         if (best && best.distance <= distance) continue;
@@ -156,15 +166,26 @@ export function netLabelNearMisses(
   return out;
 }
 
-function pointTouchesAnyWire(point: { x: number; y: number }, wires: Wire[]): boolean {
-  return wires.some((wire) => pointTouchesWirePath(point, wire));
+function pointTouchesAnyWire(
+  point: { x: number; y: number },
+  page: SchematicPage,
+  idx: Map<string, PinNodeOwner>,
+): boolean {
+  return page.wires.some((wire) => pointTouchesWirePath(point, page, wire, idx));
 }
 
-function pointTouchesWirePath(point: { x: number; y: number }, wire: Wire): boolean {
-  if (wire.points.some(([x, y]) => samePoint(point, { x, y }))) return true;
-  for (let i = 0; i < wire.points.length - 1; i++) {
-    const [x1, y1] = wire.points[i];
-    const [x2, y2] = wire.points[i + 1];
+function pointTouchesWirePath(
+  point: { x: number; y: number },
+  page: SchematicPage,
+  wire: Wire,
+  idx: Map<string, PinNodeOwner>,
+): boolean {
+  const points = wirePolyline(page, wire, idx);
+  if (!points) return false;
+  if (points.some(([x, y]) => samePoint(point, { x, y }))) return true;
+  for (let i = 0; i < points.length - 1; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[i + 1];
     if (pointOnSegment(point.x, point.y, x1, y1, x2, y2)) return true;
   }
   return false;

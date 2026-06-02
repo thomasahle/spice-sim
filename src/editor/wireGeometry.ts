@@ -4,7 +4,6 @@
 // Editor.tsx; pulled out so the editor file shrinks and these become unit-
 // testable in isolation.
 
-import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
 import {
   normalizeTuple,
   pointOnPolylineBody,
@@ -12,12 +11,18 @@ import {
   samePoint,
   sameTuple,
 } from "./geometry.ts";
-import { coordKey } from "./netlist.ts";
+import { nodePos, type SchematicPage } from "./graphModel.ts";
 import {
   insertWireEndpointJunctions,
   normalizeWireListPreservingJunctions,
   wirePathCoveredByWires,
+  type PolylineWire,
 } from "./wireTopology.ts";
+
+// Most helpers here are pure polyline geometry (`{id, points}` in/out); only
+// `buildWireJunctionDots` reads the graph page (for node degree). See
+// wireTopology.ts for the polyline-vs-graph wire split.
+type Wire = PolylineWire;
 
 export function addWireWithJunctions<T extends { wires: Wire[] }>(page: T, wire: Wire): T {
   const existingWires = normalizeWireList(page.wires);
@@ -95,52 +100,25 @@ export function pointTouchesWirePath(point: { x: number; y: number }, wire: Wire
   return false;
 }
 
+/** Junction dots: a solder dot at every graph node where three or more wire
+ *  edges meet (degree ≥ 3). Model C makes connectivity explicit, so a junction
+ *  is just a high-degree node — no geometric coincidence scan. This matches the
+ *  legacy coincidence-degree rule on clean docs: a node where two edges meet
+ *  (a bend-junction / pass-through) is degree 2 (no dot), an interior bend of a
+ *  single edge is not a node at all, and a real branch/T is degree ≥ 3.
+ *  Considers both standalone nodes (junctions / free ends) and component
+ *  pin-nodes (a pin where 3+ wires land is also a junction). */
 export function buildWireJunctionDots(page: SchematicPage): { x: number; y: number }[] {
-  const counts = new Map<string, { x: number; y: number; degree: number }>();
-  const add = (x: number, y: number, degree = 1) => {
-    const key = `${coordKey(x)},${coordKey(y)}`;
-    const current = counts.get(key);
-    if (current) current.degree += degree;
-    else counts.set(key, { x, y, degree });
-  };
-
+  const degree = new Map<string, number>();
   for (const wire of page.wires) {
-    for (let idx = 0; idx < wire.points.length - 1; idx++) {
-      const endpoints = [wire.points[idx], wire.points[idx + 1]];
-      for (const [x, y] of endpoints) {
-        add(x, y);
-      }
-    }
+    degree.set(wire.a, (degree.get(wire.a) ?? 0) + 1);
+    degree.set(wire.b, (degree.get(wire.b) ?? 0) + 1);
   }
-
-  for (const candidate of wireEndpointPositions(page.wires)) {
-    for (const wire of page.wires) {
-      for (let idx = 0; idx < wire.points.length - 1; idx++) {
-        const a = wire.points[idx];
-        const b = wire.points[idx + 1];
-        if (sameTuple(candidate, a) || sameTuple(candidate, b)) continue;
-        if (pointOnSegment(candidate[0], candidate[1], a[0], a[1], b[0], b[1])) {
-          add(candidate[0], candidate[1], 2);
-        }
-      }
-    }
+  const dots: { x: number; y: number }[] = [];
+  for (const [nodeId, deg] of degree) {
+    if (deg < 3) continue;
+    const pos = nodePos(page, nodeId);
+    if (pos) dots.push({ x: pos.x, y: pos.y });
   }
-
-  return [...counts.values()]
-    .filter((point) => point.degree >= 3)
-    .map(({ x, y }) => ({ x, y }));
-}
-
-export function wireEndpointPositions(wires: Wire[]): [number, number][] {
-  const seen = new Set<string>();
-  const out: [number, number][] = [];
-  for (const wire of wires) {
-    for (const [x, y] of wire.points) {
-      const key = `${coordKey(x)},${coordKey(y)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push([x, y]);
-    }
-  }
-  return out;
+  return dots;
 }

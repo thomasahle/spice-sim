@@ -5,7 +5,12 @@
 // shrinks and these become unit-testable in isolation.
 
 import type { CircuitComponent, Rotation } from "./model.ts";
-import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
+import {
+  pinNodeIndex,
+  wirePolyline,
+  type SchematicPage,
+  type Wire as GraphWire,
+} from "./graphModel.ts";
 import { getPinLayout, makeId, pinWorldPos, rotateNext, rotatePrev } from "./model.ts";
 import { normalizePoint, samePoint } from "./geometry.ts";
 import { coordKey } from "./netlist.ts";
@@ -20,6 +25,13 @@ import {
   wireConnectsMovedPins,
   wireEndpointMoveTargets,
 } from "./wireMotion.ts";
+import type { PolylineWire } from "./wireTopology.ts";
+
+// Helpers that SYNTHESIZE or rigidly transform coordinate polylines use the
+// polyline shape; helpers that READ the page's wire geometry (wireEndpointAnchors
+// / pointTouchesStationaryConnection / collectDirectContactPins) take the graph
+// page and resolve polylines via wirePolyline. (See wireTopology.ts.)
+type Wire = PolylineWire;
 
 export type PinMove = {
   from: { x: number; y: number };
@@ -167,10 +179,10 @@ export function collectTransformedPinMoves(
 }
 
 export function collectDirectContactPins(
-  components: CircuitComponent[],
-  wires: Wire[],
+  page: SchematicPage,
   selected: Set<string>,
 ): DirectContactPin[] {
+  const components = page.components;
   const stationaryPins = new Set<string>();
   for (const c of components) {
     if (selected.has(c.id)) continue;
@@ -179,7 +191,14 @@ export function collectDirectContactPins(
       stationaryPins.add(`${coordKey(p.x)},${coordKey(p.y)}`);
     }
   }
-  const stationaryWires = wires.filter((wire) => !selected.has(wire.id));
+  // Stationary wires projected to polylines (interior coincidence test below).
+  const idx = pinNodeIndex(page);
+  const stationaryWires = page.wires
+    .filter((wire) => !selected.has(wire.id))
+    .flatMap((wire) => {
+      const points = wirePolyline(page, wire, idx);
+      return points ? [{ id: wire.id, points }] : [];
+    });
   if (stationaryPins.size === 0 && stationaryWires.length === 0) return [];
 
   const seen = new Set<string>();
@@ -252,13 +271,15 @@ export function buildRotatedPinContactWires(
 }
 
 export function wireEndpointAnchors(
-  wire: Wire,
+  wire: GraphWire,
   sourcePage: SchematicPage,
   selected: Set<string>,
 ): WireEndpointAnchors {
-  if (wire.points.length < 2) return {};
-  const first = wire.points[0];
-  const last = wire.points[wire.points.length - 1];
+  const idx = pinNodeIndex(sourcePage);
+  const points = wirePolyline(sourcePage, wire, idx);
+  if (!points || points.length < 2) return {};
+  const first = points[0];
+  const last = points[points.length - 1];
   return {
     start: pointTouchesStationaryConnection(
       { x: first[0], y: first[1] },
@@ -288,9 +309,11 @@ export function pointTouchesStationaryConnection(
     }
   }
 
+  const idx = pinNodeIndex(sourcePage);
   for (const wire of sourcePage.wires) {
     if (wire.id === currentWireId || selected.has(wire.id)) continue;
-    if (pointTouchesWirePath(point, wire)) return true;
+    const points = wirePolyline(sourcePage, wire, idx);
+    if (points && pointTouchesWirePath(point, { id: wire.id, points })) return true;
   }
 
   return false;
@@ -304,9 +327,14 @@ export function buildTranslatedPinContactWires(
   routingPage: SchematicPage,
   movingComponentIds: Set<string>,
 ): Wire[] {
+  const idx = pinNodeIndex(routingPage);
+  const routingWires: Wire[] = routingPage.wires.flatMap((wire) => {
+    const points = wirePolyline(routingPage, wire, idx);
+    return points ? [{ id: wire.id, points }] : [];
+  });
   return translatedContactRoutesAvoiding(contacts, dx, dy, orthogonal, {
     components: routingPage.components,
-    wires: routingPage.wires,
+    wires: routingWires,
     ignoreComponentIds: movingComponentIds,
   }).map((points) => ({
     id: makeId("w"),

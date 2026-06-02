@@ -8,9 +8,12 @@ import {
 } from "./geometry.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
 import type { CircuitComponent, Probe } from "./model.ts";
-import type { LegacyWire as Wire } from "./legacyModel.ts";
 import { routeWireSegment } from "./placement.ts";
-import { dedupeWirePointsPreservingJunctions } from "./wireTopology.ts";
+import { dedupeWirePointsPreservingJunctions, type PolylineWire } from "./wireTopology.ts";
+
+// Pure polyline-wire motion helpers — they read/return coordinate polylines, so
+// they take the polyline shape, not the graph `Wire`. (See wireTopology.ts.)
+type Wire = PolylineWire;
 
 export interface PointMove {
   from: { x: number; y: number };

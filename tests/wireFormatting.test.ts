@@ -2,13 +2,57 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { componentVisualBoundsFor, wireIntersectsRect } from "../src/editor/geometry.ts";
-import type { SchematicPage } from "../src/editor/model.ts";
+import type { CircuitComponent, Probe } from "../src/editor/model.ts";
 import {
-  autoFormatWireAvoiding,
-  autoFormatWiresAvoiding,
-  autoFormatWireStops,
-  wireIdsForAutoFormat,
+  autoFormatPolylinePage,
+  autoFormatWireStopsForPoints,
+  wireIdsForAutoFormatPolyline,
+  type FormatPolylinePage,
 } from "../src/editor/wireFormatting.ts";
+
+// These exercise the polyline format core directly (the graph entry points just
+// project each edge to its polyline and delegate to this core; that graph→legacy
+// equivalence is covered by tests/editGeometryGraphParity.test.ts). Fixtures are
+// coordinate polylines, matching the projected view the core consumes in
+// production.
+interface SchematicPage {
+  id: string;
+  name: string;
+  description?: string;
+  components: CircuitComponent[];
+  wires: { id: string; points: [number, number][] }[];
+  probes: Probe[];
+}
+
+const formatView = (page: SchematicPage): FormatPolylinePage => ({
+  components: page.components,
+  probes: page.probes,
+  wires: page.wires,
+});
+
+// Single-wire adapters mirroring the previous public API on the polyline core.
+function autoFormatWireAvoiding(
+  wire: { id: string; points: [number, number][] },
+  page: SchematicPage,
+): { id: string; points: [number, number][] } {
+  const formatted = autoFormatPolylinePage(formatView(page), new Set([wire.id]));
+  return formatted.wires.find((w) => w.id === wire.id) ?? wire;
+}
+
+function autoFormatWiresAvoiding(page: SchematicPage, ids: Set<string>) {
+  return autoFormatPolylinePage(formatView(page), ids);
+}
+
+function autoFormatWireStops(
+  wire: { id: string; points: [number, number][] },
+  page: SchematicPage,
+): [number, number][] {
+  return autoFormatWireStopsForPoints(wire.id, wire.points, formatView(page));
+}
+
+function wireIdsForAutoFormat(page: SchematicPage, selection: Set<string>): Set<string> {
+  return wireIdsForAutoFormatPolyline(formatView(page), selection);
+}
 
 test("autoFormatWireAvoiding removes cosmetic elbow points", () => {
   const page: SchematicPage = {

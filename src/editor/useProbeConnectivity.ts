@@ -6,7 +6,7 @@ import { useMemo } from "react";
 import { coordKey } from "./netlist.ts";
 import { connectedNetLabelIds, netLabelNearMisses } from "./netLabelConnections.ts";
 import type { Probe } from "./model.ts";
-import type { LegacySchematicPage as SchematicPage } from "./legacyModel.ts";
+import type { SchematicPage } from "./model.ts";
 
 export interface ProbeConnectivity {
   disconnectedProbeIds: Set<string>;

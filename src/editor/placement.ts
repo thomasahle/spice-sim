@@ -1,6 +1,14 @@
 import type { CircuitComponent, ComponentKind, Probe, Rotation } from "./model.ts";
-import type { LegacyWire as Wire } from "./legacyModel.ts";
+import type { PolylineWire } from "./wireTopology.ts";
 import { defaultValue, getPinLayout, pinWorldPos, rotatePoint } from "./model.ts";
+
+// The placement router is pure geometry: it SYNTHESIZES coordinate polylines
+// (the auto-stub / contact / reroute wires) and READS other wires as polylines
+// for collision avoidance (WireRoutingContext.wires). Both are the polyline
+// shape `{id, points}`, never the graph `Wire` — the graph editor projects its
+// edges to polylines (wirePolyline) when feeding the context and maps the
+// synthesized routes back onto graph edges by id. (See wireTopology.ts.)
+type Wire = PolylineWire;
 import {
   componentBoundsFor,
   componentVisualBoundsFor,

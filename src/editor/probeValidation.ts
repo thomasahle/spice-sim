@@ -4,10 +4,16 @@
 // helpers with model/geometry dependencies only.
 
 import type { CircuitComponent, Probe } from "./model.ts";
-import type { LegacyWire as Wire } from "./legacyModel.ts";
+import type { PolylineWire } from "./wireTopology.ts";
 import { getPinLayout, makeId, pinWorldPos } from "./model.ts";
 import { normalizeCoord, pointOnSegment, samePoint } from "./geometry.ts";
 import type { FloatingPinDiagnostic } from "./netlist.ts";
+
+// Probe-connectivity geometry. The callers (paste / duplicate) pass the pasted
+// fragment's wires as coordinate polylines `{id, points}` (the clipboard is
+// still polyline-based this phase), so these helpers keep the polyline shape and
+// check coincidence geometrically. (See wireTopology.ts.)
+type Wire = PolylineWire;
 
 export function floatingPinSummary(pin: FloatingPinDiagnostic): string {
   return `${pin.refdes} ${pin.pinLabel ? `${pin.pinLabel} pin` : `pin ${pin.pinIdx + 1}`}`;

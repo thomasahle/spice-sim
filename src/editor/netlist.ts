@@ -14,11 +14,8 @@
 // when the user hasn't supplied a custom model name in the component value.
 
 import type { CircuitComponent, ComponentKind, CircuitDoc as GraphDoc } from "./model.ts";
-import type {
-  LegacyCircuitDoc as CircuitDoc,
-  LegacySchematicPage as LegacyPage,
-} from "./legacyModel.ts";
-import { graphToLegacyPage, legacyDocToGraph } from "./graphConvert.ts";
+import type { LegacyCircuitDoc as CircuitDoc } from "./legacyModel.ts";
+import { legacyDocToGraph } from "./graphConvert.ts";
 import {
   pinNodeIndex,
   wirePolyline,
@@ -965,11 +962,11 @@ function buildPageNetlist(page: SchematicPage, opts: PageOpts): PageBuild {
     });
   }
 
-  // Net-label near-miss detection is a geometric check over wire polylines, so
-  // run it on the legacy (polyline) projection of this graph page.
-  const legacyPage = graphToLegacyPage(page);
-  for (const nearMiss of netLabelNearMisses(legacyPage)) {
-    warnings.push(formatNetLabelNearMissWarning(nearMiss, refdes, legacyPage));
+  // Net-label near-miss detection is a geometric check over wire polylines;
+  // netLabelNearMisses reads the graph directly (resolving polylines via
+  // wirePolyline), so no legacy projection is needed.
+  for (const nearMiss of netLabelNearMisses(page)) {
+    warnings.push(formatNetLabelNearMissWarning(nearMiss, refdes, page));
   }
 
   for (const passThrough of dedupeWirePassThroughPins(wirePassThroughPins)) {
@@ -1078,7 +1075,7 @@ function layoutToken(value: string | undefined): string | null {
 function formatNetLabelNearMissWarning(
   nearMiss: NetLabelNearMiss,
   refdes: Map<string, string>,
-  page: LegacyPage,
+  page: SchematicPage,
 ): string {
   const distance = nearMiss.distance < 0.01 ? "<0.01" : nearMiss.distance.toFixed(2);
   const nearMissTarget = nearMiss.target;

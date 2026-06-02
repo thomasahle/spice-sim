@@ -9,9 +9,13 @@
 //   • splitWireAtSegment — remove one edge, SPLITTING the wire into the two
 //     fragments on either side.
 
-import type { LegacyWire as Wire } from "./legacyModel.ts";
 import { routeWireSegment } from "./placement.ts";
 import { compactWirePoints } from "./wireGeometry.ts";
+import type { PolylineWire } from "./wireTopology.ts";
+
+// Operates on a single coordinate polyline (`{id, points}`), so it uses the
+// polyline shape rather than the graph `Wire`. (See wireTopology.ts.)
+type Wire = PolylineWire;
 
 /** Remove `deleted` vertex indices from a wire, healing across each resulting
  *  gap with an orthogonal (or freeform) route so connectivity survives.

@@ -4,8 +4,12 @@ import type {
   ElkNode,
   ElkPort,
 } from "elkjs/lib/elk.bundled.js";
-import type { CircuitComponent } from "./model.ts";
-import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
+import type { CircuitComponent, Probe } from "./model.ts";
+import {
+  pinNodeIndex,
+  wirePolyline,
+  type SchematicPage as GraphPage,
+} from "./graphModel.ts";
 import {
   componentBoundsFor,
   boundsFromPoints,
@@ -14,7 +18,45 @@ import {
   samePoint,
 } from "./geometry.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
-import { autoFormatWiresAvoiding, autoFormatWireStops } from "./wireFormatting.ts";
+import {
+  autoFormatPolylinePage,
+  autoFormatWireStopsForPoints,
+} from "./wireFormatting.ts";
+
+// ELK auto-arrange runs on a POLYLINE view of the page: it relocates components
+// and re-routes wires geometrically. The graph (Model C) page is projected to
+// this polyline shape on entry (wirePolyline) and the result (component
+// positions + new wire polylines, keyed by id) is mapped back onto the graph by
+// applyArrangeGeometry — preserving topology (the Nodes-4→3 fusion bug fix). So
+// every internal helper here works on the local polyline `Wire`/`SchematicPage`.
+interface Wire {
+  id: string;
+  points: [number, number][];
+}
+interface SchematicPage {
+  id: string;
+  name: string;
+  description?: string;
+  components: CircuitComponent[];
+  wires: Wire[];
+  probes: Probe[];
+}
+
+/** Project a graph page to the polyline working shape used by ELK arrange. */
+function toPolylinePage(page: GraphPage): SchematicPage {
+  const idx = pinNodeIndex(page);
+  return {
+    id: page.id,
+    name: page.name,
+    description: page.description,
+    components: page.components,
+    wires: page.wires.flatMap((wire) => {
+      const points = wirePolyline(page, wire, idx);
+      return points ? [{ id: wire.id, points }] : [];
+    }),
+    probes: page.probes,
+  };
+}
 
 const ELK_SCALE = 48;
 
@@ -58,9 +100,10 @@ function getElk(): Promise<ELK> {
 }
 
 export async function autoArrangePage(
-  page: SchematicPage,
+  graphPage: GraphPage,
   selection: Set<string> = new Set(),
 ): Promise<AutoArrangeResult> {
+  const page = toPolylinePage(graphPage);
   const selectedComponents = selection.size > 0
     ? page.components.filter((component) => selection.has(component.id) && component.kind !== "NOTE")
     : page.components.filter((component) => component.kind !== "NOTE");
@@ -88,7 +131,8 @@ export async function autoArrangePage(
   const movedPage = { ...page, components: movedComponents };
   const touchedWires = wireIdsTouchingComponents(page, moveIds, selection);
   const retargetedPage = retargetMovedWiresForArrange(page, movedPage, moveIds, touchedWires);
-  const formattedPage = autoFormatWiresAvoiding(retargetedPage, touchedWires);
+  const formatted = autoFormatPolylinePage(retargetedPage, touchedWires);
+  const formattedPage: SchematicPage = { ...retargetedPage, wires: formatted.wires };
 
   return {
     page: formattedPage,
@@ -551,7 +595,7 @@ function retargetMovedWiresForArrange(
   const wires = after.wires.map((wire) => {
     if (!touchedWireIds.has(wire.id)) return wire;
     const beforeWire = beforeWireById.get(wire.id) ?? wire;
-    const stops = autoFormatWireStops(beforeWire, before);
+    const stops = autoFormatWireStopsForPoints(beforeWire.id, beforeWire.points, before);
     const points = compactWirePoints(stops.map((point) =>
       movedPinPoints.get(pointKey(point[0], point[1])) ?? point,
     ));

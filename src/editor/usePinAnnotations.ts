@@ -7,7 +7,6 @@
 import { useMemo, useRef } from "react";
 import { buildNetlistGraph } from "./netlist.ts";
 import { buildWireJunctionDots } from "./wireGeometry.ts";
-import { graphToLegacyPage } from "./graphConvert.ts";
 import { canvasValueLabel } from "./labelFormatting.ts";
 import { netLabelLayouts, valueLabelBounds, valueLabelOffsets } from "./labelPlacement.ts";
 import type { CircuitDoc as GraphDoc, SchematicPage } from "./model.ts";
@@ -57,12 +56,9 @@ export function usePinAnnotations({
   // The layout derivations below are cheap single-page traversals, so they run
   // live during a drag — junction dots track the moving wire, value labels and
   // net-label placement reflow as the component moves, instead of snapping into
-  // place only on drop.
-  // TODO: wireGeometry.buildWireJunctionDots still consumes the legacy polyline
-  // page. Bridge through graphToLegacyPage for now — behavior-identical because
-  // graphToLegacyPage(graphPage) reconstructs exactly the old legacy page. Drop
-  // the bridge once wireGeometry is converted to the graph model.
-  const wireJunctionDots = useMemo(() => buildWireJunctionDots(graphToLegacyPage(page)), [page]);
+  // place only on drop. buildWireJunctionDots reads the graph directly now (a
+  // junction is any node of degree ≥ 3), so no legacy projection is needed.
+  const wireJunctionDots = useMemo(() => buildWireJunctionDots(page), [page]);
   const componentValueLabelOffsets = useMemo(
     () => valueLabelOffsets(page, (component) => canvasValueLabel(component.kind, component.value) || null),
     [page],

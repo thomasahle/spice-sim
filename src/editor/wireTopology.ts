@@ -1,5 +1,15 @@
 import { normalizeTuple, pointOnSegment, sameTuple } from "./geometry.ts";
-import type { LegacyWire as Wire } from "./legacyModel.ts";
+
+// Pure polyline-wire helpers: these operate purely on coordinate polylines
+// (`{id, points}`), never resolving graph node positions. The Model-C graph
+// editor feeds them projected polylines (wirePolyline) and maps results back
+// onto edge bends by id. The shape is intentionally NOT the graph `Wire` (which
+// is `{id, a, b, bends}`); a local polyline type keeps the geometry I/O.
+export interface PolylineWire {
+  id: string;
+  points: [number, number][];
+}
+type Wire = PolylineWire;
 
 export function insertWireEndpointJunctions(
   wires: Wire[],

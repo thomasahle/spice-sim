@@ -1,11 +1,15 @@
 import { getPinLayout, pinWorldPos } from "./model.ts";
 import { pointOnSegment } from "./geometry.ts";
 import type { CircuitComponent, Probe } from "./model.ts";
-import type { LegacyWire as Wire } from "./legacyModel.ts";
 import {
   dedupeWirePointsPreservingJunctions,
   normalizeWireListPreservingJunctions,
+  type PolylineWire,
 } from "./wireTopology.ts";
+
+// Pure polyline-wire list cleanup — reads/returns coordinate polylines, so it
+// uses the polyline shape, not the graph `Wire`. (See wireTopology.ts.)
+type Wire = PolylineWire;
 
 export function pruneWiresAfterComponentDelete(
   wires: Wire[],

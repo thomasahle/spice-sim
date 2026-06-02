@@ -6,7 +6,12 @@ import {
   projectPointToSegment,
 } from "./geometry.ts";
 import type { CircuitComponent, Probe } from "./model.ts";
-import type { LegacySchematicPage as SchematicPage, LegacyWire as Wire } from "./legacyModel.ts";
+import {
+  pinNodeIndex,
+  wirePolyline,
+  type SchematicPage,
+  type Wire,
+} from "./graphModel.ts";
 import { getPinLayout, pinWorldPos } from "./model.ts";
 
 export interface ConnectionTarget {
@@ -49,6 +54,7 @@ export function nearestConnectionTarget(
   const pinRadius = opts.pinRadius ?? radius;
   const wirePointRadius = opts.wirePointRadius ?? radius;
   const segmentRadius = opts.segmentRadius ?? radius;
+  const idx0 = pinNodeIndex(page);
   for (const c of page.components) {
     const layout = getPinLayout(c);
     for (let i = 0; i < layout.length; i++) {
@@ -62,8 +68,10 @@ export function nearestConnectionTarget(
   }
   for (const w of page.wires) {
     if (w.id === opts.excludeWireId) continue;
-    for (let idx = 0; idx < w.points.length; idx++) {
-      const p = w.points[idx];
+    const points = wirePolyline(page, w, idx0);
+    if (!points) continue;
+    for (let idx = 0; idx < points.length; idx++) {
+      const p = points[idx];
       const d = Math.hypot(p[0] - gx, p[1] - gy);
       if (d <= wirePointRadius && d < bestD) {
         bestD = d;
@@ -71,9 +79,9 @@ export function nearestConnectionTarget(
       }
     }
     if (!opts.includeSegments) continue;
-    for (let idx = 0; idx < w.points.length - 1; idx++) {
-      const [x1, y1] = w.points[idx];
-      const [x2, y2] = w.points[idx + 1];
+    for (let idx = 0; idx < points.length - 1; idx++) {
+      const [x1, y1] = points[idx];
+      const [x2, y2] = points[idx + 1];
       const projected = projectPointToSegment(gx, gy, x1, y1, x2, y2);
       if (!projected) continue;
       const d = Math.hypot(projected.x - gx, projected.y - gy);
@@ -124,10 +132,13 @@ export function hitWireVertexAt(
   gy: number,
   radius = 0.45,
 ): { wireId: string; idx: number } | null {
+  const idx0 = pinNodeIndex(page);
   for (let i = page.wires.length - 1; i >= 0; i--) {
     const w = page.wires[i];
-    for (let j = 0; j < w.points.length; j++) {
-      const [px, py] = w.points[j];
+    const points = wirePolyline(page, w, idx0);
+    if (!points) continue;
+    for (let j = 0; j < points.length; j++) {
+      const [px, py] = points[j];
       if (Math.hypot(px - gx, py - gy) < radius) {
         return { wireId: w.id, idx: j };
       }
@@ -193,11 +204,14 @@ export function hitWireAt(
   gy: number,
   radius = 0.3,
 ): Wire | null {
+  const idx0 = pinNodeIndex(page);
   for (let i = page.wires.length - 1; i >= 0; i--) {
     const w = page.wires[i];
-    for (let j = 0; j < w.points.length - 1; j++) {
-      const [x1, y1] = w.points[j];
-      const [x2, y2] = w.points[j + 1];
+    const points = wirePolyline(page, w, idx0);
+    if (!points) continue;
+    for (let j = 0; j < points.length - 1; j++) {
+      const [x1, y1] = points[j];
+      const [x2, y2] = points[j + 1];
       if (pointToSegmentDist(gx, gy, x1, y1, x2, y2) < radius) return w;
     }
   }
@@ -210,17 +224,20 @@ export function hitWireBodyAt(
   gy: number,
   radius = 0.3,
 ): Wire | null {
+  const idx0 = pinNodeIndex(page);
   for (let i = page.wires.length - 1; i >= 0; i--) {
     const w = page.wires[i];
-    for (let j = 0; j < w.points.length - 1; j++) {
-      const [x1, y1] = w.points[j];
-      const [x2, y2] = w.points[j + 1];
+    const points = wirePolyline(page, w, idx0);
+    if (!points) continue;
+    for (let j = 0; j < points.length - 1; j++) {
+      const [x1, y1] = points[j];
+      const [x2, y2] = points[j + 1];
       const projected = projectPointToSegment(gx, gy, x1, y1, x2, y2);
       if (!projected) continue;
       const d = Math.hypot(projected.x - gx, projected.y - gy);
       if (d >= radius) continue;
-      const first = w.points[0];
-      const last = w.points[w.points.length - 1];
+      const first = points[0];
+      const last = points[points.length - 1];
       if (
         Math.hypot(projected.x - first[0], projected.y - first[1]) < 1e-6 ||
         Math.hypot(projected.x - last[0], projected.y - last[1]) < 1e-6

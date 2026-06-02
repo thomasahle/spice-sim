@@ -7,9 +7,17 @@ import {
   selectableHitAt,
   wireVertexDragHitAt,
 } from "../src/editor/canvasHitTest.ts";
-import type { SchematicPage } from "../src/editor/model.ts";
+import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
+import type { LegacySchematicPage } from "../src/editor/legacyModel.ts";
 
-const page: SchematicPage = {
+// canvasHitTest reads wire geometry from the graph (Model C). Fixtures are real
+// graph pages produced from the legacy polyline shape by the production
+// converter, so wirePolyline resolves each edge to the polyline the asserts
+// expect. (A 2-point wire whose ends are pins keeps its id; an interior-bend
+// polyline keeps node order so vertex indices match the old polyline indices.)
+const graphPage = (legacy: LegacySchematicPage) => legacyPageToGraph(legacy);
+
+const page = graphPage({
   id: "p",
   name: "main",
   components: [
@@ -26,7 +34,7 @@ const page: SchematicPage = {
     },
   ],
   probes: [{ id: "p1", x: -2, y: 0, color: "#0a84ff" }],
-};
+});
 
 test("hit testing uses raw pointer coordinates rather than rounded grid positions", () => {
   assert.equal(selectableHitAt(page, 0, 0.45)?.item.id, "r1");
@@ -39,11 +47,16 @@ test("component hit boxes track the visible glyph instead of a broad generic rec
 });
 
 test("wire bodies win over loose component edge padding", () => {
-  const edgeOverlapPage: SchematicPage = {
-    ...page,
+  const edgeOverlapPage = graphPage({
+    id: "p",
+    name: "main",
+    components: [
+      { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" },
+      { id: "r2", kind: "R", x: 0, y: 3, rotation: 0, value: "1k" },
+    ],
     wires: [{ id: "edge-wire", points: [[-1.5, 0.78], [1.5, 0.78]] }],
     probes: [],
-  };
+  });
 
   assert.deepEqual(selectableHitAt(edgeOverlapPage, 0, 0.78), {
     kind: "wire",
@@ -76,7 +89,7 @@ test("wire vertex drags do not steal direct probe clicks", () => {
 });
 
 test("hidden wire vertices do not steal component pin clicks", () => {
-  const pageWithoutProbe: SchematicPage = { ...page, probes: [] };
+  const pageWithoutProbe = { ...page, probes: [] };
   assert.deepEqual(selectableHitAt(pageWithoutProbe, -2, 0), {
     kind: "component",
     item: page.components[0],
@@ -126,8 +139,13 @@ test("connection snapping can ignore wire bodies while still finding terminals",
 });
 
 test("connection snapping does not snap a projected point off its wire segment", () => {
-  const halfGridWirePage: SchematicPage = {
-    ...page,
+  const halfGridWirePage = graphPage({
+    id: "p",
+    name: "main",
+    components: [
+      { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" },
+      { id: "r2", kind: "R", x: 0, y: 3, rotation: 0, value: "1k" },
+    ],
     wires: [
       {
         id: "half-grid-wire",
@@ -137,7 +155,8 @@ test("connection snapping does not snap a projected point off its wire segment",
         ],
       },
     ],
-  };
+    probes: [],
+  });
 
   assert.deepEqual(
     nearestConnectionTarget(halfGridWirePage, 0.1, 0.49, 1, {
@@ -149,8 +168,13 @@ test("connection snapping does not snap a projected point off its wire segment",
 });
 
 test("connection snapping keeps vertical off-grid wire targets on the wire", () => {
-  const verticalWirePage: SchematicPage = {
-    ...page,
+  const verticalWirePage = graphPage({
+    id: "p",
+    name: "main",
+    components: [
+      { id: "r1", kind: "R", x: 0, y: 0, rotation: 0, value: "1k" },
+      { id: "r2", kind: "R", x: 0, y: 3, rotation: 0, value: "1k" },
+    ],
     wires: [
       {
         id: "vertical-wire",
@@ -160,7 +184,8 @@ test("connection snapping keeps vertical off-grid wire targets on the wire", () 
         ],
       },
     ],
-  };
+    probes: [],
+  });
 
   assert.deepEqual(
     nearestConnectionTarget(verticalWirePage, 0.49, 0.2, 1, {

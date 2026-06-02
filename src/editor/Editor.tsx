@@ -235,7 +235,7 @@ import {
   legacyDocToGraph,
   graphDocToLegacy,
 } from "./graphConvert";
-import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline } from "./graphModel";
+import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline, type Wire as GraphWire } from "./graphModel";
 import { applyArrangeGeometry, deleteNode as graphDeleteNode, splitEdgeAtPoint, splitEdgeAtSegment } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
@@ -315,7 +315,7 @@ import {
   selectionClickStartsDrag,
   shouldSuppressOriginalConnectionSnap,
 } from "./canvasInteraction";
-import { cutWireSegmentBetweenPoints } from "./wireTopology";
+import { cutWireSegmentBetweenPoints, type PolylineWire } from "./wireTopology";
 
 let netlistImportModulePromise: Promise<typeof import("./netlistImport")> | null = null;
 function loadNetlistImportModule() {
@@ -2795,7 +2795,7 @@ export function Editor() {
     radius = 0.7,
     opts: ConnectionSnapOptions = {},
   ): ConnectionTarget | null {
-    return nearestConnectionTarget(page, gx, gy, radius, { ...opts, snapPoint });
+    return nearestConnectionTarget(graphPage, gx, gy, radius, { ...opts, snapPoint });
   }
 
   function hitWireVertex(
@@ -2804,7 +2804,7 @@ export function Editor() {
     radius = 0.45,
     opts: { handleVisible?: boolean } = {},
   ): { wireId: string; idx: number } | null {
-    return wireVertexDragHitAt(page, gx, gy, radius, opts);
+    return wireVertexDragHitAt(graphPage, gx, gy, radius, opts);
   }
 
   // Turn a snapped drop point into a placement draft, orienting a 2-pin part
@@ -2820,9 +2820,10 @@ export function Editor() {
     if (wireId === undefined || segmentIdx === undefined) {
       return { start: drop, end: drop };
     }
-    const wire = page.wires.find((w) => w.id === wireId);
-    const a = wire?.points[segmentIdx];
-    const b = wire?.points[segmentIdx + 1];
+    const wire = graphPage.wires.find((w) => w.id === wireId);
+    const poly = wire ? wirePolyline(graphPage, wire) : null;
+    const a = poly?.[segmentIdx];
+    const b = poly?.[segmentIdx + 1];
     const segment = a && b ? { a: { x: a[0], y: a[1] }, b: { x: b[0], y: b[1] } } : null;
     return placementDropOnWire(kind, drop, segment);
   }
@@ -2841,8 +2842,8 @@ export function Editor() {
     gx: number,
     gy: number,
     targetWireId: string | null = null,
-  ): CircuitComponent | Wire | Probe | null {
-    return selectableItemAt(page, gx, gy, targetWireId);
+  ): CircuitComponent | GraphWire | Probe | null {
+    return selectableItemAt(graphPage, gx, gy, targetWireId);
   }
 
   function scopeProbeIdFromTarget(target: EventTarget | null): string | null {
@@ -2927,7 +2928,7 @@ export function Editor() {
 
   function clickEditTargetForSelectionClick(
     target: EventTarget | null,
-    hit: CircuitComponent | Wire | Probe | null,
+    hit: CircuitComponent | GraphWire | Probe | null,
     targetComponent: CircuitComponent | null,
     targetProbe: Probe | null,
     additive: boolean,
@@ -2955,7 +2956,7 @@ export function Editor() {
     return target.closest("[data-subx-resize-id]")?.getAttribute("data-subx-resize-id") ?? null;
   }
 
-  function hitKindForItem(item: CircuitComponent | Wire | Probe | null): "component" | "wire" | "probe" | null {
+  function hitKindForItem(item: CircuitComponent | GraphWire | Probe | null): "component" | "wire" | "probe" | null {
     if (!item) return null;
     if (page.probes.some((probe) => probe.id === item.id)) return "probe";
     if (page.wires.some((wire) => wire.id === item.id)) return "wire";
@@ -2964,7 +2965,7 @@ export function Editor() {
 
   function collectDragWires(
     selected: Set<string>,
-    sourcePage: SchematicPage = page,
+    sourcePage: GraphPage = graphPage,
   ): {
     initialWires: Map<string, [number, number][]>;
     movingWireIds: Set<string>;
@@ -2976,6 +2977,7 @@ export function Editor() {
     const attachedWirePoints = new Map<string, Set<number>>();
     const initialWires = new Map<string, [number, number][]>();
     const selectedPinPositions: { x: number; y: number }[] = [];
+    const idx = pinNodeIndex(sourcePage);
 
     for (const c of sourcePage.components) {
       if (!selected.has(c.id)) continue;
@@ -2985,25 +2987,27 @@ export function Editor() {
     }
 
     for (const w of sourcePage.wires) {
+      const wPoints = wirePolyline(sourcePage, w, idx);
+      if (!wPoints) continue;
       if (selected.has(w.id)) {
         movingWireIds.add(w.id);
         movingWireAnchors.set(w.id, wireEndpointAnchors(w, sourcePage, selected));
-        initialWires.set(w.id, w.points.map(([x, y]) => [x, y]));
+        initialWires.set(w.id, wPoints.map(([x, y]) => [x, y]));
         continue;
       }
-      w.points.forEach(([x, y], idx) => {
+      wPoints.forEach(([x, y], pi) => {
         const point = { x, y };
         if (
           selectedPinPositions.some((p) => Math.hypot(p.x - x, p.y - y) < 0.08) &&
-          !pointOnPolylineBody(point, w.points)
+          !pointOnPolylineBody(point, wPoints)
         ) {
           let points = attachedWirePoints.get(w.id);
           if (!points) {
             points = new Set<number>();
             attachedWirePoints.set(w.id, points);
-            initialWires.set(w.id, w.points.map(([px, py]) => [px, py]));
+            initialWires.set(w.id, wPoints.map(([px, py]) => [px, py]));
           }
-          points.add(idx);
+          points.add(pi);
         }
       });
     }
@@ -3013,7 +3017,7 @@ export function Editor() {
 
   function collectDragMotion(
     selected: Set<string>,
-    sourcePage: SchematicPage = page,
+    sourcePage: GraphPage = graphPage,
   ): {
     initial: Map<string, { x: number; y: number }>;
     initialWires: Map<string, [number, number][]>;
@@ -3024,10 +3028,11 @@ export function Editor() {
     directContactPins: DirectContactPin[];
   } {
     const wireMotion = collectDragWires(selected, sourcePage);
-    const directContactPins = collectDirectContactPins(sourcePage.components, sourcePage.wires, selected);
+    const directContactPins = collectDirectContactPins(sourcePage, selected);
+    const sourcePolylines = projectWirePolylines(sourcePage);
     const movingWireProbeAttachments = collectMovingWireProbeAttachments(
       sourcePage.probes,
-      sourcePage.wires,
+      sourcePolylines,
       wireMotion.movingWireIds,
       selected,
     );
@@ -3052,11 +3057,11 @@ export function Editor() {
           pr,
           selectedPinPositions,
           sourcePage.components,
-          sourcePage.wires,
+          sourcePolylines,
           selected,
         ) ||
-        probeTouchesTranslatedAttachedWire(pr, wireMotion.attachedWirePoints, sourcePage) ||
-        (probeTouchesMovingWire(pr, wireMotion.movingWireIds, sourcePage) && !movingWireAttachment)
+        probeTouchesTranslatedAttachedWire(pr, wireMotion.attachedWirePoints, sourcePolylines) ||
+        (probeTouchesMovingWire(pr, wireMotion.movingWireIds, sourcePolylines) && !movingWireAttachment)
       ) {
         initial.set(pr.id, { x: pr.x, y: pr.y });
       }
@@ -3065,12 +3070,22 @@ export function Editor() {
     return { initial, directContactPins, movingWireProbeAttachments, ...wireMotion };
   }
 
+  // Project a graph page's edges to coordinate polylines (`{id, points}`) for the
+  // polyline-shaped wire-motion helpers below.
+  function projectWirePolylines(sourcePage: GraphPage): PolylineWire[] {
+    const idx = pinNodeIndex(sourcePage);
+    return sourcePage.wires.flatMap((w) => {
+      const points = wirePolyline(sourcePage, w, idx);
+      return points ? [{ id: w.id, points }] : [];
+    });
+  }
+
   function probeTouchesMovingWire(
     probe: Probe,
     movingWireIds: Set<string>,
-    sourcePage: SchematicPage = page,
+    wires: PolylineWire[],
   ): boolean {
-    for (const w of sourcePage.wires) {
+    for (const w of wires) {
       if (!movingWireIds.has(w.id)) continue;
       for (let i = 0; i < w.points.length - 1; i++) {
         const [x1, y1] = w.points[i];
@@ -3085,9 +3100,9 @@ export function Editor() {
   function probeTouchesTranslatedAttachedWire(
     probe: Probe,
     attachedWirePoints: Map<string, Set<number>>,
-    sourcePage: SchematicPage = page,
+    wires: PolylineWire[],
   ): boolean {
-    for (const w of sourcePage.wires) {
+    for (const w of wires) {
       const attached = attachedWirePoints.get(w.id);
       if (!attached || !wireMovesAsRigidShape(w.points, attached)) continue;
       for (let i = 0; i < w.points.length - 1; i++) {
@@ -3102,7 +3117,7 @@ export function Editor() {
 
   function collectMovingWireProbeAttachments(
     probes: Probe[],
-    wires: Wire[],
+    wires: PolylineWire[],
     movingWireIds: Set<string>,
     selected: Set<string>,
   ): Map<string, { wireId: string; point: { x: number; y: number } }> {
@@ -3195,7 +3210,7 @@ export function Editor() {
     const initial = activeDrag.initial.get(label.id);
     if (!initial) return { delta: { x: dx, y: dy }, target: null };
 
-    const snap = snapNetLabelDrag(page, label.id, initial, activeDrag.startWorld, { x: dx, y: dy }, 0.7, {
+    const snap = snapNetLabelDrag(graphPage, label.id, initial, activeDrag.startWorld, { x: dx, y: dy }, 0.7, {
       ...WIRING_SNAP,
       pinRadius: 0.8,
       wirePointRadius: 0.8,
@@ -3675,14 +3690,15 @@ export function Editor() {
       if (intent === "wire-vertex-drag") {
         const vhit = hitWireVertex(raw.x, raw.y, 0.45, { handleVisible: true });
         if (!vhit) return;
-        const w = page.wires.find((ww) => ww.id === vhit.wireId);
-        if (w) {
+        const w = graphPage.wires.find((ww) => ww.id === vhit.wireId);
+        const poly = w ? wirePolyline(graphPage, w) : null;
+        if (w && poly) {
           setWireDrag({
             wireId: w.id,
             pointIdx: vhit.idx,
             startWorld: raw,
-            initialPoints: w.points.map(([x, y]) => [x, y]),
-            initialProbes: probesAtPoint(w.points[vhit.idx]),
+            initialPoints: poly.map(([x, y]) => [x, y]),
+            initialProbes: probesAtPoint(poly[vhit.idx]),
             committed: false,
           });
           return;
@@ -4362,7 +4378,7 @@ export function Editor() {
     const items: ContextMenuEntry[] = [];
     if (working.size > 0) {
       const hasSelectedComponents = page.components.some((c) => working.has(c.id));
-      const autoFormatCount = wireIdsForAutoFormat(page, working).size;
+      const autoFormatCount = wireIdsForAutoFormat(graphPage, working).size;
       if (hasSelectedComponents) {
         items.push({ label: "Rotate CW", shortcut: "⇧R", onSelect: () => rotateSelected() });
         items.push({ label: "Rotate CCW", onSelect: () => rotateSelectedCcw() });
@@ -4802,15 +4818,15 @@ export function Editor() {
   }
 
   function autoFormatWiring(selection: Set<string> = selectedIds) {
-    // Auto-format only reshapes wire paths (topology unchanged), so run it on a
-    // legacy view and map the reformatted polylines back to graph edge bends by
-    // id — endpoints (nodes) and connectivity are untouched.
+    // Auto-format only reshapes wire paths (topology unchanged): it reads each
+    // edge's polyline from the graph and returns reformatted polylines keyed by
+    // id, which we map back onto edge `bends` — endpoints (nodes) and
+    // connectivity are untouched.
     commit((d) =>
       updateCurrentPageGraph(d, (p) => {
-        const legacy = graphToLegacyPage(p);
-        const targetWireIds = wireIdsForAutoFormat(legacy, selection);
+        const targetWireIds = wireIdsForAutoFormat(p, selection);
         if (targetWireIds.size === 0) return p;
-        const formatted = autoFormatWiresAvoiding(legacy, targetWireIds);
+        const formatted = autoFormatWiresAvoiding(p, targetWireIds);
         const pointsById = new Map(formatted.wires.map((w) => [w.id, w.points] as const));
         return {
           ...p,
@@ -4823,12 +4839,12 @@ export function Editor() {
         };
       }),
     );
-    const count = wireIdsForAutoFormat(page, selection).size;
+    const count = wireIdsForAutoFormat(graphPage, selection).size;
     setStatus(count > 0 ? `Auto-formatted ${count} wire${count === 1 ? "" : "s"}` : "No wires to format");
   }
 
   async function autoArrangeSchematic(selection: Set<string> = selectedIds) {
-    const sourcePage = currentPage(docRef.current);
+    const sourcePage = currentPageGraph(graphDocRef.current);
     const { autoArrangePage } = await loadAutoLayoutModule();
     const result = await autoArrangePage(sourcePage, selection);
     if (result.movedComponentIds.length === 0) {
@@ -5571,9 +5587,51 @@ export function Editor() {
     setStatus(`Removed ${ids.size} disconnected probe${ids.size === 1 ? "" : "s"}`);
   }
 
+  // Build the (legacy polyline) clipboard payload from a graph-page selection:
+  // collectSelectedTopology returns graph wires (edges); project each to its
+  // polyline so the still-polyline clipboard / re-import path (legacyPageToGraph)
+  // is unchanged. Connectivity of dragged-in probes is the existing geometric
+  // rule, evaluated on the graph via collectSelectedTopology.
+  function clipboardFromGraphSelection(
+    gp: GraphPage,
+    selection: Set<string>,
+  ): SchematicClipboard {
+    const { components, wires, probes } = collectSelectedTopology(gp, selection);
+    const idx = pinNodeIndex(gp);
+    return {
+      components: components.map((c) => ({
+        id: c.id,
+        kind: c.kind,
+        x: c.x,
+        y: c.y,
+        rotation: c.rotation,
+        mirrored: c.mirrored,
+        value: c.value,
+        label: c.label,
+        params: c.params,
+      })),
+      wires: wires.flatMap((w) => {
+        const poly = wirePolyline(gp, w, idx);
+        return poly && poly.length >= 2 ? [{ id: w.id, points: poly }] : [];
+      }),
+      probes: probes.map((pr) => {
+        const pos = (pr.node ? nodePos(gp, pr.node, idx) : null) ?? { x: pr.x, y: pr.y };
+        return {
+          id: pr.id,
+          x: pos.x,
+          y: pos.y,
+          scopeDx: pr.scopeDx,
+          scopeDy: pr.scopeDy,
+          label: pr.label,
+          color: pr.color,
+        };
+      }),
+    };
+  }
+
   async function copySelectionToClipboard() {
-    const p = currentPage(docRef.current);
-    const next = collectSelectedTopology(p, selRef.current);
+    const gp = currentPageGraph(graphDocRef.current);
+    const next = clipboardFromGraphSelection(gp, selRef.current);
     if (next.components.length === 0 && next.wires.length === 0 && next.probes.length === 0) {
       return;
     }
@@ -5653,8 +5711,8 @@ export function Editor() {
   }
 
   function duplicateSelection() {
-    const p = currentPage(docRef.current);
-    const { components: comps, wires, probes } = collectSelectedTopology(p, selRef.current);
+    const gp = currentPageGraph(graphDocRef.current);
+    const { components: comps, wires, probes } = clipboardFromGraphSelection(gp, selRef.current);
     if (comps.length === 0 && wires.length === 0 && probes.length === 0) return;
     const newComps = comps.map((c) => ({
       ...c,
@@ -5992,8 +6050,8 @@ export function Editor() {
     [graphPage, lastSelectedWire],
   );
   const selectedAutoFormatWireCount = useMemo(
-    () => wireIdsForAutoFormat(page, selectedIds).size,
-    [page, selectedIds],
+    () => wireIdsForAutoFormat(graphPage, selectedIds).size,
+    [graphPage, selectedIds],
   );
   const arrangeableComponentCount = useMemo(
     () => page.components.filter((component) => component.kind !== "NOTE").length,
@@ -6477,7 +6535,7 @@ export function Editor() {
     connectedLabelIds,
     labelNearMisses,
     nearMissLabelIds,
-  } = useProbeConnectivity(page, page.probes, pinAnnotations.nodes.posToNode);
+  } = useProbeConnectivity(graphPage, graphPage.probes, pinAnnotations.nodes.posToNode);
   const firstFloatingPinLabel = runFloatingPins[0]
     ? floatingPinSummary(runFloatingPins[0])
     : null;

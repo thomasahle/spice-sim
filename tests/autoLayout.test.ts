@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { autoArrangePage } from "../src/editor/autoLayout.ts";
-import { pinWorldPos, type SchematicPage } from "../src/editor/model.ts";
+import { pinWorldPos } from "../src/editor/model.ts";
+import { legacyPageToGraph } from "../src/editor/graphConvert.ts";
+import type { LegacySchematicPage } from "../src/editor/legacyModel.ts";
 
-function samplePage(): SchematicPage {
+// autoArrangePage consumes a graph (Model C) page; fixtures are built from the
+// legacy polyline shape via the production converter so wire geometry resolves.
+const graphPage = (legacy: LegacySchematicPage) => legacyPageToGraph(legacy);
+
+function samplePage(): LegacySchematicPage {
   return {
     id: "page",
     name: "main",
@@ -36,7 +42,7 @@ function samplePage(): SchematicPage {
 }
 
 test("autoArrangePage uses ELK to move schematic components and preserves notes", async () => {
-  const page = samplePage();
+  const page = graphPage(samplePage());
   const arranged = await autoArrangePage(page);
 
   assert.equal(arranged.movedComponentIds.includes("note"), false);
@@ -62,7 +68,7 @@ test("autoArrangePage uses ELK to move schematic components and preserves notes"
 });
 
 test("autoArrangePage can limit component movement to a selection", async () => {
-  const page = samplePage();
+  const page = graphPage(samplePage());
   const arranged = await autoArrangePage(page, new Set(["pm", "nm"]));
 
   const beforeVin = page.components.find((component) => component.id === "vin");
@@ -85,7 +91,7 @@ test("autoArrangePage can limit component movement to a selection", async () => 
 });
 
 test("autoArrangePage selection keeps stationary endpoints in place", async () => {
-  const page: SchematicPage = {
+  const page = graphPage({
     id: "page",
     name: "main",
     description: "",
@@ -99,7 +105,7 @@ test("autoArrangePage selection keeps stationary endpoints in place", async () =
       { id: "w-out", points: [[1, 0], [4, 0]] },
     ],
     probes: [],
-  };
+  });
 
   const arranged = await autoArrangePage(page, new Set(["r"]));
   const vin = arranged.page.components.find((component) => component.id === "vin");
@@ -124,7 +130,7 @@ test("autoArrangePage selection keeps stationary endpoints in place", async () =
 });
 
 test("autoArrangePage reconnects selected pins that touched explicit wire junctions", async () => {
-  const page: SchematicPage = {
+  const page = graphPage({
     id: "page",
     name: "main",
     description: "",
@@ -147,7 +153,7 @@ test("autoArrangePage reconnects selected pins that touched explicit wire juncti
       { id: "w-right", points: [[2, 0], [8, 0]] },
     ],
     probes: [],
-  };
+  });
 
   const arranged = await autoArrangePage(page, new Set(["r"]));
   const resistor = arranged.page.components.find((component) => component.id === "r");
@@ -161,7 +167,7 @@ test("autoArrangePage reconnects selected pins that touched explicit wire juncti
 });
 
 test("autoArrangePage applies CMOS pair conventions", async () => {
-  const page: SchematicPage = {
+  const page = graphPage({
     id: "page",
     name: "main",
     description: "",
@@ -175,7 +181,7 @@ test("autoArrangePage applies CMOS pair conventions", async () => {
       { id: "w-drain", points: [[6, -2], [0, 3], [10, 0]] },
     ],
     probes: [],
-  };
+  });
 
   const arranged = await autoArrangePage(page);
   const pmos = arranged.page.components.find((component) => component.id === "pm");
@@ -189,7 +195,7 @@ test("autoArrangePage applies CMOS pair conventions", async () => {
 });
 
 test("autoArrangePage orients shunt passives vertically toward ground", async () => {
-  const page: SchematicPage = {
+  const page = graphPage({
     id: "page",
     name: "main",
     description: "",
@@ -203,7 +209,7 @@ test("autoArrangePage orients shunt passives vertically toward ground", async ()
       { id: "w-ground", points: [[7, -2], [8, -4]] },
     ],
     probes: [],
-  };
+  });
 
   const arranged = await autoArrangePage(page);
   const shunt = arranged.page.components.find((component) => component.id === "shunt");
@@ -217,7 +223,7 @@ test("autoArrangePage orients shunt passives vertically toward ground", async ()
 });
 
 test("autoArrangePage stacks series NMOS devices vertically", async () => {
-  const page: SchematicPage = {
+  const page = graphPage({
     id: "page",
     name: "main",
     description: "",
@@ -231,7 +237,7 @@ test("autoArrangePage stacks series NMOS devices vertically", async () => {
       { id: "w-gnd", points: [[5, 9], [5, 10]] },
     ],
     probes: [],
-  };
+  });
 
   const arranged = await autoArrangePage(page);
   const upper = arranged.page.components.find((component) => component.id === "upper");
@@ -246,7 +252,7 @@ test("autoArrangePage stacks series NMOS devices vertically", async () => {
 });
 
 test("autoArrangePage stacks series PMOS devices vertically toward the rail", async () => {
-  const page: SchematicPage = {
+  const page = graphPage({
     id: "page",
     name: "main",
     description: "",
@@ -260,7 +266,7 @@ test("autoArrangePage stacks series PMOS devices vertically toward the rail", as
       { id: "w-rail", points: [[6, 2], [8, 2], [8, -4], [6, -4]] },
     ],
     probes: [],
-  };
+  });
 
   const arranged = await autoArrangePage(page);
   const lower = arranged.page.components.find((component) => component.id === "lower");
@@ -275,7 +281,7 @@ test("autoArrangePage stacks series PMOS devices vertically toward the rail", as
 });
 
 test("autoArrangePage keeps op-amp loads to the output side", async () => {
-  const page: SchematicPage = {
+  const page = graphPage({
     id: "page",
     name: "main",
     description: "",
@@ -289,7 +295,7 @@ test("autoArrangePage keeps op-amp loads to the output side", async () => {
       { id: "w-gnd", points: [[-4, -5], [-8, -6]] },
     ],
     probes: [],
-  };
+  });
 
   const arranged = await autoArrangePage(page);
   const opamp = arranged.page.components.find((component) => component.id === "op");
