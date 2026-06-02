@@ -2615,18 +2615,24 @@ export function Editor() {
         toolRef.current === "node" &&
         nodeSelRef.current
       ) {
-        // Delete the selected node, healing the wire (graph-native; §16.8).
-        // Pin-nodes aren't deletable — skip the commit entirely so a refused
-        // delete doesn't dirty the doc.
+        // Delete the selected handle. A junction / endpoint NODE heals the wire
+        // (graph-native; §16.8); pin-nodes aren't deletable (skip so a refused
+        // delete doesn't dirty the doc). An intermediary BEND just drops the
+        // routing waypoint and the wire routes through the rest (§13.4).
         e.preventDefault();
         const sel = nodeSelRef.current;
         const previewGraph = currentPageGraph(graphDocRef.current);
         const previewIdx = pinNodeIndex(previewGraph);
-        const hit = allNodeIds(previewGraph).find((id) => {
+        const nodeHit = allNodeIds(previewGraph).find((id) => {
           const pos = nodePos(previewGraph, id, previewIdx);
           return pos !== null && Math.hypot(pos.x - sel.x, pos.y - sel.y) < 1e-6;
         });
-        if (hit && !previewIdx.has(hit)) {
+        const bendHit =
+          !nodeHit &&
+          previewGraph.wires.some((w) =>
+            w.bends.some(([bx, by]) => Math.hypot(bx - sel.x, by - sel.y) < 1e-6),
+          );
+        if (nodeHit && !previewIdx.has(nodeHit)) {
           commit((d) =>
             updateCurrentPageGraph(d, (p) => {
               const idx = pinNodeIndex(p);
@@ -2636,6 +2642,16 @@ export function Editor() {
               });
               return target ? graphDeleteNode(p, target) : p;
             }),
+          );
+        } else if (bendHit) {
+          commit((d) =>
+            updateCurrentPageGraph(d, (p) => ({
+              ...p,
+              wires: p.wires.map((w) => ({
+                ...w,
+                bends: w.bends.filter(([bx, by]) => Math.hypot(bx - sel.x, by - sel.y) >= 1e-6),
+              })),
+            })),
           );
         }
         setNodeSel(null);
@@ -3340,12 +3356,13 @@ export function Editor() {
       return;
     }
     if (tool === "node") {
-      // Edit-nodes tool: click selects the nearest graph node (junction /
-      // endpoint / pin). Bends aren't nodes, so they get no handle. Delete
-      // heals (see the keydown handler). Pan stays on space/middle/wheel.
+      // Edit-nodes tool: click selects the nearest handle — a graph node
+      // (junction / endpoint / pin) OR an intermediary bend (routing waypoint).
+      // Delete heals a node or drops a bend (see the keydown handler). Pan stays
+      // on space/middle/wheel.
       e.preventDefault();
       const raw = screenToWorld(e.clientX, e.clientY);
-      const g = legacyPageToGraph(page);
+      const g = currentPageGraph(graphDocRef.current);
       const idx = pinNodeIndex(g);
       let best: { x: number; y: number } | null = null;
       let bestD = 0.45;
@@ -3356,6 +3373,15 @@ export function Editor() {
         if (d < bestD) {
           bestD = d;
           best = { x: p.x, y: p.y };
+        }
+      }
+      for (const w of g.wires) {
+        for (const [bx, by] of w.bends) {
+          const d = Math.hypot(bx - raw.x, by - raw.y);
+          if (d < bestD) {
+            bestD = d;
+            best = { x: bx, y: by };
+          }
         }
       }
       setNodeSel(best);
@@ -8133,7 +8159,7 @@ export function Editor() {
 
             {tool === "node" &&
               (() => {
-                const g = legacyPageToGraph(page);
+                const g = currentPageGraph(graphDoc);
                 const idx = pinNodeIndex(g);
                 return (
                   <g className="node-edit-handles">
@@ -8155,6 +8181,28 @@ export function Editor() {
                         />
                       );
                     })}
+                    {/* Bends (routing waypoints) get square handles so they read
+                        differently from round graph-node handles (Inkscape-style). */}
+                    {g.wires.flatMap((w) =>
+                      w.bends.map(([bx, by], bi) => {
+                        const selected =
+                          nodeSel !== null &&
+                          Math.hypot(bx - nodeSel.x, by - nodeSel.y) < 1e-6;
+                        return (
+                          <rect
+                            key={`${w.id}-bend-${bi}`}
+                            x={bx - 0.15}
+                            y={by - 0.15}
+                            width={0.3}
+                            height={0.3}
+                            fill={selected ? "var(--accent)" : "var(--bg-canvas)"}
+                            stroke="var(--accent)"
+                            strokeWidth={0.05}
+                            style={{ cursor: "pointer" }}
+                          />
+                        );
+                      }),
+                    )}
                   </g>
                 );
               })()}
