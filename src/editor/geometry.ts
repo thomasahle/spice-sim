@@ -63,6 +63,21 @@ export function pointOnSegment(
   return dot <= 1e-6;
 }
 
+/** Are a→b and b→c collinear AND pointing the same way (so b is a redundant
+ *  pass-through point that can be dropped from a polyline)? Shared by every
+ *  wire-point compactor (wireGeometry / wireTopology / placement). Uses the
+ *  module-wide 1e-6 tolerance, matching {@link pointOnSegment}. */
+export function sameLineAndDirection(
+  a: [number, number],
+  b: [number, number],
+  c: [number, number],
+): boolean {
+  const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+  if (Math.abs(cross) > 1e-6) return false;
+  const dot = (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1]);
+  return dot >= -1e-6;
+}
+
 export function pointOnPolylineBody(
   point: { x: number; y: number },
   points: [number, number][],
@@ -220,6 +235,25 @@ function subcircuitLocalBounds(c: CircuitComponent): Bounds {
 
 export function rectsIntersect(a: Bounds, b: Bounds): boolean {
   return a.x1 <= b.x2 && a.x2 >= b.x1 && a.y1 <= b.y2 && a.y2 >= b.y1;
+}
+
+/** Is `inner` fully enclosed by `outer` (window-mode marquee, §12.4)? */
+export function rectContainsBounds(outer: Bounds, inner: Bounds): boolean {
+  return (
+    inner.x1 >= outer.x1 &&
+    inner.x2 <= outer.x2 &&
+    inner.y1 >= outer.y1 &&
+    inner.y2 <= outer.y2
+  );
+}
+
+export function rectContainsPoint(rect: Rect, x: number, y: number): boolean {
+  return pointInRect(x, y, rect);
+}
+
+/** Are ALL polyline points inside the rect (window-mode wire select, §12.4)? */
+export function polylineInsideRect(points: [number, number][], rect: Rect): boolean {
+  return points.length > 0 && points.every(([x, y]) => pointInRect(x, y, rect));
 }
 
 export function boundsFromPoints(xs: number[], ys: number[], pad = 0): Rect | null {

@@ -156,6 +156,28 @@ export function splitEdgeAtSegment(
   });
 }
 
+/** Find the wire segment lying BETWEEN two graph nodes that are consecutive
+ *  vertices of that wire's polyline (Node tool's "split between two selected
+ *  nodes", §13.9.7). Graph nodes only appear at a wire's polyline endpoints
+ *  (interior vertices are bends, which are not nodes), so two graph nodes are
+ *  consecutive polyline vertices exactly when they are the two endpoints of a
+ *  bend-free edge — segment index 0. Returns `{ wireId, segIndex }` for the
+ *  first such wire, or null. Feed the result to {@link splitEdgeAtSegment}. */
+export function segmentBetweenNodes(
+  page: SchematicPage,
+  nodeA: NodeId,
+  nodeB: NodeId,
+): { wireId: string; segIndex: number } | null {
+  if (nodeA === nodeB) return null;
+  for (const w of page.wires) {
+    if (w.bends.length !== 0) continue;
+    if ((w.a === nodeA && w.b === nodeB) || (w.a === nodeB && w.b === nodeA)) {
+      return { wireId: w.id, segIndex: 0 };
+    }
+  }
+  return null;
+}
+
 /** Point a wire's endpoint at a different node (drop-to-connect onto a node). */
 export function setWireEndpoint(
   page: SchematicPage,

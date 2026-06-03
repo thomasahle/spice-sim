@@ -9,7 +9,11 @@ import {
   noteRenderLines,
   noteTextLines,
   noteWidth,
+  polylineInsideRect,
   pointOnPolylineBody,
+  rectContainsBounds,
+  rectContainsPoint,
+  sameLineAndDirection,
   wireIntersectsRect,
 } from "../src/editor/geometry.ts";
 import { getPinLayout, type CircuitComponent } from "../src/editor/model.ts";
@@ -52,6 +56,68 @@ test("wireIntersectsRect returns false when the marquee misses the whole wire", 
     ),
     false,
   );
+});
+
+// Window-mode marquee primitives (§12.4): selection requires FULL enclosure,
+// unlike the crossing-mode wireIntersectsRect above.
+test("polylineInsideRect requires every point inside (window mode, not crossing)", () => {
+  const box = { x1: -1, y1: -1, x2: 1, y2: 1 };
+  // A wire crossing the box but with endpoints outside is NOT window-selected,
+  // even though crossing-mode would catch it.
+  const crossing: [number, number][] = [
+    [-5, 0],
+    [5, 0],
+  ];
+  assert.equal(wireIntersectsRect(crossing, box), true);
+  assert.equal(polylineInsideRect(crossing, box), false);
+  // A wire fully inside the box IS window-selected.
+  assert.equal(
+    polylineInsideRect(
+      [
+        [-0.5, -0.5],
+        [0.5, 0.5],
+      ],
+      box,
+    ),
+    true,
+  );
+  // A wire with one elbow poking out of the box is NOT selected.
+  assert.equal(
+    polylineInsideRect(
+      [
+        [-0.5, -0.5],
+        [-0.5, 5],
+        [0.5, 0.5],
+      ],
+      box,
+    ),
+    false,
+  );
+  assert.equal(polylineInsideRect([], box), false);
+});
+
+test("rectContainsBounds is true only when inner is fully enclosed", () => {
+  const outer = { x1: 0, y1: 0, x2: 10, y2: 10 };
+  assert.equal(rectContainsBounds(outer, { x1: 2, y1: 2, x2: 8, y2: 8 }), true);
+  assert.equal(rectContainsBounds(outer, { x1: 2, y1: 2, x2: 12, y2: 8 }), false);
+  assert.equal(rectContainsBounds(outer, { x1: -1, y1: 2, x2: 8, y2: 8 }), false);
+  // Coincident edges count as enclosed.
+  assert.equal(rectContainsBounds(outer, { x1: 0, y1: 0, x2: 10, y2: 10 }), true);
+});
+
+test("rectContainsPoint includes the boundary", () => {
+  const box = { x1: 0, y1: 0, x2: 4, y2: 4 };
+  assert.equal(rectContainsPoint(box, 2, 2), true);
+  assert.equal(rectContainsPoint(box, 0, 4), true);
+  assert.equal(rectContainsPoint(box, 5, 2), false);
+});
+
+test("sameLineAndDirection drops a redundant collinear pass-through point", () => {
+  assert.equal(sameLineAndDirection([0, 0], [1, 0], [2, 0]), true);
+  // Same line but reversed direction (a backtrack) is NOT droppable.
+  assert.equal(sameLineAndDirection([0, 0], [2, 0], [1, 0]), false);
+  // Off the line.
+  assert.equal(sameLineAndDirection([0, 0], [1, 0], [1, 1]), false);
 });
 
 test("pointOnPolylineBody includes interior wire vertices but not absolute endpoints", () => {

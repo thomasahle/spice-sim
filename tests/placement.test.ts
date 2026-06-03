@@ -19,7 +19,6 @@ import {
   placementDropOnWire,
   placementInlineCutSpan,
   placementOverlapsComponent,
-  placementWireCutSpan,
   removeLastWireDraftPoint,
   reshapeDraggedWirePoint,
   reshapeDraggedWirePointAvoiding,
@@ -229,7 +228,8 @@ test("inline insertion cuts across actual pins for short drags", () => {
 
   assert.deepEqual(pinWorldPos(c, 0), { x: -5.5, y: 0 });
   assert.deepEqual(pinWorldPos(c, 1), { x: -1.5, y: 0 });
-  assert.deepEqual(placementWireCutSpan(c, { x: -5, y: 0 }, { x: -2, y: 0 }), {
+  // For a collinear short drag the splice span spans pin-to-pin.
+  assert.deepEqual(placementInlineCutSpan(c, { x: -5, y: 0 }, { x: -2, y: 0 }), {
     start: { x: -5.5, y: 0 },
     end: { x: -1.5, y: 0 },
   });
@@ -285,16 +285,6 @@ test("placementInlineCutSpan returns null for non-2-pin parts", () => {
   assert.equal(placementInlineCutSpan(gnd, { x: 0, y: 0 }, { x: 0, y: 0 }), null);
   const note = componentFromClick("NOTE", { x: 0, y: 0 }, "n1");
   assert.equal(placementInlineCutSpan(note, { x: 0, y: 0 }, { x: 0, y: 0 }), null);
-});
-
-test("placementInlineCutSpan matches placementWireCutSpan for a collinear drag", () => {
-  // For the already-supported collinear drag, the geometry-gated helper agrees
-  // with the existing span (drag behavior preserved; only clicks are new).
-  const c = componentFromTerminals("R", { x: -5, y: 0 }, { x: -2, y: 0 }, "r1");
-  assert.deepEqual(
-    placementInlineCutSpan(c, { x: -5, y: 0 }, { x: -2, y: 0 }),
-    placementWireCutSpan(c, { x: -5, y: 0 }, { x: -2, y: 0 }),
-  );
 });
 
 test("clicking a 2-pin part on a continuous wire splices it (no bypass short)", () => {
@@ -399,7 +389,7 @@ test("inline insertion moves probes from the consumed span to the nearest termin
         { id: "outside", x: -1, y: 0, color: "#ff453a", label: "Outside" },
       ],
       c,
-      placementWireCutSpan(c, { x: -6, y: 0 }, { x: -2, y: 0 }),
+      { start: { x: -6, y: 0 }, end: { x: -2, y: 0 } },
       [],
     ),
     [
@@ -428,7 +418,7 @@ test("inline insertion keeps probes that still land on generated connection stub
         { id: "body", x: -3, y: 0, color: "#30d158", label: "Body" },
       ],
       c,
-      placementWireCutSpan(c, { x: -6, y: 0 }, { x: 0, y: 0 }),
+      { start: { x: -6, y: 0 }, end: { x: 0, y: 0 } },
       stubs,
     ),
     [
@@ -442,7 +432,7 @@ test("inline insertion keeps outward stubs for long drags", () => {
   let n = 0;
   const c = componentFromTerminals("R", { x: -6, y: 0 }, { x: 0, y: 0 }, "r1");
 
-  assert.deepEqual(placementWireCutSpan(c, { x: -6, y: 0 }, { x: 0, y: 0 }), {
+  assert.deepEqual(placementInlineCutSpan(c, { x: -6, y: 0 }, { x: 0, y: 0 }), {
     start: { x: -6, y: 0 },
     end: { x: 0, y: 0 },
   });
@@ -462,7 +452,9 @@ test("inline insertion falls back to normal stubs when the drag is not collinear
   const start = { x: -5, y: 0 };
   const end = { x: -2, y: 1 };
 
-  assert.deepEqual(placementWireCutSpan(c, start, end), { start, end });
+  // A non-collinear drag yields no inline splice span (so placement falls back
+  // to the normal stub routing below).
+  assert.equal(placementInlineCutSpan(c, start, end), null);
   assert.deepEqual(
     placementConnectionWires(c, start, end, true, true, () => `wi${++inlineId}`).map(
       (w) => w.points,

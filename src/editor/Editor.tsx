@@ -102,10 +102,10 @@ import {
   normalizePoint,
   pointOnPolylineBody,
   pointOnSegment,
-  rectsIntersect,
+  rectContainsBounds,
+  rectContainsPoint,
   samePoint,
   sameTuple,
-  wireIntersectsRect,
 } from "./geometry";
 import {
   buildNetlistGraph,
@@ -230,7 +230,7 @@ import {
   geometryDocToGraph,
 } from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline, type Wire as GraphWire } from "./graphModel";
-import { applyArrangeGeometry, deleteNode as graphDeleteNode, splitEdgeAtPoint, splitEdgeAtSegment } from "./graphEdit";
+import { applyArrangeGeometry, deleteNode as graphDeleteNode, segmentBetweenNodes, splitEdgeAtPoint, splitEdgeAtSegment } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -287,6 +287,7 @@ import {
   type ConnectionSnapOptions,
   type ConnectionTarget,
   wireVertexDragHitAt,
+  WIRE_PICK_RADIUS,
 } from "./canvasHitTest";
 import {
   fitBoundsToViewport,
@@ -1076,7 +1077,9 @@ const WireNode = memo(function WireNode({
         fill="none"
         stroke="var(--ink)"
         opacity={0.001}
-        strokeWidth={0.72}
+        // Visible click-target width == pick diameter so the clickable band
+        // matches the real hit radius (§12.1). See WIRE_PICK_RADIUS.
+        strokeWidth={WIRE_PICK_RADIUS * 2}
         strokeLinecap="round"
         strokeLinejoin="round"
         pointerEvents="all"
@@ -1922,15 +1925,31 @@ export function Editor() {
   }
   const selRef = useRef(selectedIds);
   selRef.current = selectedIds;
-  // Node-tool ("Edit nodes") selection — a node's grid coordinate. Stored by
-  // coordinate (not id) because the on-demand graph is recomputed with fresh
-  // node ids each call; the coordinate is stable. Refs mirror state for the
-  // mount-once global keydown handler.
-  const [nodeSel, setNodeSel] = useState<{ x: number; y: number } | null>(null);
+  // Node-tool ("Edit nodes") selection — a SET of graph node ids (pin-nodes +
+  // standalone nodes; §13.9.5). Model C makes node ids stable (they're stored,
+  // not recomputed), so selecting by id is safe. Click selects one;
+  // Shift/Cmd/Ctrl-click toggles; rubber-band window-selects (§12.4).
+  const [nodeSelIds, setNodeSelIds] = useState<Set<string>>(new Set());
+  const nodeSelIdsRef = useRef(nodeSelIds);
+  nodeSelIdsRef.current = nodeSelIds;
+  // Bends are routing waypoints, NOT graph nodes, so they keep a separate
+  // single selection (their own square handles + Delete-drops-waypoint).
+  const [bendSel, setBendSel] = useState<{ wireId: string; index: number } | null>(null);
+  const bendSelRef = useRef(bendSel);
+  bendSelRef.current = bendSel;
   // Node-tool drag of a draggable handle: a standalone node (by id) or a bend
-  // (by wire id + index). Pin-nodes are select-only (they follow their component).
+  // (by wire id + index). Pin-nodes are select-only (they follow their
+  // component, so they are excluded from multi-node drag). A node drag moves ALL
+  // selected standalone nodes by the same delta (§13.9.5).
   const [nodeDrag, setNodeDrag] = useState<
-    | { kind: "node"; id: string; start: { x: number; y: number }; committed: boolean }
+    | {
+        kind: "node";
+        id: string;
+        ids: string[];
+        startPositions: Record<string, { x: number; y: number }>;
+        start: { x: number; y: number };
+        committed: boolean;
+      }
     | { kind: "bend"; wireId: string; index: number; start: { x: number; y: number }; committed: boolean }
     | null
   >(null);
@@ -1944,15 +1963,14 @@ export function Editor() {
   // Node-tool selection is tool-scoped — clear it when switching away.
   useEffect(() => {
     if (tool !== "node") {
-      setNodeSel(null);
+      setNodeSelIds(new Set());
+      setBendSel(null);
       setSegSel(null);
       setNodeDrag(null);
     }
   }, [tool]);
   const toolRef = useRef(tool);
   toolRef.current = tool;
-  const nodeSelRef = useRef(nodeSel);
-  nodeSelRef.current = nodeSel;
   // Tracks the most recent merge-keyed commit so bursts of same-source edits
   // (e.g. typing into a field) coalesce into one undo step. See `commit`.
   const lastCommitMergeRef = useRef<{ key: string; at: number } | null>(null);
@@ -2652,48 +2670,66 @@ export function Editor() {
       if (
         (k === "backspace" || k === "delete") &&
         toolRef.current === "node" &&
-        nodeSelRef.current
+        nodeSelIdsRef.current.size === 2
       ) {
-        // Delete the selected handle. A junction / endpoint NODE heals the wire
-        // (graph-native; §16.8); pin-nodes aren't deletable (skip so a refused
-        // delete doesn't dirty the doc). An intermediary BEND just drops the
-        // routing waypoint and the wire routes through the rest (§13.4).
-        e.preventDefault();
-        const sel = nodeSelRef.current;
+        // Exactly two selected nodes that are ADJACENT on one wire → split that
+        // wire by removing the segment between them (§13.9.7). Falls through to
+        // the multi-node delete below if they aren't adjacent.
+        const [a, b] = [...nodeSelIdsRef.current];
         const previewGraph = currentPageGraph(graphDocRef.current);
-        const previewIdx = pinNodeIndex(previewGraph);
-        const nodeHit = allNodeIds(previewGraph).find((id) => {
-          const pos = nodePos(previewGraph, id, previewIdx);
-          return pos !== null && Math.hypot(pos.x - sel.x, pos.y - sel.y) < 1e-6;
-        });
-        const bendHit =
-          !nodeHit &&
-          previewGraph.wires.some((w) =>
-            w.bends.some(([bx, by]) => Math.hypot(bx - sel.x, by - sel.y) < 1e-6),
-          );
-        if (nodeHit && !previewIdx.has(nodeHit)) {
-          commit((d) =>
-            updateCurrentPageGraph(d, (p) => {
-              const idx = pinNodeIndex(p);
-              const target = allNodeIds(p).find((id) => {
-                const pos = nodePos(p, id, idx);
-                return pos !== null && Math.hypot(pos.x - sel.x, pos.y - sel.y) < 1e-6;
-              });
-              return target ? graphDeleteNode(p, target) : p;
-            }),
-          );
-        } else if (bendHit) {
-          commit((d) =>
-            updateCurrentPageGraph(d, (p) => ({
-              ...p,
-              wires: p.wires.map((w) => ({
-                ...w,
-                bends: w.bends.filter(([bx, by]) => Math.hypot(bx - sel.x, by - sel.y) >= 1e-6),
-              })),
-            })),
-          );
+        const seg = segmentBetweenNodes(previewGraph, a, b);
+        if (seg) {
+          e.preventDefault();
+          commit((d) => updateCurrentPageGraph(d, (p) => splitEdgeAtSegment(p, seg.wireId, seg.segIndex)));
+          setNodeSelIds(new Set());
+          return;
         }
-        setNodeSel(null);
+      }
+      if (
+        (k === "backspace" || k === "delete") &&
+        toolRef.current === "node" &&
+        bendSelRef.current
+      ) {
+        // A selected BEND just drops the routing waypoint and the wire routes
+        // through the rest (§13.4).
+        e.preventDefault();
+        const sel = bendSelRef.current;
+        commit((d) =>
+          updateCurrentPageGraph(d, (p) => ({
+            ...p,
+            wires: p.wires.map((w) =>
+              w.id === sel.wireId
+                ? { ...w, bends: w.bends.filter((_, i) => i !== sel.index) }
+                : w,
+            ),
+          })),
+        );
+        setBendSel(null);
+        return;
+      }
+      if (
+        (k === "backspace" || k === "delete") &&
+        toolRef.current === "node" &&
+        nodeSelIdsRef.current.size > 0
+      ) {
+        // Delete the selected graph node(s). A junction / endpoint NODE heals
+        // the wire (graph-native; §16.8); pin-nodes aren't deletable (skipped,
+        // so a refused delete doesn't dirty the doc). Applied in one commit so
+        // multi-node delete is a single undo step.
+        e.preventDefault();
+        const ids = [...nodeSelIdsRef.current];
+        commit((d) =>
+          updateCurrentPageGraph(d, (p) => {
+            let next = p;
+            for (const id of ids) {
+              const idx = pinNodeIndex(next);
+              if (idx.has(id)) continue; // pin-node: not deletable here
+              next = graphDeleteNode(next, id);
+            }
+            return next;
+          }),
+        );
+        setNodeSelIds(new Set());
         return;
       }
       if ((k === "backspace" || k === "delete") && selRef.current.size > 0) {
@@ -3396,6 +3432,22 @@ export function Editor() {
     });
   }
 
+  /** Deliberately add the net(s) of the given wires to the plotted waveforms
+   *  (§12.7). Selecting a wire no longer auto-plots; this is the explicit
+   *  action wired to the wire context menu and to double-clicking a wire. */
+  function plotWireNets(wireIds: Iterable<string>): boolean {
+    let plotted = false;
+    for (const id of wireIds) {
+      if (traceNameForWire(id)) {
+        addWireTraceToScope(id);
+        plotted = true;
+      }
+    }
+    if (plotted) setStatus("Added net to waveforms");
+    else setStatus("Run a simulation to plot this net");
+    return plotted;
+  }
+
   function onCanvasPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     // SVG elements aren't focusable, so clicking the canvas would leave focus
     // in whatever input the user last touched — that breaks the Delete /
@@ -3433,26 +3485,26 @@ export function Editor() {
     }
     if (tool === "node") {
       // Edit-nodes tool: click selects the nearest handle — a graph node
-      // (junction / endpoint / pin) OR an intermediary bend (routing waypoint).
-      // Delete heals a node or drops a bend (see the keydown handler). Pan stays
-      // on space/middle/wheel.
+      // (junction / endpoint / pin, multi-selectable) OR an intermediary bend
+      // (routing waypoint, single). Delete heals a node / drops a bend / splits
+      // a segment (see the keydown handler). Pan stays on space/middle/wheel.
       e.preventDefault();
+      // Cmd/Ctrl behave like Shift for additive/toggle selection (§12.3/§13.9.5).
+      const additive = e.shiftKey || e.metaKey || e.ctrlKey;
       const raw = screenToWorld(e.clientX, e.clientY);
       const g = currentPageGraph(graphDocRef.current);
       const idx = pinNodeIndex(g);
-      let best: { x: number; y: number } | null = null;
       let bestD = 0.45;
-      let bestDrag: typeof nodeDrag = null;
+      let bestNodeId: string | null = null;
+      let bestBend: { wireId: string; index: number } | null = null;
       for (const id of allNodeIds(g)) {
         const p = nodePos(g, id, idx);
         if (!p) continue;
         const d = Math.hypot(p.x - raw.x, p.y - raw.y);
         if (d < bestD) {
           bestD = d;
-          best = { x: p.x, y: p.y };
-          // Pin-nodes are select-only (they follow their component); standalone
-          // nodes (junctions / free endpoints) are draggable.
-          bestDrag = idx.has(id) ? null : { kind: "node", id, start: raw, committed: false };
+          bestNodeId = id;
+          bestBend = null;
         }
       }
       for (const w of g.wires) {
@@ -3461,39 +3513,78 @@ export function Editor() {
           const d = Math.hypot(bx - raw.x, by - raw.y);
           if (d < bestD) {
             bestD = d;
-            best = { x: bx, y: by };
-            bestDrag = { kind: "bend", wireId: w.id, index: i, start: raw, committed: false };
+            bestBend = { wireId: w.id, index: i };
+            bestNodeId = null;
           }
         }
       }
-      setNodeSel(best);
-      if (best) {
+      if (bestNodeId) {
+        // Graph node hit → multi-selectable. Bends/segments deselect.
+        setBendSel(null);
         setSegSel(null);
-        if (bestDrag) {
+        let nextSel: Set<string>;
+        if (additive) {
+          nextSel = new Set(nodeSelIdsRef.current);
+          if (nextSel.has(bestNodeId)) nextSel.delete(bestNodeId);
+          else nextSel.add(bestNodeId);
+          setNodeSelIds(nextSel);
+          // A toggle click does not start a drag (matches the select tool).
+          return;
+        }
+        // Plain click: keep the group if the node is already in it (so the
+        // drag moves the whole selection); otherwise select just this node.
+        nextSel = nodeSelIdsRef.current.has(bestNodeId)
+          ? nodeSelIdsRef.current
+          : new Set([bestNodeId]);
+        setNodeSelIds(nextSel);
+        // Only STANDALONE nodes move (pin-nodes follow their component, so they
+        // are excluded from the multi-drag). Drag arms only if the grabbed node
+        // itself is draggable.
+        const draggableIds = [...nextSel].filter((id) => !idx.has(id));
+        if (!idx.has(bestNodeId) && draggableIds.length > 0) {
           capturePointer(e);
-          setNodeDrag(bestDrag);
-        }
-      } else {
-        // No handle nearby — try selecting a wire segment (body) so Delete can
-        // split the wire there (§13.5).
-        const distToSeg = (px: number, py: number, x1: number, y1: number, x2: number, y2: number) => {
-          const dx = x2 - x1, dy = y2 - y1;
-          const len2 = dx * dx + dy * dy;
-          const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2));
-          return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
-        };
-        let seg: { wireId: string; segIndex: number } | null = null;
-        let segD = 0.3;
-        for (const w of g.wires) {
-          const poly = wirePolyline(g, w, idx);
-          if (!poly) continue;
-          for (let i = 0; i < poly.length - 1; i++) {
-            const d = distToSeg(raw.x, raw.y, poly[i][0], poly[i][1], poly[i + 1][0], poly[i + 1][1]);
-            if (d < segD) { segD = d; seg = { wireId: w.id, segIndex: i }; }
+          const startPositions: Record<string, { x: number; y: number }> = {};
+          for (const id of draggableIds) {
+            const pos = nodePos(g, id, idx);
+            if (pos) startPositions[id] = { x: pos.x, y: pos.y };
           }
+          setNodeDrag({ kind: "node", id: bestNodeId, ids: draggableIds, startPositions, start: raw, committed: false });
         }
-        setSegSel(seg);
+        return;
       }
+      if (bestBend) {
+        setNodeSelIds(new Set());
+        setSegSel(null);
+        setBendSel(bestBend);
+        capturePointer(e);
+        setNodeDrag({ kind: "bend", wireId: bestBend.wireId, index: bestBend.index, start: raw, committed: false });
+        return;
+      }
+      // No handle nearby. A click selects a wire segment (body) so Delete can
+      // split it (§13.5); a drag becomes a window-mode rubber-band that selects
+      // every node inside the box (§13.9.7). We can't tell click from drag yet,
+      // so set the segment tentatively AND arm a marquee; pointer-up decides.
+      const distToSeg = (px: number, py: number, x1: number, y1: number, x2: number, y2: number) => {
+        const dx = x2 - x1, dy = y2 - y1;
+        const len2 = dx * dx + dy * dy;
+        const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2));
+        return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+      };
+      let seg: { wireId: string; segIndex: number } | null = null;
+      let segD = 0.3;
+      for (const w of g.wires) {
+        const poly = wirePolyline(g, w, idx);
+        if (!poly) continue;
+        for (let i = 0; i < poly.length - 1; i++) {
+          const d = distToSeg(raw.x, raw.y, poly[i][0], poly[i][1], poly[i + 1][0], poly[i + 1][1]);
+          if (d < segD) { segD = d; seg = { wireId: w.id, segIndex: i }; }
+        }
+      }
+      setSegSel(seg);
+      if (!additive) setNodeSelIds(new Set());
+      setBendSel(null);
+      capturePointer(e);
+      setMarquee({ sx: raw.x, sy: raw.y, ex: raw.x, ey: raw.y, additive });
       return;
     }
     // Touch on empty canvas pans instead of starting a rubber-band selection.
@@ -3565,11 +3656,13 @@ export function Editor() {
     if (tool === "select" && scopeProbeId) {
       const probe = page.probes.find((p) => p.id === scopeProbeId);
       if (probe) {
-        const nextSelected = nextSelectionForHit(probe.id, e.shiftKey);
+        // Cmd/Ctrl behave like Shift for additive/toggle selection (§12.3).
+        const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+        const nextSelected = nextSelectionForHit(probe.id, additive);
         setSelectedIds(nextSelected);
         if (
           probeLabelEditIdFromTarget(e.target) ||
-          !selectionClickStartsDrag(e.shiftKey) ||
+          !selectionClickStartsDrag(additive) ||
           nextSelected.size === 0
         ) {
           setScopeDrag(null);
@@ -3681,6 +3774,8 @@ export function Editor() {
     }
 
     if (tool === "select") {
+      // Cmd/Ctrl behave like Shift for additive/toggle selection (§12.3).
+      const additive = e.shiftKey || e.metaKey || e.ctrlKey;
       const targetIsWireVertexHandle = isWireVertexHandleTarget(e.target);
       const targetIsConnectionHandle = isConnectionHandleTarget(e.target);
       const targetComponent = targetComponentId
@@ -3693,7 +3788,7 @@ export function Editor() {
       const geometricHit = hitSelectable(raw.x, raw.y, targetWireId);
       const hit = pointerSelectionHit(geometricHit, targetComponent ?? targetProbe);
       const intent = selectPointerIntent({
-        additive: e.shiftKey,
+        additive,
         hitKind: hitKindForItem(hit),
         onConnectionHandle: targetIsConnectionHandle,
         onWireVertexHandle: targetIsWireVertexHandle,
@@ -3735,15 +3830,15 @@ export function Editor() {
         return;
       }
       if (intent === "object-selection" && hit) {
-        if (hitKindForItem(hit) === "wire") {
-          addWireTraceToScope(hit.id);
-        }
+        // NOTE: selecting a wire no longer auto-plots its net (§12.7). Plot a
+        // net deliberately via the wire context menu's "Plot net" or by
+        // double-clicking the wire (both call addWireTraceToScope).
         const pointerTextTarget = textEditTargetFromPointerTarget(e.target, targetComponent, targetProbe);
         preferredTextEditTargetRef.current =
-          !e.shiftKey && pointerTextTarget?.id === hit.id ? pointerTextTarget : null;
-        const nextSelected = nextSelectionForHit(hit.id, e.shiftKey);
+          !additive && pointerTextTarget?.id === hit.id ? pointerTextTarget : null;
+        const nextSelected = nextSelectionForHit(hit.id, additive);
         setSelectedIds(nextSelected);
-        if (!selectionClickStartsDrag(e.shiftKey) || nextSelected.size === 0) {
+        if (!selectionClickStartsDrag(additive) || nextSelected.size === 0) {
           setDrag(null);
           setHoverId(null);
           return;
@@ -3791,14 +3886,14 @@ export function Editor() {
             hit,
             targetComponent,
             targetProbe,
-            e.shiftKey,
+            additive,
           ),
         });
       } else {
         // Begin marquee
         preferredTextEditTargetRef.current = null;
-        if (!e.shiftKey) setSelectedIds(new Set());
-        setMarquee({ sx: raw.x, sy: raw.y, ex: raw.x, ey: raw.y, additive: e.shiftKey });
+        if (!additive) setSelectedIds(new Set());
+        setMarquee({ sx: raw.x, sy: raw.y, ex: raw.x, ey: raw.y, additive });
       }
       return;
     }
@@ -3873,8 +3968,9 @@ export function Editor() {
     const g = screenToGrid(e.clientX, e.clientY);
     const raw = screenToWorld(e.clientX, e.clientY);
     setCursor(g);
-    // Node-tool drag: move a standalone node or a bend to the (snapped) cursor.
-    // Absolute set → idempotent preview. Pin-nodes were never armed (select-only).
+    // Node-tool drag: move the selected standalone node(s) or a bend to follow
+    // the (snapped) cursor. Absolute set → idempotent preview. Pin-nodes are
+    // never armed (select-only), so they never move here.
     if (nodeDragRef.current) {
       const nd = nodeDragRef.current;
       const snapped = snapPoint(raw);
@@ -3884,31 +3980,45 @@ export function Editor() {
         setFuture([]);
         setNodeDrag({ ...nd, committed: true });
       }
-      previewMutate((d) =>
-        updateCurrentPageGraph(d, (p) =>
-          nd.kind === "node"
-            ? {
-                ...p,
-                nodes: (p.nodes ?? []).map((n) =>
-                  n.id === nd.id ? { ...n, x: snapped.x, y: snapped.y } : n,
-                ),
-              }
-            : {
-                ...p,
-                wires: p.wires.map((w) =>
-                  w.id === nd.wireId
-                    ? {
-                        ...w,
-                        bends: w.bends.map((b, i) =>
-                          i === nd.index ? ([snapped.x, snapped.y] as [number, number]) : b,
-                        ),
-                      }
-                    : w,
-                ),
-              },
-        ),
-      );
-      setNodeSel({ x: snapped.x, y: snapped.y });
+      if (nd.kind === "node") {
+        // Shift every selected node by the same delta (the grabbed node lands on
+        // the cursor; the rest keep their relative offset). Delta from the
+        // grabbed node's snapped start keeps the whole group grid-aligned.
+        const base = snapPoint(nd.startPositions[nd.id] ?? nd.start);
+        const dx = snapped.x - base.x;
+        const dy = snapped.y - base.y;
+        const targets = new Map<string, { x: number; y: number }>();
+        for (const id of nd.ids) {
+          const s0 = nd.startPositions[id];
+          if (s0) targets.set(id, { x: s0.x + dx, y: s0.y + dy });
+        }
+        previewMutate((d) =>
+          updateCurrentPageGraph(d, (p) => ({
+            ...p,
+            nodes: (p.nodes ?? []).map((n) => {
+              const t = targets.get(n.id);
+              return t ? { ...n, x: t.x, y: t.y } : n;
+            }),
+          })),
+        );
+      } else {
+        previewMutate((d) =>
+          updateCurrentPageGraph(d, (p) => ({
+            ...p,
+            wires: p.wires.map((w) =>
+              w.id === nd.wireId
+                ? {
+                    ...w,
+                    bends: w.bends.map((b, i) =>
+                      i === nd.index ? ([snapped.x, snapped.y] as [number, number]) : b,
+                    ),
+                  }
+                : w,
+            ),
+          })),
+        );
+        setBendSel({ wireId: nd.wireId, index: nd.index });
+      }
       return;
     }
     if (tool === "wire" || isSinglePinSnappingTool(tool) || wireGestureRef.current) {
@@ -4340,20 +4450,41 @@ export function Editor() {
       const x2 = Math.max(marquee.sx, marquee.ex);
       const y1 = Math.min(marquee.sy, marquee.ey);
       const y2 = Math.max(marquee.sy, marquee.ey);
+      const box = { x1, y1, x2, y2 };
+      const moved = x2 - x1 > 0.2 || y2 - y1 > 0.2;
+      if (tool === "node") {
+        // Node tool rubber-band: window-select every graph node inside the box
+        // (§13.9.7). A box that never moved is a plain click — keep the
+        // tentatively-set segment selection (don't clear it / select nothing).
+        if (moved) {
+          const nodeIdx = pinNodeIndex(page);
+          const inside = allNodeIds(page).filter((id) => {
+            const pos = nodePos(page, id, nodeIdx);
+            return pos !== null && rectContainsPoint(box, pos.x, pos.y);
+          });
+          setNodeSelIds(
+            marquee.additive ? new Set([...nodeSelIdsRef.current, ...inside]) : new Set(inside),
+          );
+          setSegSel(null);
+        }
+        setMarquee(null);
+        return;
+      }
+      // WINDOW-mode marquee (§12.4): an item is selected only if it is FULLY
+      // enclosed by the box — a component's bounds inside, a probe's position
+      // inside. (Was crossing-mode: anything the box touched.)
+      //
+      // Wires are intentionally EXCLUDED from marquee selection: when you box a
+      // cluster of components and move it, the attached wires rubber-band to
+      // follow the pins — selecting them too would make them translate rigidly
+      // instead, which is rarely what you want. (Select a wire by clicking it.)
       const componentHits = page.components
-        .filter((c) => rectsIntersect({ x1, y1, x2, y2 }, componentVisualBoundsFor(c, 0.1)))
+        .filter((c) => rectContainsBounds(box, componentVisualBoundsFor(c, 0)))
         .map((c) => c.id);
-      const marqueeIdx = pinNodeIndex(page);
-      const wireHits = page.wires
-        .filter((w) => {
-          const poly = wirePolyline(page, w, marqueeIdx);
-          return poly ? wireIntersectsRect(poly, { x1, y1, x2, y2 }) : false;
-        })
-        .map((w) => w.id);
       const probeHits = page.probes
-        .filter((pr) => pr.x >= x1 && pr.x <= x2 && pr.y >= y1 && pr.y <= y2)
+        .filter((pr) => rectContainsPoint(box, pr.x, pr.y))
         .map((pr) => pr.id);
-      const hits = [...componentHits, ...wireHits, ...probeHits];
+      const hits = [...componentHits, ...probeHits];
       if (hits.length > 0) {
         setSelectedIds(
           marquee.additive ? new Set([...selectedIds, ...hits]) : new Set(hits),
@@ -4376,6 +4507,15 @@ export function Editor() {
 
   function onCanvasContextMenu(e: React.MouseEvent) {
     e.preventDefault();
+    // A right-click while drafting a wire cancels the draft (same as Escape)
+    // and suppresses the context menu (§12.17).
+    if (wireDraftRef.current) {
+      updateWireDraft(null);
+      updateWireGesture(null);
+      setSnapTarget(null);
+      setStatus("Wire canceled");
+      return;
+    }
     const raw = screenToWorld(e.clientX, e.clientY);
     // Right-clicking on a component: if it isn't already selected, replace
     // the selection with just it, then offer per-component actions.
@@ -4393,12 +4533,24 @@ export function Editor() {
     const items: ContextMenuEntry[] = [];
     if (working.size > 0) {
       const hasSelectedComponents = page.components.some((c) => working.has(c.id));
+      const selectedWireIds = page.wires.filter((w) => working.has(w.id)).map((w) => w.id);
+      const plottableWireIds = selectedWireIds.filter((id) => traceNameForWire(id) !== null);
       const autoFormatCount = wireIdsForAutoFormat(graphPage, working).size;
       if (hasSelectedComponents) {
         items.push({ label: "Rotate CW", shortcut: "⇧R", onSelect: () => rotateSelected() });
         items.push({ label: "Rotate CCW", onSelect: () => rotateSelectedCcw() });
         items.push({ label: "Flip Horizontal", onSelect: () => flipHorizontalSelected() });
         items.push({ label: "Flip Vertical", onSelect: () => flipVerticalSelected() });
+      }
+      if (selectedWireIds.length > 0) {
+        // Deliberate net→plot action (§12.7): selecting a wire only selects;
+        // plotting is explicit here (or via double-click). Disabled until a
+        // simulation has produced a trace for the wire's net.
+        items.push({
+          label: selectedWireIds.length > 1 ? "Plot nets" : "Plot net",
+          disabled: plottableWireIds.length === 0,
+          onSelect: () => plotWireNets(selectedWireIds),
+        });
       }
       items.push(
         { label: "Fit Selection", shortcut: "⇧2", onSelect: () => fitSelectionToContent() },
@@ -4491,7 +4643,14 @@ export function Editor() {
       if (component && isEditableComponentValue(component)) return true;
     }
     const targetProbeId = probeLabelEditIdFromTarget(target) ?? probeIdFromTarget(target) ?? scopeProbeIdFromTarget(target);
-    return Boolean(targetProbeId && page.probes.some((p) => p.id === targetProbeId));
+    if (targetProbeId && page.probes.some((p) => p.id === targetProbeId)) return true;
+    // Double-clicking a wire body plots its net (§12.7) — the deliberate
+    // counterpart to the removed selection→plot side-effect. Select tool only.
+    const targetWireId = wireIdFromTarget(target);
+    if (tool === "select" && targetWireId && page.wires.some((w) => w.id === targetWireId)) {
+      return true;
+    }
+    return false;
   }
 
   function scheduleCanvasDoubleAction(target: EventTarget | null): boolean {
@@ -4576,6 +4735,11 @@ export function Editor() {
         beginProbeLabelEdit(probe);
         return true;
       }
+    }
+    const targetWireId = wireIdFromTarget(target);
+    if (tool === "select" && targetWireId && page.wires.some((w) => w.id === targetWireId)) {
+      plotWireNets([targetWireId]);
+      return true;
     }
     return false;
   }
@@ -8394,8 +8558,7 @@ export function Editor() {
                     {allNodeIds(g).map((id) => {
                       const p = nodePos(g, id, idx);
                       if (!p) return null;
-                      const selected =
-                        nodeSel !== null && Math.hypot(p.x - nodeSel.x, p.y - nodeSel.y) < 1e-6;
+                      const selected = nodeSelIds.has(id);
                       return (
                         <circle
                           key={id}
@@ -8414,8 +8577,7 @@ export function Editor() {
                     {g.wires.flatMap((w) =>
                       w.bends.map(([bx, by], bi) => {
                         const selected =
-                          nodeSel !== null &&
-                          Math.hypot(bx - nodeSel.x, by - nodeSel.y) < 1e-6;
+                          bendSel !== null && bendSel.wireId === w.id && bendSel.index === bi;
                         return (
                           <rect
                             key={`${w.id}-bend-${bi}`}

@@ -3615,6 +3615,22 @@ button[disabled] {
   cursor: pointer;
   pointer-events: all;
 }
+/* Wire bodies move/select like components, so they show the grab cursor in the
+   select/pan tools (§12.2) rather than the link-style pointer. */
+.canvas.is-selecting .wire-hit-target,
+.canvas.is-pan-tool .wire-hit-target {
+  cursor: grab;
+}
+.canvas.is-selecting .wire-hit-target:active,
+.canvas.is-pan-tool .wire-hit-target:active {
+  cursor: grabbing;
+}
+.canvas.is-placing .wire-hit-target {
+  cursor: crosshair;
+}
+.canvas.is-panning .wire-hit-target {
+  cursor: grabbing;
+}
 .wire-junction-dot {
   fill: var(--pin);
   stroke: var(--bg-canvas);

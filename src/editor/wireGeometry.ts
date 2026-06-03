@@ -9,6 +9,7 @@ import {
   pointOnPolylineBody,
   pointOnSegment,
   samePoint,
+  sameLineAndDirection,
   sameTuple,
 } from "./geometry.ts";
 import { nodePos, type SchematicPage } from "./graphModel.ts";
@@ -70,12 +71,7 @@ export function compactWirePoints(points: [number, number][]): [number, number][
   return compacted;
 }
 
-export function sameLineAndDirection(a: [number, number], b: [number, number], c: [number, number]): boolean {
-  const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
-  if (Math.abs(cross) > 1e-6) return false;
-  const dot = (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1]);
-  return dot >= -1e-6;
-}
+export { sameLineAndDirection };
 
 export function sameWirePath(a: [number, number][], b: [number, number][]): boolean {
   const aa = compactWirePoints(a);

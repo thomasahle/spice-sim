@@ -198,11 +198,16 @@ export function hitProbeAt(
   return null;
 }
 
+// Wire pick radius. Kept equal to the half-width of the visible hit-target
+// stroke in <WireNode> (strokeWidth 0.72 → half 0.36) so the band that LOOKS
+// clickable IS clickable (§12.1). If you change one, change both.
+export const WIRE_PICK_RADIUS = 0.36;
+
 export function hitWireAt(
   page: SchematicPage,
   gx: number,
   gy: number,
-  radius = 0.3,
+  radius = WIRE_PICK_RADIUS,
 ): Wire | null {
   const idx0 = pinNodeIndex(page);
   for (let i = page.wires.length - 1; i >= 0; i--) {
@@ -222,7 +227,7 @@ export function hitWireBodyAt(
   page: SchematicPage,
   gx: number,
   gy: number,
-  radius = 0.3,
+  radius = WIRE_PICK_RADIUS,
 ): Wire | null {
   const idx0 = pinNodeIndex(page);
   for (let i = page.wires.length - 1; i >= 0; i--) {

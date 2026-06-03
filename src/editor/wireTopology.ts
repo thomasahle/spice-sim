@@ -1,4 +1,4 @@
-import { normalizeTuple, pointOnSegment, sameTuple } from "./geometry.ts";
+import { normalizeTuple, pointOnSegment, sameLineAndDirection, sameTuple } from "./geometry.ts";
 import type { GeometryWire } from "./geometryModel.ts";
 
 // Pure polyline-wire helpers: these operate purely on coordinate polylines
@@ -247,11 +247,4 @@ function compactWireGeometry(points: [number, number][]): [number, number][] {
     }
   }
   return compacted;
-}
-
-function sameLineAndDirection(a: [number, number], b: [number, number], c: [number, number]): boolean {
-  const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
-  if (Math.abs(cross) > 1e-9) return false;
-  const dot = (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1]);
-  return dot >= -1e-9;
 }

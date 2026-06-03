@@ -81,7 +81,7 @@ async function clickWaveformToggle(page, labelPrefix) {
   await waitFor(150);
 }
 
-async function clickWire(page, wireId) {
+async function wireScreenPoint(page, wireId) {
   const point = await page.evaluate((id) => {
     const el = document.querySelector(`.wire-hit-target[data-wire-id="${id}"]`);
     if (!(el instanceof SVGGraphicsElement)) return null;
@@ -92,8 +92,22 @@ async function clickWire(page, wireId) {
     return { x: p.x, y: p.y };
   }, wireId);
   assert.ok(point, `expected clickable wire ${wireId}`);
-  await page.mouse.click(point.x, point.y);
-  await waitFor(180);
+  return point;
+}
+
+// Plot a wire's net DELIBERATELY (§12.7): selecting a wire no longer auto-plots,
+// so double-click the wire body to add its net to the waveforms. Dispatched as a
+// native dblclick (Puppeteer's synthetic mouse clicks report detail 0, so the
+// real double-click handler needs the explicit event).
+async function plotWireNet(page, wireId) {
+  const dispatched = await page.evaluate((id) => {
+    const el = document.querySelector(`.wire-hit-target[data-wire-id="${id}"]`);
+    if (!el) return false;
+    el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
+    return true;
+  }, wireId);
+  assert.ok(dispatched, `expected a wire body to double-click for ${wireId}`);
+  await waitFor(400);
 }
 
 async function radixSelectOptions(page, ariaLabel) {
@@ -128,17 +142,32 @@ test("waveform list shows user-labeled nodes by default and hides internals/curr
     assert.ok(defaultState.debugTriggers.some((label) => /^\+ More traces\s*\d+/.test(label)), JSON.stringify(defaultState, null, 2));
     assert.deepEqual(defaultState.actionButtons, [], JSON.stringify(defaultState, null, 2));
 
-    await clickWire(page, "w-v-r");
-    const withClickedInternalWire = await waveformState(page);
-    assert.ok(withClickedInternalWire.rows.includes("V(out)"), JSON.stringify(withClickedInternalWire, null, 2));
+    // §12.7: a single click only selects; it must NOT plot the net.
+    const singleClickPoint = await wireScreenPoint(page, "w-v-r");
+    await page.mouse.click(singleClickPoint.x, singleClickPoint.y);
+    await waitFor(180);
+    const afterSingleClick = await waveformState(page);
+    assert.deepEqual(
+      afterSingleClick.rows,
+      ["V(out)"],
+      `selecting a wire must not auto-plot its net (§12.7): ${JSON.stringify(afterSingleClick, null, 2)}`,
+    );
+    // Clear the selection so the deliberate plot below is the only thing acting.
+    await page.mouse.click(singleClickPoint.x + 200, singleClickPoint.y + 120);
+    await waitFor(120);
+
+    // Double-clicking the wire DELIBERATELY plots its net (§12.7).
+    await plotWireNet(page, "w-v-r");
+    const withPlottedInternalWire = await waveformState(page);
+    assert.ok(withPlottedInternalWire.rows.includes("V(out)"), JSON.stringify(withPlottedInternalWire, null, 2));
     assert.ok(
-      withClickedInternalWire.rows.some((name) => /^V\(n\d+\)$/.test(name)),
-      `clicking an unlabeled wire should add that exact internal node trace without enabling every internal node: ${JSON.stringify(withClickedInternalWire, null, 2)}`,
+      withPlottedInternalWire.rows.some((name) => /^V\(n\d+\)$/.test(name)),
+      `plotting an unlabeled wire should add that exact internal node trace without enabling every internal node: ${JSON.stringify(withPlottedInternalWire, null, 2)}`,
     );
     assert.equal(
-      withClickedInternalWire.rows.filter((name) => /^V\(n\d+\)$/.test(name)).length,
+      withPlottedInternalWire.rows.filter((name) => /^V\(n\d+\)$/.test(name)).length,
       1,
-      `wire click should add one ad-hoc internal node, not turn on the whole internal-node bucket: ${JSON.stringify(withClickedInternalWire, null, 2)}`,
+      `plotting a wire should add one ad-hoc internal node, not turn on the whole internal-node bucket: ${JSON.stringify(withPlottedInternalWire, null, 2)}`,
     );
 
     await clickWaveformToggle(page, "Internal nodes");

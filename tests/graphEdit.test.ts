@@ -7,6 +7,7 @@ import {
   deleteNode,
   gcOrphanNodes,
   nodeDegree,
+  segmentBetweenNodes,
   splitEdgeAtPoint,
   splitEdgeAtSegment,
 } from "../src/editor/graphEdit.ts";
@@ -52,6 +53,47 @@ test("splitEdgeAtSegment splits a multi-bend wire into two nets at a middle segm
   // deleting the only segment of a 2-point wire drops it entirely
   const p2 = page({ nodes: [{ id: "a", x: 0, y: 0 }, { id: "b", x: 2, y: 0 }], wires: [{ id: "e", a: "a", b: "b", bends: [] }] });
   assert.equal(splitEdgeAtSegment(p2, "e", 0).wires.length, 0, "2-point wire's only segment → wire dropped");
+});
+
+test("segmentBetweenNodes finds the bend-free edge directly joining two nodes", () => {
+  const nodes: CircuitNode[] = [
+    { id: "n1", x: 0, y: 0 },
+    { id: "n2", x: 2, y: 0 },
+    { id: "n3", x: 2, y: 2 },
+  ];
+  const wires: Wire[] = [
+    { id: "e1", a: "n1", b: "n2", bends: [] }, // straight n1—n2
+    { id: "e2", a: "n2", b: "n3", bends: [[2, 1]] }, // bent n2—n3
+  ];
+  const p = page({ nodes, wires });
+  // Adjacent on the bend-free edge → segment 0 of e1 (order-independent).
+  assert.deepEqual(segmentBetweenNodes(p, "n1", "n2"), { wireId: "e1", segIndex: 0 });
+  assert.deepEqual(segmentBetweenNodes(p, "n2", "n1"), { wireId: "e1", segIndex: 0 });
+  // n2—n3 has a bend, so the two nodes are NOT consecutive polyline vertices.
+  assert.equal(segmentBetweenNodes(p, "n2", "n3"), null);
+  // Not directly connected.
+  assert.equal(segmentBetweenNodes(p, "n1", "n3"), null);
+  // Same node.
+  assert.equal(segmentBetweenNodes(p, "n1", "n1"), null);
+});
+
+test("split-between-two-nodes severs the net (segmentBetweenNodes → splitEdgeAtSegment)", () => {
+  const nodes: CircuitNode[] = [
+    { id: "n1", x: 0, y: 0 },
+    { id: "n2", x: 2, y: 0 },
+    { id: "n3", x: 4, y: 0 },
+  ];
+  const wires: Wire[] = [
+    { id: "e1", a: "n1", b: "n2", bends: [] },
+    { id: "e2", a: "n2", b: "n3", bends: [] },
+  ];
+  const p = page({ nodes, wires });
+  assert.equal(buildGraphNets(p).netOf.get("n1"), buildGraphNets(p).netOf.get("n3"), "connected first");
+  const seg = segmentBetweenNodes(p, "n2", "n3");
+  assert.ok(seg, "n2,n3 are adjacent on bend-free e2");
+  const after = splitEdgeAtSegment(p, seg.wireId, seg.segIndex);
+  const nets = buildGraphNets(after);
+  assert.notEqual(nets.netOf.get("n1"), nets.netOf.get("n3"), "splitting between n2,n3 severs the net");
 });
 
 test("deleteEdge splits the graph (the connection is severed)", () => {

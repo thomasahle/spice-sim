@@ -86,6 +86,11 @@ export interface MarqueeRect {
 
 export function MarqueeOverlay({ marquee }: { marquee: MarqueeRect | null }) {
   if (!marquee) return null;
+  // Don't flash a box for a plain click (press+release without a real drag) —
+  // only render once the rubber-band has actually been dragged out.
+  if (Math.abs(marquee.ex - marquee.sx) < 0.2 && Math.abs(marquee.ey - marquee.sy) < 0.2) {
+    return null;
+  }
   return (
     <rect
       x={Math.min(marquee.sx, marquee.ex) - 0.2}

@@ -17,6 +17,7 @@ import {
   normalizeTuple,
   pointOnSegment,
   rectsIntersect,
+  sameLineAndDirection,
   wireIntersectsRect,
   type Rect,
 } from "./geometry.ts";
@@ -178,25 +179,6 @@ export function connectedPlacementWires(
     }
   }
   return wires.filter((w) => w.points.length >= 2);
-}
-
-export function placementWireCutSpan(
-  c: CircuitComponent,
-  start: { x: number; y: number },
-  end: { x: number; y: number },
-): { start: { x: number; y: number }; end: { x: number; y: number } } {
-  const firstPin = pinWorldPos(c, 0);
-  const secondPin = pinWorldPos(c, 1);
-  const points = [firstPin, secondPin, start, end];
-  if (!pointsShareLine(firstPin, secondPin, points)) return { start, end };
-
-  const sorted = [...points].sort(
-    (a, b) => projectionAlong(firstPin, secondPin, a) - projectionAlong(firstPin, secondPin, b),
-  );
-  return {
-    start: normalizePoint(sorted[0]),
-    end: normalizePoint(sorted[sorted.length - 1]),
-  };
 }
 
 /**
@@ -1509,13 +1491,6 @@ function dedupeWirePoints(points: [number, number][]): [number, number][] {
     if (out.length === 0 || !sameTuple(out[out.length - 1], p)) out.push(p);
   }
   return out;
-}
-
-function sameLineAndDirection(a: [number, number], b: [number, number], c: [number, number]): boolean {
-  const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
-  if (Math.abs(cross) > 1e-9) return false;
-  const dot = (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1]);
-  return dot >= -1e-9;
 }
 
 function samePoint(a: { x: number; y: number }, b: { x: number; y: number }): boolean {
