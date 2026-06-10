@@ -339,3 +339,55 @@ export function squareDraggedWireEnds(
   });
   return changed ? { ...page, wires } : page;
 }
+
+/** Inline-splice a dropped 2-pin span into the wire both pins landed on.
+ *  Used by the component-drag drop path: matches the placement gesture's
+ *  "both pins on the same collinear wire → splice" rule
+ *  (component-placement-design case 2) while single-pin grazes and sweeps
+ *  stay unconnected (§16 no-auto-connect). Both pins must lie strictly
+ *  inside the SAME segment of one wire — bends on either side are kept.
+ *  Returns null when no such wire exists. */
+export function splicePinSpanIntoWire(
+  page: SchematicPage,
+  pinA: { id: NodeId; x: number; y: number },
+  pinB: { id: NodeId; x: number; y: number },
+): SchematicPage | null {
+  const idx = pinNodeIndex(page);
+  const strictlyInside = (
+    px: number,
+    py: number,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+  ) =>
+    pointOnSeg(px, py, x1, y1, x2, y2) &&
+    !(Math.abs(px - x1) < 1e-6 && Math.abs(py - y1) < 1e-6) &&
+    !(Math.abs(px - x2) < 1e-6 && Math.abs(py - y2) < 1e-6);
+  for (const wire of page.wires) {
+    if (wire.a === pinA.id || wire.b === pinA.id) continue;
+    if (wire.a === pinB.id || wire.b === pinB.id) continue;
+    const poly = wirePolyline(page, wire, idx);
+    if (!poly) continue;
+    for (let i = 0; i < poly.length - 1; i++) {
+      const [x1, y1] = poly[i];
+      const [x2, y2] = poly[i + 1];
+      if (!strictlyInside(pinA.x, pinA.y, x1, y1, x2, y2)) continue;
+      if (!strictlyInside(pinB.x, pinB.y, x1, y1, x2, y2)) continue;
+      const dA = Math.hypot(pinA.x - x1, pinA.y - y1);
+      const dB = Math.hypot(pinB.x - x1, pinB.y - y1);
+      const [near, far] = dA <= dB ? [pinA, pinB] : [pinB, pinA];
+      const beforeBends = poly.slice(1, i + 1).map(([bx, by]) => [bx, by] as [number, number]);
+      const afterBends = poly
+        .slice(i + 1, poly.length - 1)
+        .map(([bx, by]) => [bx, by] as [number, number]);
+      const e1: Wire = { id: wire.id, a: wire.a, b: near.id, bends: beforeBends };
+      const e2: Wire = { id: makeWireId(), a: far.id, b: wire.b, bends: afterBends };
+      return {
+        ...page,
+        wires: page.wires.flatMap((w) => (w.id === wire.id ? [e1, e2] : [w])),
+      };
+    }
+  }
+  return null;
+}

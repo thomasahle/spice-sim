@@ -232,7 +232,7 @@ import {
   geometryDocToGraph,
 } from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline, type Wire as GraphWire } from "./graphModel";
-import { applyArrangeGeometry, deleteNode as graphDeleteNode, segmentBetweenNodes, splitEdgeAtPoint, splitEdgeAtSegment, squareDraggedWireEnds } from "./graphEdit";
+import { applyArrangeGeometry, deleteNode as graphDeleteNode, segmentBetweenNodes, splicePinSpanIntoWire, splitEdgeAtPoint, splitEdgeAtSegment, squareDraggedWireEnds } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -3321,6 +3321,35 @@ export function Editor() {
     };
   }
 
+  /** Drop-splice gate: the drag moved exactly one 2-pin component (no wires
+   *  in the selection), neither pin is wired, and both pins landed on the
+   *  same wire segment. Mirrors the placement gesture's splice rule; every
+   *  other geometry keeps the no-auto-connect behaviour. */
+  function spliceDroppedComponent(
+    page: GraphPage,
+    activeDrag: NonNullable<typeof drag>,
+  ): GraphPage | null {
+    if (activeDrag.selectedWireIds.size > 0) return null;
+    const movedComponents = page.components.filter((c) => activeDrag.initial.has(c.id));
+    if (movedComponents.length !== 1) return null;
+    const c = movedComponents[0];
+    const pins = c.pins ?? [];
+    if (pins.length !== 2) return null;
+    const wired = new Set<string>();
+    for (const w of page.wires) {
+      wired.add(w.a);
+      wired.add(w.b);
+    }
+    if (pins.some((id) => wired.has(id))) return null;
+    const p0 = pinWorldPos(c, 0);
+    const p1 = pinWorldPos(c, 1);
+    return splicePinSpanIntoWire(
+      page,
+      { id: pins[0], x: p0.x, y: p0.y },
+      { id: pins[1], x: p1.x, y: p1.y },
+    );
+  }
+
   function netLabelDragSnap(
     activeDrag: NonNullable<typeof drag>,
     dx: number,
@@ -3481,10 +3510,70 @@ export function Editor() {
     return { ...p, wires: [...p.wires, { id: makeWireId(), a, b, bends }] };
   }
 
+  /** Split a routed wire at every component pin lying exactly on its path, so
+   *  a wire drawn THROUGH a pin attaches there — each sub-route endpoint then
+   *  resolves to the pin node in addWireEdgeAtCoords. Without this the wire
+   *  silently passes behind the part: it looks connected but isn't, and
+   *  dragging the part later leaves the wire behind. Only exact pin
+   *  pass-through attaches; crossing a body away from its pins still doesn't
+   *  connect (anti-auto-connect, §10). */
+  function splitWireRouteAtPins(
+    page: GraphPage,
+    route: [number, number][],
+  ): [number, number][][] {
+    const seen = new Set<string>();
+    const pins: { x: number; y: number }[] = [];
+    for (const c of page.components) {
+      for (let i = 0; i < getPinLayout(c).length; i++) {
+        const wp = pinWorldPos(c, i);
+        const key = `${coordKey(wp.x)},${coordKey(wp.y)}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          pins.push(wp);
+        }
+      }
+    }
+    if (pins.length === 0) return [route];
+    const pinKey = (x: number, y: number) => seen.has(`${coordKey(x)},${coordKey(y)}`);
+    const routes: [number, number][][] = [];
+    let current: [number, number][] = [route[0]];
+    for (let i = 0; i < route.length - 1; i++) {
+      const [x1, y1] = route[i];
+      const [x2, y2] = route[i + 1];
+      // Pins strictly inside this segment, ordered from its start.
+      const hits = pins
+        .filter((wp) => !samePoint(wp, { x: x1, y: y1 }) && !samePoint(wp, { x: x2, y: y2 }))
+        .filter((wp) => pointOnSegment(wp.x, wp.y, x1, y1, x2, y2))
+        .sort(
+          (a, b) => Math.hypot(a.x - x1, a.y - y1) - Math.hypot(b.x - x1, b.y - y1),
+        );
+      for (const hit of hits) {
+        current.push([hit.x, hit.y]);
+        routes.push(current);
+        current = [[hit.x, hit.y]];
+      }
+      current.push([x2, y2]);
+      // A bend that lands exactly on a pin also attaches there.
+      if (i < route.length - 2 && pinKey(x2, y2)) {
+        routes.push(current);
+        current = [[x2, y2]];
+      }
+    }
+    routes.push(current);
+    return routes.filter((r) => r.length >= 2);
+  }
+
   function commitWireRoute(points: [number, number][]) {
     const route = compactWirePoints(points);
     if (route.length < 2) return;
-    commit((d) => updateCurrentPageGraph(d, (p) => addWireEdgeAtCoords(p, route)));
+    commit((d) =>
+      updateCurrentPageGraph(d, (p) =>
+        splitWireRouteAtPins(p, route).reduce(
+          (acc, sub) => addWireEdgeAtCoords(acc, sub),
+          p,
+        ),
+      ),
+    );
   }
 
   function traceNameForWire(wireId: string): string | null {
@@ -4414,9 +4503,9 @@ export function Editor() {
         previewMutate((d) =>
           updateCurrentPageGraph(d, (p) => {
             const moved = applySelectionDragPreview(p, activeDrag, dx, dy).page;
+            if (dx === 0 && dy === 0) return moved;
             // Right-angle mode: settle the rubber-banded boundary wires back
             // into Manhattan form instead of leaving the stretch diagonal.
-            if (diagonalWiresRef.current || (dx === 0 && dy === 0)) return moved;
             const movedNodeIds = new Set<string>();
             for (const c of moved.components) {
               if (activeDrag.initial.has(c.id)) {
@@ -4429,7 +4518,13 @@ export function Editor() {
                 movedNodeIds.add(w.b);
               }
             }
-            return squareDraggedWireEnds(moved, movedNodeIds);
+            const squared = diagonalWiresRef.current
+              ? moved
+              : squareDraggedWireEnds(moved, movedNodeIds);
+            // Dropping a single 2-pin part with both (unwired) pins on the
+            // same wire segment splices it inline — same rule as placing a
+            // part onto a wire. Anything else stays unconnected (§16).
+            return spliceDroppedComponent(squared, activeDrag) ?? squared;
           }),
         );
       } else if (activeDrag.clickEditTarget) {
