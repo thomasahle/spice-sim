@@ -9,11 +9,14 @@ interface EditorCanvasHUDProps {
   onToggleGrid: () => void;
   snapToGrid: boolean;
   onToggleSnap: () => void;
+  diagonalWires: boolean;
+  onToggleDiagonal: () => void;
   autoRun: boolean;
   onToggleAutoRun: () => void;
   autoRunUi: ReturnType<typeof describeAutoRunStatus>;
   zoom: number;
   onFit: () => void;
+  onShowShortcuts: () => void;
 }
 
 export function EditorCanvasHUD({
@@ -21,11 +24,14 @@ export function EditorCanvasHUD({
   onToggleGrid,
   snapToGrid,
   onToggleSnap,
+  diagonalWires,
+  onToggleDiagonal,
   autoRun,
   onToggleAutoRun,
   autoRunUi,
   zoom,
   onFit,
+  onShowShortcuts,
 }: EditorCanvasHUDProps) {
   return (
     <div className="canvas-hud">
@@ -51,6 +57,16 @@ export function EditorCanvasHUD({
       </button>
       <button
         type="button"
+        className={diagonalWires ? "active" : ""}
+        onClick={onToggleDiagonal}
+        title="Toggle diagonal wire routing (off = orthogonal/Manhattan, independent of snap)"
+        aria-label="Toggle diagonal wire routing"
+        aria-pressed={diagonalWires}
+      >
+        Wires: {diagonalWires ? "Diagonal" : "Right-angle"}
+      </button>
+      <button
+        type="button"
         className={autoRun ? "active" : ""}
         onClick={onToggleAutoRun}
         title={autoRunUi.title}
@@ -67,6 +83,14 @@ export function EditorCanvasHUD({
         aria-label="Fit schematic to view"
       >
         Fit
+      </button>
+      <button
+        type="button"
+        onClick={onShowShortcuts}
+        title="Keyboard shortcuts (?)"
+        aria-label="Show keyboard shortcuts"
+      >
+        ?
       </button>
     </div>
   );

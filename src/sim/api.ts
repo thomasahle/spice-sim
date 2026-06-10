@@ -69,6 +69,9 @@ let httpAvailable = false;
 // is called (wired to the Engine panel's Refresh button), which lets a
 // late-started dev bridge reconnect on demand.
 let httpProbed = false;
+// Refresh sets this so an explicit user request probes the bridge even when
+// the WASM engine would otherwise win the speculative probe (below).
+let httpProbeForced = false;
 export function nextHttpProbeCache(previous: boolean, ok: boolean): boolean {
   return previous || ok;
 }
@@ -77,6 +80,7 @@ export function nextHttpProbeCache(previous: boolean, ok: boolean): boolean {
  *  the user explicitly asks to re-probe the engine (Refresh button). */
 export function resetHttpProbe(): void {
   httpProbed = false;
+  httpProbeForced = true;
 }
 
 export function engineErrorMessage(payload: unknown, fallback: string): string {
@@ -108,6 +112,13 @@ async function probeHttp(): Promise<boolean> {
   // Already probed and the bridge wasn't there — don't re-fetch (each failed
   // fetch to a refused port logs a browser console error). Refresh re-arms.
   if (httpProbed) return false;
+  // When the WASM engine is present, don't speculatively ping the native
+  // bridge: in browser deployments the bridge never exists and the refused
+  // connection logs a console error on every load. The Engine panel's
+  // Refresh button (resetHttpProbe) still forces an explicit bridge probe.
+  if (!httpProbeForced && (await isWasmBackendAvailable())) {
+    return false;
+  }
   httpProbed = true;
   try {
     const ctrl = new AbortController();

@@ -29,32 +29,42 @@ function useGithubStars(): number | null {
     }
   });
   useEffect(() => {
+    // The star count is cosmetic; dev sessions reload constantly and quickly
+    // trip GitHub's unauthenticated rate limit, and each 403 logs a console
+    // error JS can't suppress. Production-only.
+    if (import.meta.env.DEV) return;
+    let cachedCount: number | null = null;
     try {
       const raw = localStorage.getItem(STARS_CACHE_KEY);
       if (raw) {
-        const entry = JSON.parse(raw) as { count: number; ts: number };
+        const entry = JSON.parse(raw) as { count: number | null; ts: number };
+        if (typeof entry.count === "number") cachedCount = entry.count;
         if (Date.now() - entry.ts < STARS_TTL_MS) return;
       }
     } catch {
       /* fall through to refetch */
     }
+    const writeCache = (count: number | null) => {
+      try {
+        localStorage.setItem(STARS_CACHE_KEY, JSON.stringify({ count, ts: Date.now() }));
+      } catch {
+        /* ignore quota */
+      }
+    };
     fetch(`https://api.github.com/repos/${REPO_SLUG}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data && typeof data.stargazers_count === "number") {
           setStars(data.stargazers_count);
-          try {
-            localStorage.setItem(
-              STARS_CACHE_KEY,
-              JSON.stringify({ count: data.stargazers_count, ts: Date.now() }),
-            );
-          } catch {
-            /* ignore quota */
-          }
+          writeCache(data.stargazers_count);
+        } else {
+          // Rate-limited (403) or unexpected payload — remember the attempt so
+          // the next page load within the TTL doesn't refetch and re-log.
+          writeCache(cachedCount);
         }
       })
       .catch(() => {
-        /* offline or rate-limited — silently keep cached value */
+        writeCache(cachedCount);
       });
   }, []);
   return stars;

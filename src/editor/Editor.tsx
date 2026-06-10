@@ -110,6 +110,7 @@ import {
 import {
   buildNetlistGraph,
   coordKey,
+  countNonGroundNodes,
   type FloatingPinDiagnostic,
   type ModelDiagnostic,
 } from "./netlist";
@@ -167,6 +168,7 @@ import { SimSettingsPanel } from "./SimSettingsPanel";
 import { CheckboxField, SelectField } from "./RadixControls";
 import { readStoredBoolean, writeStoredBoolean } from "./storage";
 import { ImportNetlistModal, NetlistModal } from "./NetlistModals";
+import { ShortcutsDialog } from "./ShortcutsDialog";
 import { useEditorSelection } from "./useEditorSelection";
 import { compactWirePoints, pointTouchesWirePath, splitWiresAtPoint } from "./wireGeometry";
 import { collectPageBounds, pinHintsFor } from "./selectionBounds";
@@ -203,7 +205,7 @@ import { useWorkspacePersistence } from "./useWorkspacePersistence";
 import { useTraceMetadata } from "./useTraceMetadata";
 import { useProbeConnectivity } from "./useProbeConnectivity";
 import { usePinAnnotations } from "./usePinAnnotations";
-import { useProbeScopes } from "./useProbeScopes";
+import { useProbeScopes, type ProbeScopePlacement } from "./useProbeScopes";
 import { useLiveFlowSamples } from "./useLiveFlowSamples";
 import { findTimeIndex } from "./simSampleTime";
 import { useAutoRunSimulation } from "./useAutoRunSimulation";
@@ -230,7 +232,7 @@ import {
   geometryDocToGraph,
 } from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline, type Wire as GraphWire } from "./graphModel";
-import { applyArrangeGeometry, deleteNode as graphDeleteNode, segmentBetweenNodes, splitEdgeAtPoint, splitEdgeAtSegment } from "./graphEdit";
+import { applyArrangeGeometry, deleteNode as graphDeleteNode, segmentBetweenNodes, splitEdgeAtPoint, splitEdgeAtSegment, squareDraggedWireEnds } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -663,6 +665,9 @@ type RegularComponentNodeProps = {
   subxPinLabels: string[] | undefined;
   subxPinSides: ReturnType<typeof effectiveSubcircuitPinSidesForInstance> | undefined;
   subxPinLabelEditingIndex: number | null;
+  /** "1"/"0" per pin index: pin node has a wire attached. A string (not an
+   *  array) so the memo()'d node only re-renders when connectivity changes. */
+  connectedPinsKey: string;
   scheduleCanvasDoubleAction: (target: EventTarget | null) => boolean;
 };
 
@@ -687,6 +692,7 @@ const RegularComponentNode = memo(function RegularComponentNode({
   subxPinLabels,
   subxPinSides,
   subxPinLabelEditingIndex,
+  connectedPinsKey,
   scheduleCanvasDoubleAction,
 }: RegularComponentNodeProps) {
   const bounds = componentVisualBoundsFor(c, 0.16);
@@ -831,13 +837,15 @@ const RegularComponentNode = memo(function RegularComponentNode({
                 data-connection-handle="true"
               />
             )}
-            <circle
-              cx={p.x}
-              cy={p.y}
-              r={showPinTargets ? 0.2 : 0.14}
-              className={`component-pin ${sel ? "selected" : ""} ${showPinTargets ? terminalTone : "idle"}`}
-              data-connection-handle="true"
-            />
+            {(showPinTargets || connectedPinsKey[i] !== "1") && (
+              <circle
+                cx={p.x}
+                cy={p.y}
+                r={showPinTargets ? 0.2 : 0.14}
+                className={`component-pin ${sel ? "selected" : ""} ${showPinTargets ? terminalTone : "idle"}`}
+                data-connection-handle="true"
+              />
+            )}
           </g>
         ))}
       </g>
@@ -1467,9 +1475,14 @@ export function Editor() {
   const [liveFlow, setLiveFlow] = useState(() => readStoredBoolean("spicesim.liveFlow", true));
   const [autoRun, setAutoRun] = useState(() => readStoredBoolean("spicesim.autoRun", true));
   const [snapToGrid, setSnapToGrid] = useState(() => readStoredBoolean("spicesim.snapToGrid", true));
+  // Wire routing style, INDEPENDENT of snap (§12.8): default off = orthogonal
+  // (Manhattan) routing always — turning snap off no longer silently switches to
+  // diagonal wires. Toggle on for diagonal/direct routing.
+  const [diagonalWires, setDiagonalWires] = useState(() => readStoredBoolean("spicesim.diagonalWires", false));
   const [gridVisible, setGridVisible] = useState(() => readStoredBoolean("spicesim.gridVisible", true));
   const [netlistOpen, setNetlistOpen] = useState(false);
   const [importNetlistOpen, setImportNetlistOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [engineOk, setEngineOk] = useState<boolean | null>(null);
   const [activeToolGroupId, setActiveToolGroupId] = useState<string | null>(null);
   const [activeToolGroupTop, setActiveToolGroupTop] = useState(0);
@@ -1527,6 +1540,9 @@ export function Editor() {
     writeStoredBoolean("spicesim.snapToGrid", snapToGrid);
   }, [snapToGrid]);
   useEffect(() => {
+    writeStoredBoolean("spicesim.diagonalWires", diagonalWires);
+  }, [diagonalWires]);
+  useEffect(() => {
     writeStoredBoolean("spicesim.gridVisible", gridVisible);
   }, [gridVisible]);
   useEffect(() => {
@@ -1569,6 +1585,17 @@ export function Editor() {
       return points ? [{ id: w.id, points }] : [];
     });
   }, [page]);
+  // Node ids with at least one wire attached. Used to hide the pin dot on
+  // connected pins — solder dots belong only to degree-≥3 junctions, so a
+  // plain pin-to-wire join renders as a clean continuous line.
+  const wiredNodeIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const w of page.wires) {
+      ids.add(w.a);
+      ids.add(w.b);
+    }
+    return ids;
+  }, [page.wires]);
   const stableNodeScope = `${workspace.active ?? "shared"}:${doc.pages[0]?.id ?? "root"}`;
   if (stableNodeScopeRef.current !== stableNodeScope) {
     stableNodeScopeRef.current = stableNodeScope;
@@ -1739,6 +1766,11 @@ export function Editor() {
   }
 
   function resetInteractionState() {
+    // The doc just changed wholesale (load / import / clear): discard any
+    // in-flight wire draft rather than letting selectTool commit it into the
+    // incoming doc.
+    updateWireDraft(null);
+    updateWireGesture(null);
     selectTool("select");
     setSelectedIds(new Set());
     setCursor(null);
@@ -1746,10 +1778,11 @@ export function Editor() {
 
   function selectTool(nextTool: Tool) {
     clearToolGroupCloseTimer();
+    // Switching tools commits any wire segments already placed; only Escape
+    // and right-click discard them.
+    finishWireDraft();
     setTool(nextTool);
     setActiveToolGroupId(null);
-    updateWireDraft(null);
-    updateWireGesture(null);
     setPlacementDraft(null);
     setWireDrag(null);
     setDrag(null);
@@ -1816,6 +1849,21 @@ export function Editor() {
     );
     setSnapTarget(null);
     setStatus(next ? "Removed last wire point" : "Wire canceled");
+    return true;
+  }
+
+  /** Commit the segments already placed in the wire draft (if any) and end
+   *  the draft. Wired to Enter and to tool switches, so placed segments
+   *  survive; only Escape / right-click discard them. */
+  function finishWireDraft(): boolean {
+    const draft = wireDraftRef.current;
+    if (!draft) return false;
+    updateWireDraft(null);
+    updateWireGesture(null);
+    setSnapTarget(null);
+    if (draft.length < 2) return false;
+    commitWireRoute(draft);
+    setStatus("Wire placed");
     return true;
   }
 
@@ -2027,6 +2075,8 @@ export function Editor() {
   }, []);
   const snapToGridRef = useRef(snapToGrid);
   snapToGridRef.current = snapToGrid;
+  const diagonalWiresRef = useRef(diagonalWires);
+  diagonalWiresRef.current = diagonalWires;
   const editGenerationRef = useRef(0);
   const latestRunIdRef = useRef(0);
 
@@ -2452,6 +2502,10 @@ export function Editor() {
 
       // Every other shortcut yields to text editing inside form fields.
       if (inEditableField) return;
+      // Hold Space to pan (the "hand" affordance; the dedicated Pan tool was
+      // removed, panning also works via Alt-drag / middle-mouse / wheel).
+      // The H alias is handled further down, AFTER type-to-edit, so typing
+      // "h" into a selected label/value still starts the edit.
       if (e.code === "Space") {
         e.preventDefault();
         spacePanRef.current = true;
@@ -2504,6 +2558,11 @@ export function Editor() {
       if (e.shiftKey && !meta && k === "s") {
         e.preventDefault();
         setSnapToGrid((v) => !v);
+        return;
+      }
+      if (!meta && e.key === "?") {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
         return;
       }
       // ⌘1..9 → switch to that page in the active project.
@@ -2587,6 +2646,18 @@ export function Editor() {
       if ((k === "backspace" || k === "delete") && wireDraftRef.current) {
         e.preventDefault();
         stepBackWireDraft();
+        return;
+      }
+      if (k === "enter" && wireDraftRef.current) {
+        e.preventDefault();
+        finishWireDraft();
+        return;
+      }
+      // Hold H to pan (alias for Space). Placed after the type-to-edit check
+      // above so "h" typed at a selected label/value begins editing instead.
+      if (e.code === "KeyH" && !meta) {
+        e.preventDefault();
+        spacePanRef.current = true;
         return;
       }
       // Tool shortcuts. V = Voltage source (LTspice convention); S = Select.
@@ -2738,7 +2809,7 @@ export function Editor() {
       }
     };
     const up = (e: KeyboardEvent) => {
-      if (e.code === "Space") {
+      if (e.code === "Space" || e.code === "KeyH") {
         spacePanRef.current = false;
       }
     };
@@ -2800,7 +2871,14 @@ export function Editor() {
   function fitToContent() {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return;
-    fitBoundsToView(collectPageBounds(currentPageGraph(graphDocRef.current)), rect);
+    const bounds = collectPageBounds(currentPageGraph(graphDocRef.current));
+    // Include the inline probe mini-scopes so Fit doesn't leave them clipped
+    // at the canvas edge.
+    for (const { probe, placement } of visibleProbeScopesRef.current) {
+      bounds.xs.push(probe.x + placement.dx, probe.x + placement.dx + SCOPE_WIDTH);
+      bounds.ys.push(probe.y + placement.dy, probe.y + placement.dy + SCOPE_HEIGHT);
+    }
+    fitBoundsToView(bounds, rect);
   }
 
   function fitSelectionToContent() {
@@ -3756,7 +3834,7 @@ export function Editor() {
           ...routeWireSegmentAvoiding(
             { x: prev[0], y: prev[1] },
             { x: target[0], y: target[1] },
-            snapToGrid,
+            !diagonalWires,
             { components: page.components, wires: projectWirePolylines(page) },
           ).slice(1),
         ];
@@ -4334,7 +4412,25 @@ export function Editor() {
         const snap = netLabelDragSnap(activeDrag, delta.x, delta.y);
         const { x: dx, y: dy } = snap.delta;
         previewMutate((d) =>
-          updateCurrentPageGraph(d, (p) => applySelectionDragPreview(p, activeDrag, dx, dy).page),
+          updateCurrentPageGraph(d, (p) => {
+            const moved = applySelectionDragPreview(p, activeDrag, dx, dy).page;
+            // Right-angle mode: settle the rubber-banded boundary wires back
+            // into Manhattan form instead of leaving the stretch diagonal.
+            if (diagonalWiresRef.current || (dx === 0 && dy === 0)) return moved;
+            const movedNodeIds = new Set<string>();
+            for (const c of moved.components) {
+              if (activeDrag.initial.has(c.id)) {
+                for (const pin of c.pins ?? []) movedNodeIds.add(pin);
+              }
+            }
+            for (const w of moved.wires) {
+              if (activeDrag.selectedWireIds.has(w.id)) {
+                movedNodeIds.add(w.a);
+                movedNodeIds.add(w.b);
+              }
+            }
+            return squareDraggedWireEnds(moved, movedNodeIds);
+          }),
         );
       } else if (activeDrag.clickEditTarget) {
         beginCanvasClickEditTarget(activeDrag.clickEditTarget);
@@ -4380,7 +4476,7 @@ export function Editor() {
           ...routeWireSegmentAvoiding(
             { x: start[0], y: start[1] },
             target,
-            snapToGrid,
+            !diagonalWires,
             { components: page.components, wires: projectWirePolylines(page) },
           ).slice(1),
         ];
@@ -4783,6 +4879,24 @@ export function Editor() {
   }
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
+  // Keep the world point at the canvas centre fixed when the canvas resizes
+  // (waveform panel opening/closing, window resize) — otherwise the schematic
+  // slides under the HUD / off the edge as the panel takes the bottom half.
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    let prev = el.getBoundingClientRect();
+    const ro = new ResizeObserver(() => {
+      const next = el.getBoundingClientRect();
+      const dw = next.width - prev.width;
+      const dh = next.height - prev.height;
+      prev = next;
+      if (dw === 0 && dh === 0) return;
+      setPan((p) => ({ x: p.x + dw / 2, y: p.y + dh / 2 }));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   useEffect(() => {
     const el = svgRef.current;
     if (!el) return;
@@ -4790,8 +4904,11 @@ export function Editor() {
       e.preventDefault();
       const rect = el.getBoundingClientRect();
       if (e.ctrlKey || e.metaKey) {
-        // Pinch → zoom toward cursor
-        const factor = Math.exp(-e.deltaY * 0.012);
+        // Pinch → zoom toward cursor. Trackpad pinches arrive as a stream of
+        // small deltas; a physical wheel notch is one ±100 burst, which the
+        // raw exponential would turn into a ~4× jump — clamp the per-event
+        // factor so a notch steps ~1.33× instead.
+        const factor = Math.min(4 / 3, Math.max(0.75, Math.exp(-e.deltaY * 0.012)));
         const next = zoomAtViewportPoint(
           panRef.current,
           zoomRef.current,
@@ -6175,15 +6292,6 @@ export function Editor() {
     }
   }
 
-  function clearDoc() {
-    commit(() => emptyDocGraph);
-    resetInteractionState();
-    clearSimulationState();
-    setShowStartupEmptyCard(false);
-    setWaveformVisible(false);
-    setStatus("Cleared");
-    window.setTimeout(resetCanvasView, 0);
-  }
   function loadDemo(id: string) {
     const demo = DEMOS.find((d) => d.id === id);
     if (!demo) return;
@@ -6421,6 +6529,8 @@ export function Editor() {
     }
     return labels;
   }, [page.components, pinAnnotations.nodes.posToNode]);
+  // Ref mirror for the mount-only keyboard handler's fitToContent.
+  const visibleProbeScopesRef = useRef<ProbeScopePlacement[]>([]);
   const { probeScopes, probeScopeLabelIds, visibleProbeScopes } = useProbeScopes({
     page: graphPage,
     posToNode: pinAnnotations.nodes.posToNode,
@@ -6433,6 +6543,7 @@ export function Editor() {
     defaultDy: SCOPE_OFFSET_Y,
     scopeLayoutOptions: SCOPE_LAYOUT,
   });
+  visibleProbeScopesRef.current = visibleProbeScopes;
   const textEditOverlay = useMemo(() => {
     if (!textEdit) return null;
     const toPixels = (x: number, y: number, width: number, height: number) => ({
@@ -7552,7 +7663,7 @@ export function Editor() {
           <div className="panel-summary-grid">
             <div>
               <span>Nodes</span>
-              <code>{pinAnnotations.nodes.rootToName.size}</code>
+              <code>{countNonGroundNodes(pinAnnotations.nodes)}</code>
             </div>
             <div>
               <span>Components</span>
@@ -7576,9 +7687,6 @@ export function Editor() {
           >
             <IconGlyph kind="open" />
             <span>Import netlist</span>
-          </button>
-          <button type="button" className="panel-clear-btn danger" onClick={clearDoc}>
-            Clear schematic
           </button>
         </div>
 
@@ -8006,7 +8114,7 @@ export function Editor() {
                 ...routeWireSegmentAvoiding(
                   { x: last[0], y: last[1] },
                   tip,
-                  snapToGrid,
+                  !diagonalWires,
                   { components: page.components, wires: pageWirePolylines },
                 ).slice(1),
               ];
@@ -8490,6 +8598,9 @@ export function Editor() {
                   subxPinLabels={subxPinLabels}
                   subxPinSides={isSubx ? effectiveSubcircuitPinSidesForInstance(c) : undefined}
                   subxPinLabelEditingIndex={subxPinLabelEditingIndex}
+                  connectedPinsKey={(c.pins ?? [])
+                    .map((id) => (wiredNodeIds.has(id) ? "1" : "0"))
+                    .join("")}
                   scheduleCanvasDoubleAction={scheduleCanvasDoubleActionStable}
                 />
               );
@@ -8752,6 +8863,9 @@ export function Editor() {
           onToggleGrid={() => setGridVisible((v) => !v)}
           snapToGrid={snapToGrid}
           onToggleSnap={() => setSnapToGrid((v) => !v)}
+          diagonalWires={diagonalWires}
+          onToggleDiagonal={() => setDiagonalWires((v) => !v)}
+          onShowShortcuts={() => setShortcutsOpen(true)}
           autoRun={autoRun}
           onToggleAutoRun={() => setAutoRun((v) => !v)}
           autoRunUi={autoRunUi}
@@ -8829,6 +8943,7 @@ export function Editor() {
           }}
         />
       )}
+      {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
     </div>
     <StatusBar
       engineOk={engineOk}
@@ -8838,7 +8953,7 @@ export function Editor() {
       status={status}
       autoRunLabel={autoRunUi.statusLabel}
       autoRunTitle={autoRunUi.title}
-      nNodes={pinAnnotations.nodes.rootToName.size}
+      nNodes={countNonGroundNodes(pinAnnotations.nodes)}
       nComponents={electricalComponentCount(page)}
       plot={simResult?.plot ?? null}
       plotStale={simulationStale && !autoRun}

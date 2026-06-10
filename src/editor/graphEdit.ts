@@ -295,3 +295,47 @@ export function splitEdgeAtPoint(
   }
   return null;
 }
+
+/** After a selection drag, re-square the rubber-banded boundary wires
+ *  (right-angle mode): a wire with exactly one endpoint on a moved node keeps
+ *  its old bends, so the segment next to the moved end can come out diagonal.
+ *  Insert one corner bend there, keeping the bend chain's existing axis where
+ *  one exists so the wire turns at the bend instead of zig-zagging. */
+export function squareDraggedWireEnds(
+  page: SchematicPage,
+  movedNodeIds: Set<NodeId>,
+): SchematicPage {
+  const idx = pinNodeIndex(page);
+  let changed = false;
+  const wires = page.wires.map((wire) => {
+    const aMoved = movedNodeIds.has(wire.a);
+    const bMoved = movedNodeIds.has(wire.b);
+    if (aMoved === bMoved) return wire; // untouched, or rigid internal wire
+    const poly = wirePolyline(page, wire, idx);
+    if (!poly || poly.length < 2) return wire;
+    // Work from the moved end: p = moved endpoint, q = its neighbour vertex.
+    const fromA = aMoved;
+    const p = fromA ? poly[0] : poly[poly.length - 1];
+    const q = fromA ? poly[1] : poly[poly.length - 2];
+    const diagonal = Math.abs(p[0] - q[0]) > 1e-6 && Math.abs(p[1] - q[1]) > 1e-6;
+    if (!diagonal) return wire;
+    // Preserve the axis of the segment arriving at q from the stationary side
+    // (if there is one and it is axis-aligned): the new corner extends q's
+    // perpendicular. Otherwise default to horizontal-then-vertical from q.
+    const qPrev = fromA ? poly[2] : poly[poly.length - 3];
+    let corner: [number, number];
+    if (qPrev && Math.abs(qPrev[1] - q[1]) < 1e-6) {
+      corner = [q[0], p[1]]; // arrive horizontal → leave vertical
+    } else if (qPrev && Math.abs(qPrev[0] - q[0]) < 1e-6) {
+      corner = [p[0], q[1]]; // arrive vertical → leave horizontal
+    } else {
+      corner = [p[0], q[1]];
+    }
+    changed = true;
+    return {
+      ...wire,
+      bends: fromA ? [corner, ...wire.bends] : [...wire.bends, corner],
+    };
+  });
+  return changed ? { ...page, wires } : page;
+}

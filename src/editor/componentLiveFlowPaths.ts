@@ -12,10 +12,10 @@ export function componentLiveFlowPaths(component: CircuitComponent): string[] {
     case "R":
       return ["M -2 0 L -1.5 0 L -1.25 -0.45 L -0.75 0.45 L -0.25 -0.45 L 0.25 0.45 L 0.75 -0.45 L 1.25 0.45 L 1.5 0 L 2 0"];
     case "C":
+      // Leads only — the plate bars run perpendicular to the current, so
+      // animating dashes along them reads as scatter, not flow.
       return [
         "M 0 -2 L 0 -0.55",
-        "M -0.9 -0.55 L 0.9 -0.55",
-        "M -0.9 0.55 L 0.9 0.55",
         "M 0 0.55 L 0 2",
       ];
     case "L":
@@ -32,16 +32,12 @@ export function componentLiveFlowPaths(component: CircuitComponent): string[] {
         "M 0.32 -0.6 L 0.32 0.6",
       ];
     case "GND":
-      return [
-        "M 0 -1.15 L 0 -0.42",
-        "M -0.72 -0.42 L 0.72 -0.42",
-        "M -0.46 0 L 0.46 0",
-        "M -0.22 0.38 L 0.22 0.38",
-      ];
+      // Only the lead carries flow. Animating the three symbol bars too made
+      // a dash "starburst" around every ground junction.
+      return ["M 0 -1.15 L 0 -0.42"];
     case "D":
       return [
         "M 0 -2 L 0 -0.7 L -0.6 -0.7 L 0 0.4 L 0.6 -0.7 L 0 -0.7",
-        "M -0.65 0.4 L 0.65 0.4",
         "M 0 0.4 L 0 2",
       ];
     case "NPN":

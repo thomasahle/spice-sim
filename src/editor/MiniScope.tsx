@@ -116,9 +116,16 @@ export function MiniScope({
     yMin = -1;
     yMax = 1;
   }
-  if (yMin === yMax) {
-    yMin -= 0.5;
-    yMax += 0.5;
+  // Treat numerically-flat traces as flat: autoscaling a span at the solver's
+  // noise floor (e.g. 1 V ± 1e-13 on a floating node) blows the noise up into
+  // full-frame fuzz. Render such traces as a centered flat line instead.
+  {
+    const center = (yMin + yMax) / 2;
+    const noiseFloor = Math.max(Math.abs(center) * 1e-6, 1e-12);
+    if (yMax - yMin <= noiseFloor) {
+      yMin = center - Math.max(Math.abs(center) * 0.5, 0.5);
+      yMax = center + Math.max(Math.abs(center) * 0.5, 0.5);
+    }
   }
   const pad = (yMax - yMin) * 0.08;
   yMin -= pad;
@@ -386,7 +393,15 @@ function formatSI(v: number, unit: string): string {
   if (!Number.isFinite(v)) return "—";
   const a = Math.abs(v);
   if (a < 1e-12) return `0 ${unit}`;
-  const exp = Math.floor(Math.log10(a) / 3) * 3;
+  let exp = Math.floor(Math.log10(a) / 3) * 3;
+  let scaled = v / Math.pow(10, exp);
+  // log10 float error (and display rounding) can leave the mantissa at ~1000
+  // for values just shy of a prefix boundary — "1000.0 mV" instead of "1.00 V".
+  // Roll up to the next prefix.
+  if (Math.abs(scaled) >= 999.95) {
+    exp += 3;
+    scaled = v / Math.pow(10, exp);
+  }
   const suff: Record<number, string> = {
     [-15]: "f",
     [-12]: "p",
@@ -400,7 +415,6 @@ function formatSI(v: number, unit: string): string {
   };
   const s = suff[exp];
   if (s === undefined) return `${v.toExponential(2)} ${unit}`;
-  const scaled = v / Math.pow(10, exp);
   const fixed = Math.abs(scaled) < 10 ? scaled.toFixed(2) : scaled.toFixed(1);
   return `${fixed}${s ? " " + s : " "}${unit}`;
 }

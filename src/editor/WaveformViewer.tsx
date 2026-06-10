@@ -262,6 +262,13 @@ export function WaveformViewer({
     selectedTraces.size === 0 || !hasSelectedVisibleTrace ? true : selectedTraces.has(t.name),
   );
   const selectedVisibleTraceCount = traces.filter((trace) => selectedTraces.has(trace.name)).length;
+  // An AC run where every trace is numerically zero almost always means no
+  // source carries an AC stimulus — point at the fix instead of plotting a
+  // silent flat line.
+  const acAllZero =
+    isAc &&
+    visibleTraces.length > 0 &&
+    visibleTraces.every((t) => t.data.every((v) => !Number.isFinite(v) || Math.abs(v) < 1e-12));
   const xyTraceNames = useMemo(
     () => selectableXyTraceNames(rawTraces.map((trace) => trace.name), userTraceNameSet),
     [rawTraces, userTraceNameSet],
@@ -667,6 +674,12 @@ export function WaveformViewer({
             )}
           </div>
           <div ref={containerRef} className="wf-canvas-wrap">
+        {acAllZero && (
+          <div className="wf-zero-stimulus-hint" role="status">
+            All AC traces are zero — no source in the circuit has an AC stimulus.
+            Select a source and click <strong>Set AC 1</strong> in the inspector, then run again.
+          </div>
+        )}
         <svg
           width={size.w}
           height={size.h}
@@ -1438,32 +1451,80 @@ function BodePane({
     }));
   return (
     <div className="wf-bode-pane">
-      <div className="wf-bode-mag">
-        <div className="wf-bode-axis-label">Magnitude (dB)</div>
-        <BodePlot
-          scale={scale}
-          traces={magTraces}
-          size={size}
-          unit="dB"
-          colorMap={colorMap}
-          traceAliases={traceAliases}
-          runLabels={runLabels}
-        />
-      </div>
-      <div className="wf-bode-phase">
-        <div className="wf-bode-axis-label">Phase (deg)</div>
-        {phaseTraces.length > 0 ? (
+      <BodeSubplot
+        className="wf-bode-mag"
+        label="Magnitude (dB)"
+        scale={scale}
+        traces={magTraces}
+        fallbackSize={size}
+        unit="dB"
+        colorMap={colorMap}
+        traceAliases={traceAliases}
+        runLabels={runLabels}
+      />
+      <BodeSubplot
+        className="wf-bode-phase"
+        label="Phase (deg)"
+        scale={scale}
+        traces={phaseTraces}
+        fallbackSize={size}
+        unit="°"
+        colorMap={colorMap}
+        traceAliases={traceAliases}
+        runLabels={runLabels}
+        emptyHint="No complex phase vectors returned for this run."
+      />
+    </div>
+  );
+}
+
+/** One Bode subplot row: a static header label + a measured plot box, so the
+ *  SVG fills exactly the space this half of the pane actually has (the pane
+ *  itself is sized by the panel, not by the Waveform tab's canvas). */
+function BodeSubplot({
+  className,
+  label,
+  scale,
+  traces,
+  fallbackSize,
+  unit,
+  colorMap,
+  traceAliases,
+  runLabels,
+  emptyHint,
+}: {
+  className: string;
+  label: string;
+  scale: SimVector;
+  traces: SimVector[];
+  fallbackSize: { w: number; h: number };
+  unit: string;
+  colorMap: Map<string, string>;
+  traceAliases?: Map<string, string>;
+  runLabels?: Map<number, string>;
+  emptyHint?: string;
+}) {
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const measured = useMeasuredSize(boxRef, {
+    w: fallbackSize.w,
+    h: Math.floor(fallbackSize.h / 2),
+  });
+  return (
+    <div className={className}>
+      <div className="wf-bode-axis-label">{label}</div>
+      <div ref={boxRef} className="wf-bode-plot-box">
+        {traces.length > 0 ? (
           <BodePlot
             scale={scale}
-            traces={phaseTraces}
-            size={size}
-            unit="°"
+            traces={traces}
+            size={measured}
+            unit={unit}
             colorMap={colorMap}
             traceAliases={traceAliases}
             runLabels={runLabels}
           />
         ) : (
-          <div className="sim-hint">No complex phase vectors returned for this run.</div>
+          <div className="sim-hint">{emptyHint ?? "No traces to plot."}</div>
         )}
       </div>
     </div>
@@ -1491,9 +1552,10 @@ function BodePlot({
   const PAD_L = 56;
   const PAD_R = 12;
   const PAD_T = 8;
-  const PAD_B = 24;
-  const h = Math.max(140, Math.floor((size.h - 40) / 2));
-  const w = Math.max(320, size.w);
+  const PAD_B = 30;
+  // `size` is the already-measured plot box (see BodeSubplot) — fill it.
+  const h = Math.max(90, Math.floor(size.h));
+  const w = Math.max(280, Math.floor(size.w));
   const innerW = w - PAD_L - PAD_R;
   const innerH = h - PAD_T - PAD_B;
   let xMin = Math.max(scale.data[0], 1e-30);
@@ -1587,7 +1649,7 @@ function BodePlot({
       {xTicks.map((x) => (
         <g key={`x${x}`}>
           <line x1={mapX(x)} x2={mapX(x)} y1={PAD_T} y2={h - PAD_B} className="wf-bode-grid" />
-          <text x={mapX(x)} y={h - 7} textAnchor="middle" className="wf-bode-tick">
+          <text x={mapX(x)} y={h - 16} textAnchor="middle" className="wf-bode-tick">
             {formatSI(x)}
           </text>
         </g>
@@ -1596,7 +1658,7 @@ function BodePlot({
         <g key={`y${y}`}>
           <line x1={PAD_L} x2={w - PAD_R} y1={mapY(y)} y2={mapY(y)} className="wf-bode-grid" />
           <text x={PAD_L - 7} y={mapY(y) + 3} textAnchor="end" className="wf-bode-tick">
-            {formatAxisValue(y, unit)}
+            {formatAxisValue(y, unit, yTicks.length > 1 ? yTicks[1] - yTicks[0] : undefined)}
           </text>
         </g>
       ))}
@@ -1661,7 +1723,7 @@ function BodePlot({
           ))}
         </g>
       )}
-      <text x={(PAD_L + w - PAD_R) / 2} y={h - 1} textAnchor="middle" className="wf-bode-axis-text">
+      <text x={(PAD_L + w - PAD_R) / 2} y={h - 3} textAnchor="middle" className="wf-bode-axis-text">
         Frequency (Hz)
       </text>
     </svg>
@@ -1968,6 +2030,10 @@ function magToDb(v: number): number {
   return 20 * Math.log10(mag);
 }
 
+function cleanZero(v: number): number {
+  return Math.abs(v) < 0.05 ? 0 : v;
+}
+
 function formatDb(v: number): string {
   return Number.isFinite(v) ? `${cleanZero(v).toFixed(1)} dB` : "—";
 }
@@ -1984,14 +2050,15 @@ function formatBodeReadoutValue(v: number, unit: string): string {
   return `${formatSI(cleaned)}${unit}`;
 }
 
-function formatAxisValue(v: number, unit: string): string {
+function formatAxisValue(v: number, unit: string, step?: number): string {
   if (!Number.isFinite(v)) return "—";
-  const cleaned = cleanZero(v);
-  return unit === "°" ? `${cleaned.toFixed(0)}°` : `${cleaned.toFixed(0)}`;
-}
-
-function cleanZero(v: number): number {
-  return Math.abs(v) < 0.05 ? 0 : v;
+  // Use enough decimals to tell adjacent ticks apart — a sub-unit tick step
+  // would otherwise render every label as "0°".
+  const digits =
+    step && step > 0 && step < 1 ? Math.max(0, Math.min(6, Math.ceil(-Math.log10(step)))) : 0;
+  const zeroTolerance = step && step > 0 ? step / 20 : 0.05;
+  const cleaned = Math.abs(v) < zeroTolerance ? 0 : v;
+  return unit === "°" ? `${cleaned.toFixed(digits)}°` : `${cleaned.toFixed(digits)}`;
 }
 
 function waveformSvgFromElement(svg: SVGSVGElement, title: string): string {
@@ -2025,7 +2092,15 @@ function formatSI(v: number): string {
   if (!Number.isFinite(v)) return "—";
   const a = Math.abs(v);
   if (a === 0) return "0";
-  const exp = Math.floor(Math.log10(a) / 3) * 3;
+  let exp = Math.floor(Math.log10(a) / 3) * 3;
+  let scaled = v / Math.pow(10, exp);
+  // log10 float error (and display rounding) can leave the mantissa at ~1000
+  // for values just shy of a prefix boundary — "1000.0m" instead of "1.00".
+  // Roll up to the next prefix.
+  if (Math.abs(scaled) >= 999.95) {
+    exp += 3;
+    scaled = v / Math.pow(10, exp);
+  }
   const suffixes: Record<number, string> = {
     [-15]: "f",
     [-12]: "p",
@@ -2040,7 +2115,6 @@ function formatSI(v: number): string {
   };
   const s = suffixes[exp];
   if (s === undefined) return v.toExponential(2);
-  const scaled = v / Math.pow(10, exp);
   return `${Math.abs(scaled) < 10 ? scaled.toFixed(2) : scaled.toFixed(1)}${s}`;
 }
 

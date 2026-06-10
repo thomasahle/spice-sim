@@ -1202,7 +1202,7 @@ function hasGroundComponent(page: SchematicPage): boolean {
   return page.components.some((c) => c.kind === "GND");
 }
 
-function countNonGroundNodes(nodes: NodeMap): number {
+export function countNonGroundNodes(nodes: NodeMap): number {
   let count = 0;
   for (const name of nodes.rootToName.values()) {
     if (name !== "0") count += 1;

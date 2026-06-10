@@ -27,3 +27,6 @@ src-tauri/target
 *.njsproj
 *.sln
 *.sw?
+
+# Local pixel-QA harness (see qa.mjs header)
+qa.mjs

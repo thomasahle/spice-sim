@@ -1041,9 +1041,14 @@ button[disabled] {
   /* Above .playbar / .wf-pane / .canvas-actions so the hover tooltips and
      palette popovers extending past the canvas row stay on top. */
   z-index: 40;
-  width: 46px;
+  min-width: 46px;
   display: flex;
   flex-direction: column;
+  /* When the canvas gets short (plot panel open / small window) the column
+     wraps into additional columns instead of overflowing onto the panel
+     below — max-height is the wrap constraint. */
+  flex-wrap: wrap;
+  align-content: flex-start;
   align-items: center;
   gap: 3px;
   padding: 6px 4px;
@@ -1534,13 +1539,6 @@ button[disabled] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.panel-clear-btn {
-  align-self: flex-start;
-  margin-top: 2px;
-  padding: 4px 9px;
-  font-size: 11.5px;
-}
-
 /* Palette */
 .palette {
   display: grid;
@@ -4364,6 +4362,62 @@ button[disabled] {
   from { transform: translate(-50%, -50%) scale(0.96); opacity: 0; }
   to { transform: translate(-50%, -50%) scale(1); opacity: 1; }
 }
+
+/* Keyboard shortcuts cheat-sheet */
+.shortcuts-modal {
+  max-width: 720px;
+  width: min(720px, calc(100vw - 48px));
+  max-height: min(640px, calc(100vh - 48px));
+  overflow-y: auto;
+}
+.shortcuts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px 24px;
+}
+.shortcuts-group h3 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+}
+.shortcuts-group dl {
+  margin: 0;
+}
+.shortcuts-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2.5px 0;
+}
+.shortcuts-row dt {
+  white-space: nowrap;
+}
+.shortcuts-row dd {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-muted);
+  text-align: right;
+}
+.shortcuts-or {
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+.shortcuts-row kbd {
+  display: inline-block;
+  min-width: 16px;
+  padding: 1px 5px;
+  border: 1px solid var(--hairline);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg-glass);
+  font-family: inherit;
+  font-size: 11px;
+  text-align: center;
+}
 .modal-header {
   display: flex;
   align-items: center;
@@ -4702,6 +4756,25 @@ button[disabled] {
   display: block;
   width: 100%;
   height: 100%;
+}
+/* Centered overlay hint when an AC run returns all-zero traces (no AC
+   stimulus on any source). */
+.wf-zero-stimulus-hint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  max-width: 420px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-window));
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: var(--r-md);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+  box-shadow: var(--shadow-soft);
+  pointer-events: none;
 }
 .wf-readout {
   position: absolute;
@@ -5187,19 +5260,25 @@ button[disabled] {
 }
 .wf-bode-mag,
 .wf-bode-phase {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   border-bottom: 1px solid var(--hairline);
-  padding: 8px;
+  padding: 6px 8px 4px;
   overflow: hidden;
 }
 .wf-bode-axis-label {
+  flex: 0 0 auto;
   font-size: 10px;
   color: var(--ink-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  position: absolute;
-  top: 6px;
-  left: 10px;
+  margin: 0 0 2px 2px;
+}
+.wf-bode-plot-box {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
 }
 .wf-bode-svg { display: block; }
 .wf-bode-grid {
