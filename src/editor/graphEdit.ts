@@ -340,54 +340,71 @@ export function squareDraggedWireEnds(
   return changed ? { ...page, wires } : page;
 }
 
-/** Inline-splice a dropped 2-pin span into the wire both pins landed on.
- *  Used by the component-drag drop path: matches the placement gesture's
- *  "both pins on the same collinear wire → splice" rule
- *  (component-placement-design case 2) while single-pin grazes and sweeps
- *  stay unconnected (§16 no-auto-connect). Both pins must lie strictly
- *  inside the SAME segment of one wire — bends on either side are kept.
- *  Returns null when no such wire exists. */
+/** Where a point sits on a polyline: the index of the segment containing it
+ *  and its arc-length distance from the polyline start. Null if not on it. */
+function polylineArcLocation(
+  poly: [number, number][],
+  pt: { x: number; y: number },
+): { seg: number; arc: number } | null {
+  let travelled = 0;
+  for (let i = 0; i < poly.length - 1; i++) {
+    const [x1, y1] = poly[i];
+    const [x2, y2] = poly[i + 1];
+    if (pointOnSeg(pt.x, pt.y, x1, y1, x2, y2)) {
+      return { seg: i, arc: travelled + Math.hypot(pt.x - x1, pt.y - y1) };
+    }
+    travelled += Math.hypot(x2 - x1, y2 - y1);
+  }
+  return null;
+}
+
+/** Inline-splice a 2-pin span into the wire both pins landed on: the wire is
+ *  cut between the pins and the two remainders attach to the pin nodes.
+ *  Bends OUTSIDE the cut span are preserved (cutting the top run of a
+ *  rectangular loop must not collapse its corners into diagonals); bends
+ *  between the pins are consumed by the component body. The pins may sit on
+ *  different segments of the same wire. Pins coinciding with the wire's own
+ *  endpoints are refused (that would need a node merge, not a splice).
+ *  Shared by component placement-on-wire and the drag-drop-onto-wire path
+ *  (component-placement-design case 2); single-pin grazes and sweeps stay
+ *  unconnected (§16 no-auto-connect). Returns null when no wire matches. */
 export function splicePinSpanIntoWire(
   page: SchematicPage,
   pinA: { id: NodeId; x: number; y: number },
   pinB: { id: NodeId; x: number; y: number },
 ): SchematicPage | null {
   const idx = pinNodeIndex(page);
-  const strictlyInside = (
-    px: number,
-    py: number,
-    x1: number,
-    y1: number,
-    x2: number,
-    y2: number,
-  ) =>
-    pointOnSeg(px, py, x1, y1, x2, y2) &&
-    !(Math.abs(px - x1) < 1e-6 && Math.abs(py - y1) < 1e-6) &&
-    !(Math.abs(px - x2) < 1e-6 && Math.abs(py - y2) < 1e-6);
+  const samePt = (a: { x: number; y: number }, b: [number, number]) =>
+    Math.abs(a.x - b[0]) < 1e-6 && Math.abs(a.y - b[1]) < 1e-6;
   for (const wire of page.wires) {
     if (wire.a === pinA.id || wire.b === pinA.id) continue;
     if (wire.a === pinB.id || wire.b === pinB.id) continue;
     const poly = wirePolyline(page, wire, idx);
-    if (!poly) continue;
-    for (let i = 0; i < poly.length - 1; i++) {
-      const [x1, y1] = poly[i];
-      const [x2, y2] = poly[i + 1];
-      if (!strictlyInside(pinA.x, pinA.y, x1, y1, x2, y2)) continue;
-      if (!strictlyInside(pinB.x, pinB.y, x1, y1, x2, y2)) continue;
-      const dA = Math.hypot(pinA.x - x1, pinA.y - y1);
-      const dB = Math.hypot(pinB.x - x1, pinB.y - y1);
-      const [near, far] = dA <= dB ? [pinA, pinB] : [pinB, pinA];
-      const beforeBends = poly.slice(1, i + 1).map(([bx, by]) => [bx, by] as [number, number]);
-      const afterBends = poly
-        .slice(i + 1, poly.length - 1)
-        .map(([bx, by]) => [bx, by] as [number, number]);
-      const e1: Wire = { id: wire.id, a: wire.a, b: near.id, bends: beforeBends };
-      const e2: Wire = { id: makeWireId(), a: far.id, b: wire.b, bends: afterBends };
-      return {
-        ...page,
-        wires: page.wires.flatMap((w) => (w.id === wire.id ? [e1, e2] : [w])),
-      };
-    }
+    if (!poly || poly.length < 2) continue;
+    if (samePt(pinA, poly[0]) || samePt(pinA, poly[poly.length - 1])) continue;
+    if (samePt(pinB, poly[0]) || samePt(pinB, poly[poly.length - 1])) continue;
+    const locA = polylineArcLocation(poly, pinA);
+    const locB = polylineArcLocation(poly, pinB);
+    if (!locA || !locB) continue;
+    const [near, far] =
+      locA.arc <= locB.arc
+        ? [{ pin: pinA, loc: locA }, { pin: pinB, loc: locB }]
+        : [{ pin: pinB, loc: locB }, { pin: pinA, loc: locA }];
+    const isPinPoint = (p: [number, number]) => samePt(near.pin, p) || samePt(far.pin, p);
+    const beforeBends = poly
+      .slice(1, near.loc.seg + 1)
+      .filter((p) => !isPinPoint(p))
+      .map(([bx, by]) => [bx, by] as [number, number]);
+    const afterBends = poly
+      .slice(far.loc.seg + 1, poly.length - 1)
+      .filter((p) => !isPinPoint(p))
+      .map(([bx, by]) => [bx, by] as [number, number]);
+    const e1: Wire = { id: wire.id, a: wire.a, b: near.pin.id, bends: beforeBends };
+    const e2: Wire = { id: makeWireId(), a: far.pin.id, b: wire.b, bends: afterBends };
+    return {
+      ...page,
+      wires: page.wires.flatMap((w) => (w.id === wire.id ? [e1, e2] : [w])),
+    };
   }
   return null;
 }

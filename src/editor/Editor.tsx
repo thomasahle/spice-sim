@@ -3429,19 +3429,6 @@ export function Editor() {
     return { ...c, pins: getPinLayout(c).map(() => makeNodeId()) };
   }
 
-  function pointOnPolyline(poly: [number, number][], pt: { x: number; y: number }): boolean {
-    for (let i = 0; i < poly.length - 1; i++) {
-      const [x1, y1] = poly[i];
-      const [x2, y2] = poly[i + 1];
-      const cross = (pt.x - x1) * (y2 - y1) - (pt.y - y1) * (x2 - x1);
-      if (Math.abs(cross) > 1e-6) continue;
-      const dot = (pt.x - x1) * (x2 - x1) + (pt.y - y1) * (y2 - y1);
-      const len2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
-      if (dot >= -1e-6 && dot <= len2 + 1e-6) return true;
-    }
-    return false;
-  }
-
   // Inline-splice a 2-pin component into the wire edge under its pin span: the
   // edge (a→b) becomes (a→nearPin) + (farPin→b), with the component's pin-nodes
   // as the new junctions. Returns null if no edge spans both pins.
@@ -3450,7 +3437,6 @@ export function Editor() {
     c: CircuitComponent,
     cutSpan: { start: { x: number; y: number }; end: { x: number; y: number } },
   ): GraphPage | null {
-    const idx = pinNodeIndex(page);
     const pinAt = (x: number, y: number): string | null => {
       const pins = c.pins ?? [];
       for (let i = 0; i < pins.length; i++) {
@@ -3462,24 +3448,14 @@ export function Editor() {
     const startPin = pinAt(cutSpan.start.x, cutSpan.start.y);
     const endPin = pinAt(cutSpan.end.x, cutSpan.end.y);
     if (!startPin || !endPin) return null;
-    const wire = page.wires.find((w) => {
-      const poly = wirePolyline(page, w, idx);
-      return Boolean(poly && pointOnPolyline(poly, cutSpan.start) && pointOnPolyline(poly, cutSpan.end));
-    });
-    if (!wire) return null;
-    const poly = wirePolyline(page, wire, idx);
-    if (!poly || poly.length < 2) return null;
-    const dStart = Math.hypot(cutSpan.start.x - poly[0][0], cutSpan.start.y - poly[0][1]);
-    const dEnd = Math.hypot(cutSpan.end.x - poly[0][0], cutSpan.end.y - poly[0][1]);
-    const [nearPin, farPin] = dStart <= dEnd ? [startPin, endPin] : [endPin, startPin];
-    return {
-      ...page,
-      wires: [
-        ...page.wires.filter((w) => w.id !== wire.id),
-        { id: makeWireId(), a: wire.a, b: nearPin, bends: [] },
-        { id: makeWireId(), a: farPin, b: wire.b, bends: [] },
-      ],
-    };
+    // Delegate to the shared bends-preserving splice — cutting the straight
+    // run of a polyline wire must keep its corners, not collapse them into
+    // diagonals (the old inline version rebuilt both remainders with no bends).
+    return splicePinSpanIntoWire(
+      page,
+      { id: startPin, x: cutSpan.start.x, y: cutSpan.start.y },
+      { id: endPin, x: cutSpan.end.x, y: cutSpan.end.y },
+    );
   }
 
   function addWireEdgeAtCoords(page: GraphPage, route: [number, number][]): GraphPage {
