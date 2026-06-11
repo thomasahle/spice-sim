@@ -1,6 +1,5 @@
 import {
   memo,
-  useId,
   useCallback,
   useEffect,
   useMemo,
@@ -76,7 +75,7 @@ import {
   liveFlowVisualFromSample,
   liveFlowWireObstacleBounds,
 } from "./liveFlow";
-import { SOURCE_BODY_FLOW_CLIP_RADIUS, componentLiveFlowPaths } from "./componentLiveFlowPaths";
+import { componentLiveFlowPaths } from "./componentLiveFlowPaths";
 import type {
   LiveFlowReadoutPosition,
   LiveFlowSample,
@@ -232,7 +231,7 @@ import {
   geometryDocToGraph,
 } from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline, type Wire as GraphWire } from "./graphModel";
-import { applyArrangeGeometry, deleteNode as graphDeleteNode, segmentBetweenNodes, splicePinSpanIntoWire, splitEdgeAtPoint, splitEdgeAtSegment, squareDraggedWireEnds } from "./graphEdit";
+import { applyArrangeGeometry, attachPinAtPoint, deleteNode as graphDeleteNode, segmentBetweenNodes, splicePinSpanIntoWire, splitEdgeAtPoint, splitEdgeAtSegment, squareDraggedWireEnds, uncrossTwoPinBoundaryWires } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -971,17 +970,17 @@ function ComponentLiveFlowGlyph({
   sample: LiveFlowSample | undefined;
   strokeWidth: number;
 }) {
-  const reactClipId = useId();
   if (!flow.active || sample?.source !== "ngspice") return null;
   const paths = componentLiveFlowPaths(component);
   if (paths.length === 0) return null;
   const phase = liveFlowPhaseForId(`component:${component.id}`);
   const flowStyle = liveFlowAnimationStyle(flow, phase) as CSSProperties;
-  const flowDirection = component.kind === "V" || component.kind === "GND" ? 1 : flow.direction;
-  // Source-body flow is drawn as internal down-streams. Clip source streams to
-  // the source circle so the dash caps/glow never read as flow outside the body.
-  const clipSourceFlow = component.kind === "V" || component.kind === "I" || component.kind === "B";
-  const clipId = clipSourceFlow ? `source-flow-${reactClipId.replaceAll(":", "")}` : undefined;
+  // V sources animate their lead stubs with the real current direction (the
+  // stubs are a continuous pin→pin path, so a discharging battery animates
+  // bottom→top internally, matching the wires at both pins). Grounds keep a
+  // fixed direction; their single stub reads as "connected to reference"
+  // rather than directional flow.
+  const flowDirection = component.kind === "GND" ? 1 : flow.direction;
   return (
     <g
       className="component-live-group"
@@ -990,11 +989,6 @@ function ComponentLiveFlowGlyph({
       data-component-flow-id={component.id}
       data-component-flow-kind={component.kind}
     >
-      {clipId && (
-        <clipPath id={clipId} clipPathUnits="userSpaceOnUse">
-          <circle cx={0} cy={0} r={SOURCE_BODY_FLOW_CLIP_RADIUS} />
-        </clipPath>
-      )}
       {paths.map((path, index) => (
         <path
           key={`casing-${index}`}
@@ -1003,10 +997,9 @@ function ComponentLiveFlowGlyph({
           strokeWidth={strokeWidth * (flow.strokeMultiplier + 0.72)}
           strokeLinecap="round"
           strokeLinejoin="round"
-          className={`component-live-casing ${clipSourceFlow ? "source-body" : ""}`}
+          className="component-live-casing"
           data-component-flow-id={component.id}
           data-component-flow-segment={index}
-          clipPath={clipId ? `url(#${clipId})` : undefined}
         />
       ))}
       {paths.map((path, index) => (
@@ -1019,7 +1012,7 @@ function ComponentLiveFlowGlyph({
           strokeDashoffset={phase}
           strokeLinecap="round"
           strokeLinejoin="round"
-          className={`component-live component-live-overlay ngspice ${clipSourceFlow ? "source-body" : ""} ${flowDirection === -1 ? "reverse" : ""}`}
+          className={`component-live component-live-overlay ngspice ${flowDirection === -1 ? "reverse" : ""}`}
           data-component-flow-id={component.id}
           data-component-flow-segment={index}
           data-component-flow-kind={component.kind}
@@ -1027,7 +1020,6 @@ function ComponentLiveFlowGlyph({
           data-live-flow-current={sample.signedCurrent}
           data-live-flow-direction={flowDirection}
           style={flowStyle}
-          clipPath={clipId ? `url(#${clipId})` : undefined}
         />
       ))}
     </g>
@@ -3321,10 +3313,12 @@ export function Editor() {
     };
   }
 
-  /** Drop-splice gate: the drag moved exactly one 2-pin component (no wires
-   *  in the selection), neither pin is wired, and both pins landed on the
-   *  same wire segment. Mirrors the placement gesture's splice rule; every
-   *  other geometry keeps the no-auto-connect behaviour. */
+  /** Drop-connect gate: the drag moved exactly one component (no wires in
+   *  the selection) whose pins are all unwired.
+   *   - 2-pin part with both pins landing on the same wire → inline splice
+   *     (mirrors the placement gesture's rule);
+   *   - 1-pin part (ground) whose pin lands on a wire or node → attach there.
+   *  Every other geometry keeps the no-auto-connect behaviour. */
   function spliceDroppedComponent(
     page: GraphPage,
     activeDrag: NonNullable<typeof drag>,
@@ -3334,13 +3328,17 @@ export function Editor() {
     if (movedComponents.length !== 1) return null;
     const c = movedComponents[0];
     const pins = c.pins ?? [];
-    if (pins.length !== 2) return null;
     const wired = new Set<string>();
     for (const w of page.wires) {
       wired.add(w.a);
       wired.add(w.b);
     }
     if (pins.some((id) => wired.has(id))) return null;
+    if (pins.length === 1) {
+      const p0 = pinWorldPos(c, 0);
+      return attachPinAtPoint(page, { id: pins[0], x: p0.x, y: p0.y });
+    }
+    if (pins.length !== 2) return null;
     const p0 = pinWorldPos(c, 0);
     const p1 = pinWorldPos(c, 1);
     return splicePinSpanIntoWire(
@@ -4594,6 +4592,22 @@ export function Editor() {
               insertedInline = true;
             }
           }
+          // A single-pin part (ground) placed directly ON a wire or node
+          // attaches there — otherwise it merely overlaps: the netlist would
+          // connect it by coincidence but the graph wouldn't, and dragging it
+          // away later would reveal it was never wired.
+          if ((cWithPins.pins ?? []).length === 1) {
+            const pinPos = pinWorldPos(cWithPins, 0);
+            const attached = attachPinAtPoint(page, {
+              id: cWithPins.pins![0],
+              x: pinPos.x,
+              y: pinPos.y,
+            });
+            if (attached) {
+              page = attached;
+              insertedInline = true;
+            }
+          }
           return page;
         });
         return preset ? ensureBuiltinModelDirective(nextDoc, preset.model) : nextDoc;
@@ -5013,10 +5027,30 @@ export function Editor() {
     // Its pins are nodes with derived positions, so incident wires stay attached
     // (by node id) and rubber-band — no pin-contact rewiring, no auto-connect.
     commit((d) =>
-      updateCurrentPageGraph(d, (p) => ({
-        ...p,
-        components: p.components.map((c) => (selected.has(c.id) ? mutate(c) : c)),
-      })),
+      updateCurrentPageGraph(d, (p) => {
+        const next = {
+          ...p,
+          components: p.components.map((c) => (selected.has(c.id) ? mutate(c) : c)),
+        };
+        // Successive 90° rotations of a 2-pin part can land its pins swapped
+        // side-for-side; both attached wires then run collinearly THROUGH the
+        // body to reach their pin, overlapping into what looks like one wire
+        // with two opposite flows. Swap the endpoints back in that case.
+        if (selected.size === 1) {
+          const c = next.components.find((cc) => selected.has(cc.id));
+          const pins = c?.pins ?? [];
+          if (c && pins.length === 2) {
+            const p0 = pinWorldPos(c, 0);
+            const p1 = pinWorldPos(c, 1);
+            return uncrossTwoPinBoundaryWires(
+              next,
+              { id: pins[0], x: p0.x, y: p0.y },
+              { id: pins[1], x: p1.x, y: p1.y },
+            );
+          }
+        }
+        return next;
+      }),
     );
   }
 

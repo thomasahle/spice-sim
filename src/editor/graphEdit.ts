@@ -408,3 +408,131 @@ export function splicePinSpanIntoWire(
   }
   return null;
 }
+
+/** After re-orienting a 2-pin component in place, un-cross its boundary
+ *  wires. Successive 90° rotations can land the pins swapped side-to-side;
+ *  wires follow their pin NODES, so both then run collinearly THROUGH the
+ *  body to reach the far pin — visually they overlap into one line with two
+ *  opposite-direction nets. When BOTH attached wires' end segments pass
+ *  through the opposite pin, swapping the two endpoints restores each wire
+ *  to its own side (the net effect the user wanted: the symbol turned
+ *  around in place). */
+export function uncrossTwoPinBoundaryWires(
+  page: SchematicPage,
+  pinA: { id: NodeId; x: number; y: number },
+  pinB: { id: NodeId; x: number; y: number },
+): SchematicPage {
+  const idx = pinNodeIndex(page);
+  const wiresAtPin = (pinId: NodeId) =>
+    page.wires.filter((w) => w.a === pinId || w.b === pinId);
+  const aWires = wiresAtPin(pinA.id);
+  const bWires = wiresAtPin(pinB.id);
+  if (aWires.length !== 1 || bWires.length !== 1) return page;
+  const [wA] = aWires;
+  const [wB] = bWires;
+  if (wA.id === wB.id) return page;
+  const endSegmentCrosses = (
+    wire: Wire,
+    pin: { id: NodeId; x: number; y: number },
+    other: { x: number; y: number },
+  ): boolean => {
+    const poly = wirePolyline(page, wire, idx);
+    if (!poly || poly.length < 2) return false;
+    const atA = wire.a === pin.id;
+    const end = atA ? poly[0] : poly[poly.length - 1];
+    const neighbor = atA ? poly[1] : poly[poly.length - 2];
+    if (Math.abs(end[0] - pin.x) > 1e-6 || Math.abs(end[1] - pin.y) > 1e-6) return false;
+    return (
+      pointOnSeg(other.x, other.y, neighbor[0], neighbor[1], end[0], end[1]) &&
+      !(Math.abs(other.x - neighbor[0]) < 1e-6 && Math.abs(other.y - neighbor[1]) < 1e-6)
+    );
+  };
+  if (!endSegmentCrosses(wA, pinA, pinB)) return page;
+  if (!endSegmentCrosses(wB, pinB, pinA)) return page;
+  const swapEndpoint = (wire: Wire, from: NodeId, to: NodeId): Wire => ({
+    ...wire,
+    a: wire.a === from ? to : wire.a,
+    b: wire.b === from ? to : wire.b,
+  });
+  return {
+    ...page,
+    wires: page.wires.map((w) => {
+      if (w.id === wA.id) return swapEndpoint(w, pinA.id, pinB.id);
+      if (w.id === wB.id) return swapEndpoint(w, pinB.id, pinA.id);
+      return w;
+    }),
+  };
+}
+
+/** Attach an unwired pin node to whatever lies exactly under it:
+ *  - a standalone (unnamed) node → re-point that node's wires and probes at
+ *    the pin (node merge),
+ *  - a wire interior or bend vertex → split the edge there with the pin as
+ *    the junction.
+ *  Used when a single-pin part (ground, net label port) is deliberately
+ *  placed or dropped onto a wire — without this it merely overlaps: the
+ *  netlist connects it by coordinate coincidence, but dragging it away
+ *  reveals there was never a graph edge. Returns null when the pin is
+ *  already wired or nothing attachable is under it. */
+export function attachPinAtPoint(
+  page: SchematicPage,
+  pin: { id: NodeId; x: number; y: number },
+): SchematicPage | null {
+  if (incidentWires(page, pin.id).length > 0) return null;
+  const idx = pinNodeIndex(page);
+  const samePt = (x: number, y: number, p: [number, number]) =>
+    Math.abs(x - p[0]) < 1e-6 && Math.abs(y - p[1]) < 1e-6;
+
+  // A standalone node at the same coordinate: merge it into the pin.
+  const node = (page.nodes ?? []).find(
+    (n) =>
+      n.id !== pin.id &&
+      n.name === undefined &&
+      Math.abs(n.x - pin.x) < 1e-6 &&
+      Math.abs(n.y - pin.y) < 1e-6,
+  );
+  if (node) {
+    let changed = false;
+    const wires = page.wires.map((w) => {
+      if (w.a !== node.id && w.b !== node.id) return w;
+      changed = true;
+      return {
+        ...w,
+        a: w.a === node.id ? pin.id : w.a,
+        b: w.b === node.id ? pin.id : w.b,
+      };
+    });
+    const probes = page.probes.map((pr) =>
+      pr.node === node.id ? { ...pr, node: pin.id } : pr,
+    );
+    if (!changed) return null;
+    return gcOrphanNodes({ ...page, wires, probes });
+  }
+
+  // A wire passing exactly under the pin: split it at the pin.
+  for (const wire of page.wires) {
+    const poly = wirePolyline(page, wire, idx);
+    if (!poly || poly.length < 2) continue;
+    if (samePt(pin.x, pin.y, poly[0]) || samePt(pin.x, pin.y, poly[poly.length - 1])) continue;
+    for (let i = 0; i < poly.length - 1; i++) {
+      const [x1, y1] = poly[i];
+      const [x2, y2] = poly[i + 1];
+      if (!pointOnSeg(pin.x, pin.y, x1, y1, x2, y2)) continue;
+      const beforeBends = poly
+        .slice(1, i + 1)
+        .filter((p) => !samePt(pin.x, pin.y, p))
+        .map(([bx, by]) => [bx, by] as [number, number]);
+      const afterBends = poly
+        .slice(i + 1, poly.length - 1)
+        .filter((p) => !samePt(pin.x, pin.y, p))
+        .map(([bx, by]) => [bx, by] as [number, number]);
+      const e1: Wire = { id: wire.id, a: wire.a, b: pin.id, bends: beforeBends };
+      const e2: Wire = { id: makeWireId(), a: pin.id, b: wire.b, bends: afterBends };
+      return {
+        ...page,
+        wires: page.wires.flatMap((w) => (w.id === wire.id ? [e1, e2] : [w])),
+      };
+    }
+  }
+  return null;
+}

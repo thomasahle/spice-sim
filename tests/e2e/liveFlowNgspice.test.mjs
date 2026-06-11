@@ -709,62 +709,34 @@ async function componentLiveFlowMotionSample(page, componentId) {
   }, componentId);
 }
 
-async function circularSourceFlowGeometry(page, componentId) {
-  return page.evaluate((id) => {
-    const escapedId = globalThis.CSS?.escape?.(id) ?? id.replaceAll('"', '\\"');
-    const component = document.querySelector(`[data-component-id="${escapedId}"]`);
-    const circle = component?.querySelector("circle");
-    const overlays = [...document.querySelectorAll(`.component-live.component-live-overlay[data-component-flow-id="${escapedId}"]`)];
-    if (!(circle instanceof SVGCircleElement) || overlays.length === 0) {
-      return { found: false, segmentCount: overlays.length, segments: [] };
-    }
-    const circleRect = circle.getBoundingClientRect();
-    const cx = circleRect.left + circleRect.width / 2;
-    const cy = circleRect.top + circleRect.height / 2;
-    const rx = circleRect.width / 2;
-    const ry = circleRect.height / 2;
-    const segments = overlays.map((overlay) => {
-      const rect = overlay.getBoundingClientRect();
-      const strokeWidth = Number.parseFloat(getComputedStyle(overlay).strokeWidth || "0");
-      const style = getComputedStyle(overlay);
-      const lineX = rect.left + rect.width / 2;
-      const top = rect.top;
-      const bottom = rect.bottom;
-      return {
-        d: overlay.getAttribute("d") ?? "",
-        clipPath: overlay.getAttribute("clip-path") ?? "",
-        className: overlay.getAttribute("class") ?? "",
-        filter: style.filter,
-        xOffsetRatio: rx > 0 ? Math.abs(lineX - cx) / rx : Number.POSITIVE_INFINITY,
-        outerInsetRatio: rx > 0 ? (rx - Math.abs(lineX - cx) - strokeWidth / 2) / rx : Number.NEGATIVE_INFINITY,
-        topInsetRatio: circleRect.height > 0 ? (top - circleRect.top) / circleRect.height : Number.NEGATIVE_INFINITY,
-        bottomInsetRatio: circleRect.height > 0 ? (circleRect.bottom - bottom) / circleRect.height : Number.NEGATIVE_INFINITY,
-        lineX,
-        strokeWidth,
-        cx,
-        cy,
-        rx,
-        ry,
-      };
-    });
-    return {
-      found: true,
-      segmentCount: overlays.length,
-      circle: {
-        left: circleRect.left,
-        right: circleRect.right,
-        top: circleRect.top,
-        bottom: circleRect.bottom,
-        width: circleRect.width,
-        height: circleRect.height,
-        cx,
-        cy,
-        rx,
-        ry,
-      },
-      segments,
-    };
-  }, componentId);
+// Sources no longer animate internal side streams — flow runs on the two lead
+// stubs (pin -> circle edge) with the real current direction, leaving the
+// +/- glyphs untouched. Nothing renders inside the body, so no clipping.
+function assertSourceLeadStubFlow(state, componentId, label) {
+  const segments = state.componentOverlayDetails.filter((detail) => detail.componentId === componentId);
+  assert.equal(
+    segments.length,
+    2,
+    `${label} flow should animate its two lead stubs: ${JSON.stringify(state, null, 2)}`,
+  );
+  assert.ok(
+    segments.every((detail) => !/[ACQ]/.test(detail.pathD) && /L/.test(detail.pathD)),
+    `${label} flow should be straight lead stubs, not curved paths: ${JSON.stringify(state, null, 2)}`,
+  );
+  const ds = segments.map((detail) => detail.pathD).sort();
+  assert.ok(
+    /M 0 -2 L 0 -1\.2/.test(ds[0]) && /M 0 1\.2 L 0 2/.test(ds[1]),
+    `${label} flow should run on the pin->body lead stubs: ${JSON.stringify(ds)}`,
+  );
+  assert.ok(
+    segments.every((detail) => !detail.clipPath || detail.clipPath === "none"),
+    `${label} lead stubs render outside the body and must not be clipped to it: ${JSON.stringify(segments, null, 2)}`,
+  );
+  assert.ok(
+    segments.every((detail) => /^-?1$/.test(detail.direction)) &&
+      new Set(segments.map((detail) => detail.direction)).size === 1,
+    `${label} lead stubs should share one real current direction: ${JSON.stringify(segments, null, 2)}`,
+  );
 }
 
 async function assertLiveFlowDashMoves(page, state) {
@@ -924,55 +896,7 @@ test("Live Flow animates only ngspice current-vector samples after a real transi
       groundSegments.every((detail) => !/[ACQ]/.test(detail.pathD) && /L/.test(detail.pathD)),
       `ground body flow should use straight internal ground-symbol strokes: ${JSON.stringify(state, null, 2)}`,
     );
-    const voltageSourceSegments = state.componentOverlayDetails.filter((detail) => detail.componentId === "vin");
-    assert.equal(
-      voltageSourceSegments.length,
-      2,
-      `voltage source body flow should use two side streams, not the circular source outline: ${JSON.stringify(state, null, 2)}`,
-    );
-    assert.ok(
-      voltageSourceSegments.every((detail) => detail.direction === "1" && detail.animationName === "wire-flow"),
-      `voltage source side streams should both run down the source body: ${JSON.stringify(state, null, 2)}`,
-    );
-    assert.ok(
-      voltageSourceSegments.every((detail) => !/[ACQ]/.test(detail.pathD) && /L/.test(detail.pathD)),
-      `voltage source body flow should be straight vertical streams, not circular/curved paths: ${JSON.stringify(state, null, 2)}`,
-    );
-    assert.ok(
-      voltageSourceSegments.every((detail) => /M -?0\.52 -0\.62 L -?0\.52 0\.62/.test(detail.pathD)),
-      `voltage source side streams should sit inside the source circle instead of on the outline: ${JSON.stringify(state, null, 2)}`,
-    );
-    assert.ok(
-      voltageSourceSegments.every((detail) => /^url\(#source-flow-/.test(detail.clipPath)),
-      `voltage source side streams should be clipped to the source circle so dash caps/glow cannot drift outside: ${JSON.stringify(state, null, 2)}`,
-    );
-    const voltageGeometry = await circularSourceFlowGeometry(page, "vin");
-    assert.equal(voltageGeometry.found, true, `expected rendered voltage-source flow geometry: ${JSON.stringify(voltageGeometry, null, 2)}`);
-    assert.equal(
-      voltageGeometry.segmentCount,
-      2,
-      `voltage source should render two internal side streams: ${JSON.stringify(voltageGeometry, null, 2)}`,
-    );
-    assert.ok(
-      voltageGeometry.segments.every((segment) => segment.xOffsetRatio >= 0.35 && segment.xOffsetRatio <= 0.5),
-      `voltage source side streams should run down the left/right sides inside the circle: ${JSON.stringify(voltageGeometry, null, 2)}`,
-    );
-    assert.ok(
-      voltageGeometry.segments.every((segment) => segment.outerInsetRatio >= 0.4),
-      `voltage source side stream strokes should not bleed toward the circle outline: ${JSON.stringify(voltageGeometry, null, 2)}`,
-    );
-    assert.ok(
-      voltageGeometry.segments.every((segment) => segment.topInsetRatio >= 0.12 && segment.bottomInsetRatio >= 0.12),
-      `voltage source side streams should not graze the top/bottom of the source circle: ${JSON.stringify(voltageGeometry, null, 2)}`,
-    );
-    assert.ok(
-      voltageGeometry.segments.every((segment) => /^url\(#source-flow-/.test(segment.clipPath)),
-      `rendered voltage-source streams should be clipped to the source circle: ${JSON.stringify(voltageGeometry, null, 2)}`,
-    );
-    assert.ok(
-      voltageGeometry.segments.every((segment) => segment.className.includes("source-body") && segment.filter === "none"),
-      `voltage-source body streams should not use glow filters that make them read outside the source circle: ${JSON.stringify(voltageGeometry, null, 2)}`,
-    );
+    assertSourceLeadStubFlow(state, "vin", "voltage source");
     assert.equal(
       state.nonNgspiceOverlayCount,
       0,
@@ -1209,51 +1133,7 @@ test("Live Flow uses ngspice current-source vectors in the browser UI", async ()
       state.overlayDetails.some((detail) => Math.abs(Number(detail.current)) > 1e-8),
       `expected visible current-source current above display threshold: ${JSON.stringify(state)}`,
     );
-    const currentSourceSegments = state.componentOverlayDetails.filter((detail) => detail.componentId === "iin");
-    assert.equal(
-      currentSourceSegments.length,
-      2,
-      `current source body flow should use two straight streams through the source, not a circular source outline: ${JSON.stringify(state, null, 2)}`,
-    );
-    assert.ok(
-      currentSourceSegments.every((detail) => !/[ACQ]/.test(detail.pathD) && /L/.test(detail.pathD)),
-      `current source body flow should be straight through-source streams, not circular/curved paths: ${JSON.stringify(state, null, 2)}`,
-    );
-    assert.ok(
-      currentSourceSegments.every((detail) => /M -?0\.32 -0\.6 L -?0\.32 0\.6/.test(detail.pathD)),
-      `current source side streams should sit inside the source circle instead of on the outline: ${JSON.stringify(state, null, 2)}`,
-    );
-    assert.ok(
-      currentSourceSegments.every((detail) => /^url\(#source-flow-/.test(detail.clipPath)),
-      `current source side streams should be clipped to the source circle so dash caps/glow cannot drift outside: ${JSON.stringify(state, null, 2)}`,
-    );
-    const currentSourceGeometry = await circularSourceFlowGeometry(page, "iin");
-    assert.equal(currentSourceGeometry.found, true, `expected rendered current-source flow geometry: ${JSON.stringify(currentSourceGeometry, null, 2)}`);
-    assert.equal(
-      currentSourceGeometry.segmentCount,
-      2,
-      `current source should render two internal side streams: ${JSON.stringify(currentSourceGeometry, null, 2)}`,
-    );
-    assert.ok(
-      currentSourceGeometry.segments.every((segment) => segment.xOffsetRatio <= 0.31),
-      `current source side streams should be visually inside the circle, not near the outline: ${JSON.stringify(currentSourceGeometry, null, 2)}`,
-    );
-    assert.ok(
-      currentSourceGeometry.segments.every((segment) => segment.outerInsetRatio >= 0.3),
-      `current source side stream strokes should not bleed toward the circle outline: ${JSON.stringify(currentSourceGeometry, null, 2)}`,
-    );
-    assert.ok(
-      currentSourceGeometry.segments.every((segment) => segment.topInsetRatio >= 0.18 && segment.bottomInsetRatio >= 0.18),
-      `current source side streams should not graze the top/bottom of the source circle: ${JSON.stringify(currentSourceGeometry, null, 2)}`,
-    );
-    assert.ok(
-      currentSourceGeometry.segments.every((segment) => /^url\(#source-flow-/.test(segment.clipPath)),
-      `rendered current-source streams should be clipped to the source circle: ${JSON.stringify(currentSourceGeometry, null, 2)}`,
-    );
-    assert.ok(
-      currentSourceGeometry.segments.every((segment) => segment.className.includes("source-body") && segment.filter === "none"),
-      `current-source body streams should not use glow filters that make them read outside the source circle: ${JSON.stringify(currentSourceGeometry, null, 2)}`,
-    );
+    assertSourceLeadStubFlow(state, "iin", "current source");
     assert.ok(state.status, "Live Flow status should identify ngspice current-vector coverage");
     assert.equal(state.status?.source, "ngspice");
     assert.match(`${state.status?.text} ${state.status?.ariaLabel} ${state.status?.title}`, /ngspice/i);
@@ -1300,51 +1180,7 @@ test("Live Flow uses ngspice behavioral-source current vectors in the browser UI
       state.overlayDetails.some((detail) => Math.abs(Number(detail.current)) > 1e-8),
       `expected visible behavioral-source current above display threshold: ${JSON.stringify(state)}`,
     );
-    const behavioralSourceSegments = state.componentOverlayDetails.filter((detail) => detail.componentId === "b1");
-    assert.equal(
-      behavioralSourceSegments.length,
-      2,
-      `behavioral source body flow should use two straight streams through the source, not a circular source outline: ${JSON.stringify(state, null, 2)}`,
-    );
-    assert.ok(
-      behavioralSourceSegments.every((detail) => !/[ACQ]/.test(detail.pathD) && /L/.test(detail.pathD)),
-      `behavioral source body flow should be straight through-source streams, not circular/curved paths: ${JSON.stringify(state, null, 2)}`,
-    );
-    assert.ok(
-      behavioralSourceSegments.every((detail) => /M -?0\.32 -0\.6 L -?0\.32 0\.6/.test(detail.pathD)),
-      `behavioral source side streams should sit inside the source circle instead of on the outline: ${JSON.stringify(state, null, 2)}`,
-    );
-    assert.ok(
-      behavioralSourceSegments.every((detail) => /^url\(#source-flow-/.test(detail.clipPath)),
-      `behavioral source side streams should be clipped to the source circle so dash caps/glow cannot drift outside: ${JSON.stringify(state, null, 2)}`,
-    );
-    const behavioralSourceGeometry = await circularSourceFlowGeometry(page, "b1");
-    assert.equal(behavioralSourceGeometry.found, true, `expected rendered behavioral-source flow geometry: ${JSON.stringify(behavioralSourceGeometry, null, 2)}`);
-    assert.equal(
-      behavioralSourceGeometry.segmentCount,
-      2,
-      `behavioral source should render two internal side streams: ${JSON.stringify(behavioralSourceGeometry, null, 2)}`,
-    );
-    assert.ok(
-      behavioralSourceGeometry.segments.every((segment) => segment.xOffsetRatio <= 0.31),
-      `behavioral source side streams should be visually inside the circle, not near the outline: ${JSON.stringify(behavioralSourceGeometry, null, 2)}`,
-    );
-    assert.ok(
-      behavioralSourceGeometry.segments.every((segment) => segment.outerInsetRatio >= 0.3),
-      `behavioral source side stream strokes should not bleed toward the circle outline: ${JSON.stringify(behavioralSourceGeometry, null, 2)}`,
-    );
-    assert.ok(
-      behavioralSourceGeometry.segments.every((segment) => segment.topInsetRatio >= 0.18 && segment.bottomInsetRatio >= 0.18),
-      `behavioral source side streams should not graze the top/bottom of the source circle: ${JSON.stringify(behavioralSourceGeometry, null, 2)}`,
-    );
-    assert.ok(
-      behavioralSourceGeometry.segments.every((segment) => /^url\(#source-flow-/.test(segment.clipPath)),
-      `rendered behavioral-source streams should be clipped to the source circle: ${JSON.stringify(behavioralSourceGeometry, null, 2)}`,
-    );
-    assert.ok(
-      behavioralSourceGeometry.segments.every((segment) => segment.className.includes("source-body") && segment.filter === "none"),
-      `behavioral-source body streams should not use glow filters that make them read outside the source circle: ${JSON.stringify(behavioralSourceGeometry, null, 2)}`,
-    );
+    assertSourceLeadStubFlow(state, "b1", "behavioral source");
     assert.ok(state.status, "Live Flow status should identify ngspice current-vector coverage");
     assert.equal(state.status?.source, "ngspice");
     assert.match(`${state.status?.text} ${state.status?.ariaLabel} ${state.status?.title}`, /ngspice/i);

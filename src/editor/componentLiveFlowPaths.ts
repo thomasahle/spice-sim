@@ -5,8 +5,6 @@ import {
   subcircuitBodyWidth,
 } from "./model.ts";
 
-export const SOURCE_BODY_FLOW_CLIP_RADIUS = 1.2;
-
 export function componentLiveFlowPaths(component: CircuitComponent): string[] {
   switch (component.kind) {
     case "R":
@@ -21,20 +19,21 @@ export function componentLiveFlowPaths(component: CircuitComponent): string[] {
     case "L":
       return ["M 0 -2 L 0 -1.4 A 0.45 0.45 0 0 1 0 -0.5 A 0.45 0.45 0 0 1 0 0.4 A 0.45 0.45 0 0 1 0 1.3 L 0 2"];
     case "V":
-      return [
-        "M -0.52 -0.62 L -0.52 0.62",
-        "M 0.52 -0.62 L 0.52 0.62",
-      ];
     case "I":
     case "B":
+      // Lead stubs only (pin → circle edge). Animating bars inside the body
+      // interleaved with the +/− glyphs and read as stray dashes; the symbol
+      // glyphs stay untouched and flow visibly enters/exits the source.
       return [
-        "M -0.32 -0.6 L -0.32 0.6",
-        "M 0.32 -0.6 L 0.32 0.6",
+        "M 0 -2 L 0 -1.2",
+        "M 0 1.2 L 0 2",
       ];
     case "GND":
-      // Only the lead carries flow. Animating the three symbol bars too made
-      // a dash "starburst" around every ground junction.
-      return ["M 0 -1.15 L 0 -0.42"];
+      // Only the lead carries flow (pin at y=0, top bar at y=0.5 — see
+      // symbols.tsx). Animating the three symbol bars made a dash
+      // "starburst", and the old coordinates sat ABOVE the pin, painting a
+      // stray dash over the wire instead of the lead.
+      return ["M 0 0 L 0 0.5"];
     case "D":
       return [
         "M 0 -2 L 0 -0.7 L -0.6 -0.7 L 0 0.4 L 0.6 -0.7 L 0 -0.7",

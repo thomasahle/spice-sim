@@ -1041,14 +1041,9 @@ button[disabled] {
   /* Above .playbar / .wf-pane / .canvas-actions so the hover tooltips and
      palette popovers extending past the canvas row stay on top. */
   z-index: 40;
-  min-width: 46px;
+  width: 46px;
   display: flex;
   flex-direction: column;
-  /* When the canvas gets short (plot panel open / small window) the column
-     wraps into additional columns instead of overflowing onto the panel
-     below — max-height is the wrap constraint. */
-  flex-wrap: wrap;
-  align-content: flex-start;
   align-items: center;
   gap: 3px;
   padding: 6px 4px;
@@ -1059,13 +1054,21 @@ button[disabled] {
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-soft);
   max-height: calc(100% - 28px);
-  /* `visible` so the hover tooltip popovers can extend to the right of the
-     strip without being clipped. */
-  overflow: visible;
+  /* When the canvas gets short (plot panel open / small window) the strip
+     scrolls instead of overflowing onto the panel below. Tooltips and the
+     tool-group popovers are portaled / rendered as siblings, so clipping
+     here doesn't affect them. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
   pointer-events: none;
+}
+.tool-strip::-webkit-scrollbar {
+  display: none;
 }
 .tool-icon {
   position: relative;
+  flex: 0 0 auto;
   width: 36px;
   height: 36px;
   border: 1px solid transparent;
@@ -1227,6 +1230,7 @@ button[disabled] {
 }
 .tool-sep {
   position: relative;
+  flex: 0 0 auto;
   height: 8px;
   width: 100%;
   margin: 2px 0;
@@ -4035,10 +4039,6 @@ button[disabled] {
 }
 .component-live-overlay {
   filter: drop-shadow(0 0 0.08px color-mix(in srgb, currentColor 58%, transparent));
-}
-.component-live-casing.source-body,
-.component-live-overlay.source-body {
-  filter: none;
 }
 .component-live-overlay.ngspice {
   color: var(--accent);

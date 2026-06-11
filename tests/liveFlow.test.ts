@@ -31,10 +31,7 @@ import {
   wireFlowSignedCurrentAlongPolyline,
   wireFlowSignedCurrent,
 } from "../src/editor/liveFlow.ts";
-import {
-  SOURCE_BODY_FLOW_CLIP_RADIUS,
-  componentLiveFlowPaths,
-} from "../src/editor/componentLiveFlowPaths.ts";
+import { componentLiveFlowPaths } from "../src/editor/componentLiveFlowPaths.ts";
 
 function nearlyEqual(actual: number, expected: number) {
   assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} !== ${expected}`);
@@ -107,41 +104,39 @@ test("Live Flow exposes ngspice as the only animating current provenance", () =>
   assert.equal(isLiveFlowSampleSource(undefined), false);
 });
 
-test("voltage-source body flow uses two clipped side lanes, not the circular outline", () => {
-  const paths = componentLiveFlowPaths({
-    id: "v1",
-    kind: "V",
-    x: 0,
-    y: 0,
-    rotation: 0,
-    value: "PULSE(0 5)",
-  });
-
-  assert.deepEqual(paths, [
-    "M -0.52 -0.62 L -0.52 0.62",
-    "M 0.52 -0.62 L 0.52 0.62",
-  ]);
-  assert.ok(paths.every((path) => !/[ACQ]/.test(path)), "source flow should not animate around the circle");
-  assert.equal(SOURCE_BODY_FLOW_CLIP_RADIUS, 1.2);
-});
-
-test("current-like source body flow stays inside the source circle", () => {
-  for (const kind of ["I", "B"] as const) {
+test("source flow animates only the lead stubs, leaving the body glyphs untouched", () => {
+  for (const kind of ["V", "I", "B"] as const) {
     const paths = componentLiveFlowPaths({
       id: kind.toLowerCase(),
       kind,
       x: 0,
       y: 0,
       rotation: 0,
-      value: "",
+      value: kind === "V" ? "PULSE(0 5)" : "",
     });
 
+    // Pin (±2) to circle edge (±1.2) — nothing inside the body, so dashes
+    // never interleave with the +/− glyphs, and nothing follows the outline.
     assert.deepEqual(paths, [
-      "M -0.32 -0.6 L -0.32 0.6",
-      "M 0.32 -0.6 L 0.32 0.6",
+      "M 0 -2 L 0 -1.2",
+      "M 0 1.2 L 0 2",
     ]);
     assert.ok(paths.every((path) => !/[ACQ]/.test(path)), `${kind} flow should not animate around the circle`);
   }
+});
+
+test("ground flow animates only the lead between pin and top bar", () => {
+  const paths = componentLiveFlowPaths({
+    id: "g1",
+    kind: "GND",
+    x: 0,
+    y: 0,
+    rotation: 0,
+    value: "",
+  });
+  // Pin at y=0, top bar at y=0.5 (symbols.tsx) — no bars, no marks above
+  // the pin.
+  assert.deepEqual(paths, ["M 0 0 L 0 0.5"]);
 });
 
 test("liveFlowVisual damps tiny visible currents instead of rendering them full strength", () => {
