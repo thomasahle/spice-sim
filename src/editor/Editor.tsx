@@ -3402,11 +3402,13 @@ export function Editor() {
     };
     // Unselected wires touching the moving set follow ONE rule, identical in
     // preview and drop (WYSIWYG): internal wires ride rigidly, boundary wires
-    // re-route as a clean L (see reflowWiresAfterMove).
+    // re-route with the same obstacle-avoiding router wire DRAWING uses, so
+    // they detour around component bodies instead of cutting through them.
     const movedNodeIds = new Set<string>(movingNodeIds);
     for (const c of movedPage.components) {
       if (activeDrag.initial.has(c.id)) for (const pin of c.pins ?? []) movedNodeIds.add(pin);
     }
+    const routeWires = projectWirePolylines(movedPage);
     return {
       page: reflowWiresAfterMove(
         movedPage,
@@ -3415,6 +3417,12 @@ export function Editor() {
         activeDrag.selectedWireIds,
         !diagonalWiresRef.current,
         activeDrag.initialBends,
+        (from, to, wireId) =>
+          routeWireSegmentAvoiding(from, to, true, {
+            components: movedPage.components,
+            wires: routeWires,
+            ignoreWireIds: new Set([wireId]),
+          }),
       ),
       previewWireIds: [],
     };
@@ -5425,12 +5433,20 @@ export function Editor() {
           if (selected.has(c.id)) for (const pin of c.pins ?? []) movedNodeIds.add(pin);
         }
         const rigid = new Set(movedPage.wires.filter((w) => selected.has(w.id)).map((w) => w.id));
+        const routeWires = projectWirePolylines(movedPage);
         return reflowWiresAfterMove(
           movedPage,
           movedNodeIds,
           { x: dx, y: dy },
           rigid,
           !diagonalWiresRef.current,
+          undefined,
+          (from, to, wireId) =>
+            routeWireSegmentAvoiding(from, to, true, {
+              components: movedPage.components,
+              wires: routeWires,
+              ignoreWireIds: new Set([wireId]),
+            }),
         );
       }),
     );

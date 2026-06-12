@@ -321,6 +321,15 @@ export function reflowWiresAfterMove(
   // geometry every frame), so it passes the wires' DRAG-START bends here;
   // page.wires may already hold a previous frame's reflow.
   initialBendsById?: Map<string, [number, number][]>,
+  // Obstacle-aware router (the one wire DRAWING uses). When provided,
+  // boundary wires route around component bodies and existing wires instead
+  // of cutting a blind L straight through them. Returns the full polyline
+  // fixed-end -> moved-end, or null to fall back to the L heuristic.
+  routeSegment?: (
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    wireId: string,
+  ) => [number, number][] | null,
 ): SchematicPage {
   if (movedNodeIds.size === 0) return page;
   const idx = pinNodeIndex(page);
@@ -347,6 +356,14 @@ export function reflowWiresAfterMove(
     const from = nodePos(page, fixedEnd, idx);
     const to = nodePos(page, movedEnd, idx);
     if (!from || !to) return wire;
+    if (orthogonal && routeSegment) {
+      const route = routeSegment(from, to, wire.id);
+      if (route && route.length >= 2) {
+        // Route runs fixed-end -> moved-end; bends are stored a -> b.
+        const interior = route.slice(1, -1).map(([x, y]) => [x, y] as [number, number]);
+        return { ...wire, bends: aMoved ? interior.reverse() : interior };
+      }
+    }
     if (!orthogonal || Math.abs(from.x - to.x) < 1e-6 || Math.abs(from.y - to.y) < 1e-6) {
       return { ...wire, bends: [] };
     }
