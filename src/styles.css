@@ -4051,13 +4051,13 @@ button[disabled] {
 .component-live.reverse {
   animation-name: wire-flow-reverse;
 }
+/* NOTE: no `filter:` on any of the live-flow strokes. SVG drop-shadows force
+   a filter-region re-rasterization on every animation frame and every pan
+   frame — with live-flow on they made scrolling feel sluggish. The wider
+   casing stroke supplies the halo instead. */
 .wire-live-casing {
   stroke: color-mix(in srgb, var(--bg-canvas) 88%, white 12%);
-  opacity: 0.74;
-  filter: drop-shadow(0 0 0.1px color-mix(in srgb, var(--bg-canvas) 85%, transparent));
-}
-.wire-live-overlay {
-  filter: drop-shadow(0 0 0.08px color-mix(in srgb, currentColor 55%, transparent));
+  opacity: 0.8;
 }
 .wire-live-overlay.ngspice {
   color: var(--accent);
@@ -4070,11 +4070,7 @@ button[disabled] {
 }
 .component-live-casing {
   stroke: color-mix(in srgb, var(--bg-canvas) 82%, white 18%);
-  opacity: 0.86;
-  filter: drop-shadow(0 0 0.12px color-mix(in srgb, var(--bg-canvas) 80%, transparent));
-}
-.component-live-overlay {
-  filter: drop-shadow(0 0 0.08px color-mix(in srgb, currentColor 58%, transparent));
+  opacity: 0.9;
 }
 .component-live-overlay.ngspice {
   color: var(--accent);

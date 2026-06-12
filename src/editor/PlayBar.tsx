@@ -46,6 +46,13 @@ export function PlayBar({
       return;
     }
     lastWall.current = performance.now();
+    // The playback clock accumulates every frame, but pushes React state at
+    // most ~12×/s: setTime re-renders the whole editor (samples, readouts,
+    // scope cursors), while the visible dash motion is CSS-animated and
+    // doesn't need it. Frame-rate pushes saturated the main thread and made
+    // the canvas feel sluggish whenever live-flow was playing.
+    const PUSH_INTERVAL_MS = 80;
+    let lastPush = 0;
     const tick = () => {
       const now = performance.now();
       const dtWall = (now - lastWall.current) / 1000;
@@ -57,7 +64,10 @@ export function PlayBar({
         next = tmin;
       }
       timeRef.current = next;
-      setTime(next);
+      if (now - lastPush >= PUSH_INTERVAL_MS) {
+        lastPush = now;
+        setTime(next);
+      }
       rafId.current = requestAnimationFrame(tick);
     };
     rafId.current = requestAnimationFrame(tick);
