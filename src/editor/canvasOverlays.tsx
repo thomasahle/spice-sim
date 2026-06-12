@@ -105,3 +105,92 @@ export function MarqueeOverlay({ marquee }: { marquee: MarqueeRect | null }) {
     />
   );
 }
+
+export interface AlignmentGuide {
+  axis: "x" | "y";
+  /** The aligned coordinate (x for a vertical guide, y for horizontal). */
+  at: number;
+  /** Span of the guide along the other axis (covers both aligned objects). */
+  from: number;
+  to: number;
+}
+
+/** Figma-style smart guides: while a drag is live, mark stationary components
+ *  whose centre lines up with a moving component's centre. Display only. */
+export function AlignmentGuidesOverlay({ guides }: { guides: AlignmentGuide[] }) {
+  if (guides.length === 0) return null;
+  return (
+    <g className="alignment-guides" pointerEvents="none">
+      {guides.map((guide, i) =>
+        guide.axis === "x" ? (
+          <line
+            key={`gx${i}`}
+            x1={guide.at}
+            x2={guide.at}
+            y1={guide.from}
+            y2={guide.to}
+            className="alignment-guide"
+          />
+        ) : (
+          <line
+            key={`gy${i}`}
+            x1={guide.from}
+            x2={guide.to}
+            y1={guide.at}
+            y2={guide.at}
+            className="alignment-guide"
+          />
+        ),
+      )}
+    </g>
+  );
+}
+
+/** Pure guide computation: moving components (initial + delta) vs stationary
+ *  component centres. Exact-after-snap matches only (tolerance covers float
+ *  noise, not "nearly aligned"). */
+export function computeAlignmentGuides(
+  components: { id: string; x: number; y: number }[],
+  movingInitial: Map<string, { x: number; y: number }>,
+  delta: { x: number; y: number },
+  tolerance = 0.05,
+): AlignmentGuide[] {
+  const guides: AlignmentGuide[] = [];
+  const stationary = components.filter((c) => !movingInitial.has(c.id));
+  if (stationary.length === 0) return guides;
+  for (const c of components) {
+    const init = movingInitial.get(c.id);
+    if (!init) continue;
+    const mx = init.x + delta.x;
+    const my = init.y + delta.y;
+    let bestX: { s: { x: number; y: number }; d: number } | null = null;
+    let bestY: { s: { x: number; y: number }; d: number } | null = null;
+    for (const s of stationary) {
+      if (Math.abs(s.x - mx) < tolerance) {
+        const d = Math.abs(s.y - my);
+        if (!bestX || d < bestX.d) bestX = { s, d };
+      }
+      if (Math.abs(s.y - my) < tolerance) {
+        const d = Math.abs(s.x - mx);
+        if (!bestY || d < bestY.d) bestY = { s, d };
+      }
+    }
+    if (bestX && bestX.d > tolerance) {
+      guides.push({
+        axis: "x",
+        at: mx,
+        from: Math.min(my, bestX.s.y),
+        to: Math.max(my, bestX.s.y),
+      });
+    }
+    if (bestY && bestY.d > tolerance) {
+      guides.push({
+        axis: "y",
+        at: my,
+        from: Math.min(mx, bestY.s.x),
+        to: Math.max(mx, bestY.s.x),
+      });
+    }
+  }
+  return guides.slice(0, 8);
+}

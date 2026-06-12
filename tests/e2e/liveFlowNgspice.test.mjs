@@ -843,7 +843,8 @@ test("non-transient schematics do not show a Live Flow warning chip on the canva
     );
     assert.match(state.canvasHudText, /Grid:/);
     assert.match(state.canvasHudText, /Snap:/);
-    assert.match(state.canvasHudText, /Zoom:/);
+    // Zoom readout is a button showing e.g. "170%" (click = reset to 100%).
+    assert.match(state.canvasHudText, /\d+%/);
   } finally {
     await browser.close();
   }

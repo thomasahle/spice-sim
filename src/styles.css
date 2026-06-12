@@ -2694,6 +2694,29 @@ button[disabled] {
 .canvas.is-panning {
   cursor: grabbing;
 }
+/* Space/H held (pan armed) and live drags override every child cursor —
+   pins, labels, handles — so the hand/fist reads consistently (Figma). */
+.canvas.is-pan-armed,
+.canvas.is-pan-armed * {
+  cursor: grab !important;
+}
+.canvas.is-panning,
+.canvas.is-panning * {
+  cursor: grabbing !important;
+}
+.canvas.is-dragging,
+.canvas.is-dragging * {
+  cursor: grabbing !important;
+}
+/* Group-level grab on hover: the visible wire polyline and component symbol
+   strokes sit ABOVE their hit-targets, so target-level rules left a
+   default-cursor hole exactly on the centerline. Children inherit unless
+   they declare their own (pin crosshair, label text). */
+.canvas.is-selecting .component-group.hovered,
+.canvas.is-selecting .net-label-group.hovered,
+.canvas.is-selecting .wire-group.hovered {
+  cursor: grab;
+}
 .canvas-axis {
   stroke: color-mix(in srgb, var(--grid-major) 54%, transparent);
   stroke-width: 0.028;
@@ -2750,6 +2773,12 @@ button[disabled] {
 }
 .component-pin.subtle {
   opacity: 0.78;
+}
+.alignment-guide {
+  stroke: var(--danger, #e0457b);
+  stroke-width: 0.05;
+  stroke-dasharray: 0.22 0.16;
+  opacity: 0.9;
 }
 .group-selection-frame rect {
   fill: none;
@@ -3433,6 +3462,13 @@ button[disabled] {
 .canvas-hud span + span {
   padding-left: 8px;
   border-left: 1px solid var(--hairline);
+}
+/* Cursor grid-coordinate readout — fixed width so the HUD doesn't jitter
+   as digits change under the moving pointer. */
+.canvas-hud .hud-coords {
+  min-width: 76px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .canvas-hud button {
   border: 1px solid var(--hairline);

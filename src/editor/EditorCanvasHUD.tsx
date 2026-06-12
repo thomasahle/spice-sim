@@ -16,7 +16,14 @@ interface EditorCanvasHUDProps {
   autoRunUi: ReturnType<typeof describeAutoRunStatus>;
   zoom: number;
   onFit: () => void;
+  onZoomReset: () => void;
   onShowShortcuts: () => void;
+  /** Pointer position in grid cells, or null when off-canvas. */
+  cursor: { x: number; y: number } | null;
+}
+
+function formatCell(v: number): string {
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
 }
 
 export function EditorCanvasHUD({
@@ -31,7 +38,9 @@ export function EditorCanvasHUD({
   autoRunUi,
   zoom,
   onFit,
+  onZoomReset,
   onShowShortcuts,
+  cursor,
 }: EditorCanvasHUDProps) {
   return (
     <div className="canvas-hud">
@@ -75,7 +84,17 @@ export function EditorCanvasHUD({
       >
         {autoRunUi.buttonLabel}
       </button>
-      <span>Zoom: {Math.round(zoom * 100)}%</span>
+      <span className="hud-coords" aria-label="Cursor position in grid cells">
+        {cursor ? `${formatCell(cursor.x)}, ${formatCell(cursor.y)}` : "–, –"}
+      </span>
+      <button
+        type="button"
+        onClick={onZoomReset}
+        title="Reset zoom to 100% (⌘0)"
+        aria-label="Reset zoom to 100%"
+      >
+        {Math.round(zoom * 100)}%
+      </button>
       <button
         type="button"
         onClick={onFit}

@@ -210,6 +210,8 @@ import { findTimeIndex } from "./simSampleTime";
 import { useAutoRunSimulation } from "./useAutoRunSimulation";
 import { useDocHistory } from "./useDocHistory";
 import {
+  AlignmentGuidesOverlay,
+  computeAlignmentGuides,
   FloatingPinMarkers,
   MarqueeOverlay,
   NetLabelNearMissMarkers,
@@ -231,7 +233,7 @@ import {
   geometryDocToGraph,
 } from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline, type Wire as GraphWire } from "./graphModel";
-import { applyArrangeGeometry, attachPinAtPoint, deleteNode as graphDeleteNode, segmentBetweenNodes, splicePinSpanIntoWire, splitEdgeAtPoint, splitEdgeAtSegment, squareDraggedWireEnds, uncrossTwoPinBoundaryWires } from "./graphEdit";
+import { applyArrangeGeometry, attachPinAtPoint, deleteNode as graphDeleteNode, detachComponentWires, segmentBetweenNodes, splicePinSpanIntoWire, splitEdgeAtPoint, splitEdgeAtSegment, squareDraggedWireEnds, uncrossTwoPinBoundaryWires } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -301,6 +303,7 @@ import {
   CANVAS_PLACEMENT_INSERT_THRESHOLD,
   canvasDragDelta,
   canvasDragDeltaAfterThreshold,
+  constrainDragDelta,
   hasActiveCanvasInteraction,
   movedBeyondThreshold,
   placementShouldBeginTextEdit,
@@ -1391,6 +1394,9 @@ export function Editor() {
     delta: { x: number; y: number };
     committed: boolean;
     clickEditTarget?: CanvasClickEditTarget;
+    // Alt-duplicate commits the clone at pointerdown; if the drag never moves
+    // (a plain alt-click), undo it on release so no copy stacks invisibly.
+    undoOnNoMove?: boolean;
   }>(null);
   const [wireDrag, setWireDrag] = useState<null | {
     wireId: string;
@@ -1551,6 +1557,9 @@ export function Editor() {
   const preferredTextEditTargetRef = useRef<CanvasClickEditTarget | null>(null);
   const pendingCanvasDoubleActionRef = useRef<number | null>(null);
   const spacePanRef = useRef(false);
+  // State mirror of spacePanRef so the canvas can show the grab cursor while
+  // Space/H is held (the ref alone never re-renders).
+  const [spacePanArmed, setSpacePanArmed] = useState(false);
   // Multi-touch gesture tracking. Touch pointers go into `activeTouches`
   // keyed by pointerId; when two touches are active simultaneously we enter
   // pinch-zoom mode and record the starting distance / zoom / world center.
@@ -2500,6 +2509,7 @@ export function Editor() {
       // "h" into a selected label/value still starts the edit.
       if (e.code === "Space") {
         e.preventDefault();
+        if (!spacePanRef.current) setSpacePanArmed(true);
         spacePanRef.current = true;
         return;
       }
@@ -2649,6 +2659,7 @@ export function Editor() {
       // above so "h" typed at a selected label/value begins editing instead.
       if (e.code === "KeyH" && !meta) {
         e.preventDefault();
+        if (!spacePanRef.current) setSpacePanArmed(true);
         spacePanRef.current = true;
         return;
       }
@@ -2803,10 +2814,12 @@ export function Editor() {
     const up = (e: KeyboardEvent) => {
       if (e.code === "Space" || e.code === "KeyH") {
         spacePanRef.current = false;
+        setSpacePanArmed(false);
       }
     };
     const blur = () => {
       spacePanRef.current = false;
+      setSpacePanArmed(false);
     };
     window.addEventListener("keydown", h);
     window.addEventListener("keyup", up);
@@ -3130,6 +3143,56 @@ export function Editor() {
     }
 
     return { initialWires, movingWireIds, movingWireAnchors, attachedWirePoints };
+  }
+
+  /** Arm a selection move-drag: capture initial geometry for the idempotent
+   *  preview. `sourcePage` is explicit because alt-duplicate starts a drag on
+   *  components committed within the same event (refs are still stale). */
+  function beginSelectionDrag(
+    nextSelected: Set<string>,
+    sourcePage: GraphPage,
+    raw: { x: number; y: number },
+    g: { x: number; y: number },
+    clickEditTarget?: CanvasClickEditTarget,
+  ) {
+    const {
+      initial,
+      initialWires,
+      movingWireIds,
+      movingWireAnchors,
+      movingWireProbeAttachments,
+      attachedWirePoints,
+      directContactPins,
+    } = collectDragMotion(nextSelected, sourcePage);
+    const initialNodes = new Map(
+      (sourcePage.nodes ?? []).map((n) => [n.id, { x: n.x, y: n.y }] as const),
+    );
+    const initialBends = new Map(
+      sourcePage.wires.map(
+        (w) => [w.id, w.bends.map(([x, y]) => [x, y] as [number, number])] as const,
+      ),
+    );
+    const selectedWireIds = new Set(
+      sourcePage.wires.filter((w) => nextSelected.has(w.id)).map((w) => w.id),
+    );
+    setDrag({
+      initial,
+      initialNodes,
+      initialBends,
+      selectedWireIds,
+      initialWires,
+      movingWireIds,
+      movingWireAnchors,
+      movingWireProbeAttachments,
+      attachedWirePoints,
+      directContactPins,
+      previewWireIds: [],
+      startGrid: g,
+      startWorld: raw,
+      delta: { x: 0, y: 0 },
+      committed: false,
+      clickEditTarget,
+    });
   }
 
   function collectDragMotion(
@@ -3618,6 +3681,27 @@ export function Editor() {
         return;
       }
     }
+    // Alt-press on a selectable duplicates the selection and drags the copy
+    // (Figma/Illustrator). Alt on empty canvas keeps the mouse pan fallback.
+    if (e.button === 0 && e.altKey && !spacePanRef.current && tool === "select") {
+      const raw0 = screenToWorld(e.clientX, e.clientY);
+      const hit0 = hitSelectable(raw0.x, raw0.y, wireIdFromTarget(e.target));
+      if (hit0) {
+        e.preventDefault();
+        capturePointer(e);
+        const baseIds = selRef.current.has(hit0.id)
+          ? new Set(selRef.current)
+          : new Set([hit0.id]);
+        const dup = duplicateSelectionInPlace(baseIds);
+        if (dup) {
+          setSelectedIds(dup.newIds);
+          beginSelectionDrag(dup.newIds, dup.page, raw0, screenToGrid(e.clientX, e.clientY));
+          setDrag((d) => (d ? { ...d, undoOnNoMove: true } : d));
+          setStatus("Duplicated — drag to place");
+        }
+        return;
+      }
+    }
     if (e.button === 1 || (e.button === 0 && (e.altKey || spacePanRef.current))) {
       e.preventDefault();
       capturePointer(e);
@@ -3984,52 +4068,19 @@ export function Editor() {
           setHoverId(null);
           return;
         }
-        const {
-          initial,
-          initialWires,
-          movingWireIds,
-          movingWireAnchors,
-          movingWireProbeAttachments,
-          attachedWirePoints,
-          directContactPins,
-        } =
-          collectDragMotion(nextSelected);
-        const startGraphPage = currentPageGraph(graphDocRef.current);
-        const initialNodes = new Map(
-          (startGraphPage.nodes ?? []).map((n) => [n.id, { x: n.x, y: n.y }] as const),
-        );
-        const initialBends = new Map(
-          startGraphPage.wires.map(
-            (w) => [w.id, w.bends.map(([x, y]) => [x, y] as [number, number])] as const,
-          ),
-        );
-        const selectedWireIds = new Set(
-          startGraphPage.wires.filter((w) => nextSelected.has(w.id)).map((w) => w.id),
-        );
-        setDrag({
-          initial,
-          initialNodes,
-          initialBends,
-          selectedWireIds,
-          initialWires,
-          movingWireIds,
-          movingWireAnchors,
-          movingWireProbeAttachments,
-          attachedWirePoints,
-          directContactPins,
-          previewWireIds: [],
-          startGrid: g,
-          startWorld: raw,
-          delta: { x: 0, y: 0 },
-          committed: false,
-          clickEditTarget: clickEditTargetForSelectionClick(
+        beginSelectionDrag(
+          nextSelected,
+          currentPageGraph(graphDocRef.current),
+          raw,
+          g,
+          clickEditTargetForSelectionClick(
             e.target,
             hit,
             targetComponent,
             targetProbe,
             additive,
           ),
-        });
+        );
       } else {
         // Begin marquee
         preferredTextEditTargetRef.current = null;
@@ -4072,6 +4123,7 @@ export function Editor() {
   }
 
   function onCanvasPointerMove(e: React.PointerEvent<SVGSVGElement>) {
+    lastPointerClientRef.current = { x: e.clientX, y: e.clientY };
     // Track moving touches so pinch-zoom math sees fresh positions.
     if (e.pointerType === "touch" && activeTouchesRef.current.has(e.pointerId)) {
       activeTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -4402,15 +4454,18 @@ export function Editor() {
 
     if (drag) {
       setHoverId(null);
-      const delta = drag.committed
+      const rawDelta = drag.committed
         ? canvasDragDelta(drag.startWorld, raw, snapToGridRef.current)
         : canvasDragDeltaAfterThreshold(drag.startWorld, raw, snapToGridRef.current);
-      if (!delta) return;
+      if (!rawDelta) return;
+      const delta = constrainDragDelta(rawDelta, e.shiftKey);
       const snap = netLabelDragSnap(drag, delta.x, delta.y);
       const { x: dx, y: dy } = snap.delta;
       if (dx === 0 && dy === 0 && !drag.committed) return;
       setSnapTarget(snap.target ? { x: snap.target.x, y: snap.target.y } : null);
-      if (!drag.committed) {
+      if (!drag.committed && !drag.undoOnNoMove) {
+        // Alt-duplicate already pushed history at the clone commit; pushing
+        // again here would make undo peel the move off the stacked copy.
         pushPast(historySnapshot());
         setFuture([]);
       }
@@ -4467,10 +4522,9 @@ export function Editor() {
       setDrag(null);
       if (activeDrag.committed) {
         const raw = screenToWorld(e.clientX, e.clientY);
-        const delta = canvasDragDelta(
-          activeDrag.startWorld,
-          raw,
-          snapToGridRef.current,
+        const delta = constrainDragDelta(
+          canvasDragDelta(activeDrag.startWorld, raw, snapToGridRef.current),
+          e.shiftKey,
         );
         const snap = netLabelDragSnap(activeDrag, delta.x, delta.y);
         const { x: dx, y: dy } = snap.delta;
@@ -4501,6 +4555,10 @@ export function Editor() {
             return spliceDroppedComponent(squared, activeDrag) ?? squared;
           }),
         );
+      } else if (activeDrag.undoOnNoMove) {
+        // Plain alt-click (no movement): retract the speculative duplicate.
+        undo();
+        setStatus("");
       } else if (activeDrag.clickEditTarget) {
         beginCanvasClickEditTarget(activeDrag.clickEditTarget);
       }
@@ -4964,6 +5022,65 @@ export function Editor() {
   }
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
+  // Smart guides: centre alignments between the dragged components and the
+  // stationary ones, recomputed per preview frame (cheap: components only).
+  const dragAlignmentGuides = useMemo(() => {
+    if (!drag?.committed) return [];
+    return computeAlignmentGuides(
+      page.components.filter((c) => c.kind !== "NOTE"),
+      drag.initial,
+      drag.delta,
+    );
+  }, [drag, page.components]);
+  // Edge auto-pan (Figma/Illustrator/AutoCAD): while a move-drag, marquee,
+  // wire draft, or vertex drag is live and the pointer parks near the canvas
+  // edge, scroll the canvas under it. The stationary pointer is re-fed to the
+  // gesture via a synthetic pointermove so its world-space math tracks the pan.
+  const lastPointerClientRef = useRef<{ x: number; y: number } | null>(null);
+  const edgeAutoPanActive =
+    Boolean(drag?.committed) || marquee !== null || wireDraft !== null || Boolean(wireDrag);
+  useEffect(() => {
+    if (!edgeAutoPanActive) return;
+    const MARGIN = 28;
+    // Time-based velocity so the scroll speed is identical at 60 Hz, 120 Hz,
+    // and throttled-headless frame rates.
+    const MAX_SPEED = 800; // px/s at full intrusion
+    const MAX_TICK_STEP = 40; // clamp a long stalled frame's jump
+    let raf = 0;
+    let lastTs = performance.now();
+    const tick = (ts: number) => {
+      const dt = Math.min(0.2, (ts - lastTs) / 1000);
+      lastTs = ts;
+      const el = svgRef.current;
+      const pt = lastPointerClientRef.current;
+      if (el && pt && dt > 0) {
+        const r = el.getBoundingClientRect();
+        const ease = (dist: number) =>
+          Math.min(MAX_TICK_STEP, ((MARGIN - dist) / MARGIN) * MAX_SPEED * dt);
+        let dx = 0;
+        let dy = 0;
+        if (pt.x - r.left < MARGIN) dx = ease(pt.x - r.left);
+        else if (r.right - pt.x < MARGIN) dx = -ease(r.right - pt.x);
+        if (pt.y - r.top < MARGIN) dy = ease(pt.y - r.top);
+        else if (r.bottom - pt.y < MARGIN) dy = -ease(r.bottom - pt.y);
+        if (dx !== 0 || dy !== 0) {
+          setPan((p) => ({ x: p.x + dx, y: p.y + dy }));
+          el.dispatchEvent(
+            new PointerEvent("pointermove", {
+              bubbles: true,
+              cancelable: true,
+              clientX: pt.x,
+              clientY: pt.y,
+              buttons: 1,
+            }),
+          );
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [edgeAutoPanActive]);
   // Keep the world point at the canvas centre fixed when the canvas resizes
   // (waveform panel opening/closing, window resize) — otherwise the schematic
   // slides under the HUD / off the edge as the panel takes the bottom half.
@@ -5280,8 +5397,18 @@ export function Editor() {
     let cleanedWireCount = 0;
     let cleanedProbeCount = 0;
     commit((d) =>
-      updateCurrentPageGraph(d, (p) => {
-        // Pin-nodes of deleted components vanish, so edges touching them go too.
+      updateCurrentPageGraph(d, (rawPage) => {
+        // Detach the doomed components from their wiring first: inline 2-pin
+        // parts bridge back into one wire (the inverse of a splice), other
+        // wired pins become standalone stub nodes — wires survive deletion.
+        const deletedComponentIds = new Set(
+          rawPage.components.filter((c) => sel.has(c.id)).map((c) => c.id),
+        );
+        const deletedWireIds = new Set(
+          rawPage.wires.filter((w) => sel.has(w.id)).map((w) => w.id),
+        );
+        const p = detachComponentWires(rawPage, deletedComponentIds, deletedWireIds);
+        // Safety net: any edge still touching a deleted pin-node goes too.
         const deletedPinNodes = new Set<string>();
         for (const c of p.components) {
           if (sel.has(c.id)) for (const pin of c.pins ?? []) deletedPinNodes.add(pin);
@@ -6109,6 +6236,53 @@ export function Editor() {
     setStatus(
       `Pasted ${selectionSummary(newComps.length, insertedWireIds.length, insertedProbeIds.length)}`,
     );
+  }
+
+  /** Alt-drag clone (Figma/Illustrator): duplicate `ids` IN PLACE and return
+   *  the clone ids plus the page that now contains them, so the caller can
+   *  start a drag on the copies immediately. Returns null when the selection
+   *  has nothing clonable. */
+  function duplicateSelectionInPlace(
+    ids: Set<string>,
+  ): { newIds: Set<string>; page: GraphPage } | null {
+    const gp = currentPageGraph(graphDocRef.current);
+    const { components: comps, wires, probes } = clipboardFromGraphSelection(gp, ids);
+    if (comps.length === 0 && wires.length === 0 && probes.length === 0) return null;
+    const newComps = comps.map((c) => ({ ...c, id: makeId(c.kind.toLowerCase()) }));
+    const newWires = wires.map((w) => ({
+      ...w,
+      id: makeId("w"),
+      points: w.points.map(([x, y]) => [x, y] as [number, number]),
+    }));
+    const newProbes = copyConnectedProbes(probes, newComps, newWires, 0, 0);
+    let captured: GraphPage | null = null;
+    let newIds = new Set<string>();
+    commit((d) =>
+      updateCurrentPageGraph(d, (p) => {
+        const fragment = geometryToGraph({
+          id: p.id,
+          name: p.name,
+          components: newComps,
+          wires: newWires,
+          probes: newProbes,
+        });
+        newIds = new Set([
+          ...fragment.components.map((c) => c.id),
+          ...fragment.wires.map((w) => w.id),
+          ...fragment.probes.map((pr) => pr.id),
+        ]);
+        captured = {
+          ...p,
+          components: [...p.components, ...fragment.components],
+          nodes: [...(p.nodes ?? []), ...(fragment.nodes ?? [])],
+          wires: [...p.wires, ...fragment.wires],
+          probes: [...p.probes, ...fragment.probes],
+        };
+        return captured;
+      }),
+    );
+    if (!captured || newIds.size === 0) return null;
+    return { newIds, page: captured };
   }
 
   function duplicateSelection() {
@@ -8084,9 +8258,13 @@ export function Editor() {
           className={`canvas ${
             panning
               ? "is-panning"
-              : tool === "select" || tool === "node"
-                ? "is-selecting"
-                : "is-placing"
+              : spacePanArmed
+                ? "is-pan-armed"
+                : drag?.committed
+                  ? "is-dragging"
+                  : tool === "select" || tool === "node"
+                    ? "is-selecting"
+                    : "is-placing"
           }`}
           onPointerDown={onCanvasPointerDown}
           onPointerMove={onCanvasPointerMove}
@@ -8886,6 +9064,7 @@ export function Editor() {
 
             <SelectionBoundsOverlay bounds={selectionBounds} />
             <MarqueeOverlay marquee={marquee} />
+            <AlignmentGuidesOverlay guides={dragAlignmentGuides} />
           </g>
         </svg>
         {textEdit && textEditOverlay && (
@@ -8976,6 +9155,22 @@ export function Editor() {
           autoRunUi={autoRunUi}
           zoom={zoom}
           onFit={fitToContent}
+          onZoomReset={() => {
+            // Keep the view centre put; just normalize the scale (Figma ⌘0).
+            const rect = svgRef.current?.getBoundingClientRect();
+            if (!rect) return;
+            const next = zoomAtViewportPoint(
+              pan,
+              zoom,
+              { x: rect.width / 2, y: rect.height / 2 },
+              1 / zoom,
+              0.05,
+              8,
+            );
+            setPan(next.pan);
+            setZoom(next.zoom);
+          }}
+          cursor={cursor}
         />
         </div>
 

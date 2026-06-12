@@ -12,15 +12,13 @@ import {
 } from "./_setup.mjs";
 
 async function getZoomScale(page) {
-  // Inspector status bar shows "Zoom: NNN%". 1 cell unit = 20 * (zoom%/100) px.
-  const pct = await page.evaluate(() => {
-    const el = [...document.querySelectorAll("span")].find((e) =>
-      e.textContent?.startsWith("Zoom:"),
-    );
-    const m = el?.textContent?.match(/(\d+)%/);
-    return m ? Number(m[1]) : 100;
+  // Pixels per cell, measured directly from the viewport transform (the HUD
+  // zoom readout is a button now, so don't scrape its text).
+  return page.evaluate(() => {
+    const a = window.__qa.worldToScreen(0, 0);
+    const b = window.__qa.worldToScreen(1, 0);
+    return b.x - a.x;
   });
-  return 20 * (pct / 100);
 }
 
 test("static click on a component pin selects but does not create a wire", async () => {

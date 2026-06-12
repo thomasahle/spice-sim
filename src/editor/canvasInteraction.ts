@@ -179,3 +179,13 @@ export function placementShouldBeginTextEdit(kind: ComponentKind): boolean {
 export function placementShouldSnapToConnections(pinCount: number): boolean {
   return pinCount > 0;
 }
+
+/** Shift-drag axis lock (Figma/Illustrator): zero the minor axis of a move
+ *  delta while Shift is held. The dominant axis wins ties. */
+export function constrainDragDelta(
+  delta: { x: number; y: number },
+  shiftHeld: boolean,
+): { x: number; y: number } {
+  if (!shiftHeld) return delta;
+  return Math.abs(delta.x) >= Math.abs(delta.y) ? { x: delta.x, y: 0 } : { x: 0, y: delta.y };
+}

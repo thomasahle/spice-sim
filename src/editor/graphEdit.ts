@@ -536,3 +536,71 @@ export function attachPinAtPoint(
   }
   return null;
 }
+
+/** Detach a to-be-deleted component from its wires WITHOUT destroying them
+ *  (Illustrator-feel: the connection art survives the object):
+ *  - a 2-pin part with exactly one wire per pin and distinct far ends gets
+ *    BRIDGED — the two wires merge into one running across the body's span
+ *    (the inverse of an inline splice), pin positions becoming bends;
+ *  - every other wired pin becomes a fresh standalone node at the pin's
+ *    position, so its wires survive as stubs (probes re-anchor with them).
+ *  Operates while the components are still present (pin positions resolve);
+ *  the caller removes the components afterwards. `deletedWireIds` are wires
+ *  the user is deleting in the same gesture — they neither bridge nor stub. */
+export function detachComponentWires(
+  page: SchematicPage,
+  deletedComponentIds: Set<string>,
+  deletedWireIds: Set<string>,
+): SchematicPage {
+  let wires = page.wires.filter((w) => !deletedWireIds.has(w.id));
+  const nodes = [...(page.nodes ?? [])];
+  let probes = page.probes;
+  const idx = pinNodeIndex(page);
+  for (const c of page.components) {
+    if (!deletedComponentIds.has(c.id)) continue;
+    const pins = c.pins ?? [];
+    const incident = pins.map((pinId) => wires.filter((w) => w.a === pinId || w.b === pinId));
+    if (pins.length === 2 && incident[0].length === 1 && incident[1].length === 1) {
+      const [wA] = incident[0];
+      const [wB] = incident[1];
+      const farA = wA.a === pins[0] ? wA.b : wA.a;
+      const farB = wB.a === pins[1] ? wB.b : wB.a;
+      if (wA.id !== wB.id && farA !== farB) {
+        const pA = nodePos(page, pins[0], idx);
+        const pB = nodePos(page, pins[1], idx);
+        if (pA && pB) {
+          const merged: Wire = {
+            id: wA.id,
+            a: farA,
+            b: farB,
+            bends: [
+              ...bendsFrom(wA, farA),
+              [pA.x, pA.y],
+              [pB.x, pB.y],
+              ...bendsFrom(wB, pins[1]),
+            ],
+          };
+          wires = wires.flatMap((w) =>
+            w.id === wA.id ? [merged] : w.id === wB.id ? [] : [w],
+          );
+          continue;
+        }
+      }
+    }
+    // Stub conversion: each wired pin becomes a standalone node in place.
+    pins.forEach((pinId) => {
+      if (!wires.some((w) => w.a === pinId || w.b === pinId)) return;
+      const p = nodePos(page, pinId, idx);
+      if (!p) return;
+      const nodeId = makeNodeId();
+      nodes.push({ id: nodeId, x: p.x, y: p.y });
+      wires = wires.map((w) =>
+        w.a === pinId || w.b === pinId
+          ? { ...w, a: w.a === pinId ? nodeId : w.a, b: w.b === pinId ? nodeId : w.b }
+          : w,
+      );
+      probes = probes.map((pr) => (pr.node === pinId ? { ...pr, node: nodeId } : pr));
+    });
+  }
+  return { ...page, wires, nodes, probes };
+}
