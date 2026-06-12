@@ -1349,8 +1349,29 @@ export function Editor() {
     press?: { x: number; y: number };
   }>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 600, y: 360 });
+  // View transform. The REFS are the live source of truth — wheel pan/zoom
+  // and edge auto-pan write them (plus the DOM) imperatively per event and
+  // only commit state when the gesture settles, so the whole editor doesn't
+  // re-render per wheel tick. The setters keep refs and state in lock-step
+  // for every other (discrete) caller; functional updaters receive the ref
+  // value, which is never staler than state.
+  const [zoom, setZoomState] = useState(1);
+  const [pan, setPanState] = useState({ x: 600, y: 360 });
+  const zoomRef = useRef(zoom);
+  const panRef = useRef(pan);
+  const setZoom = useCallback((next: number | ((z: number) => number)) => {
+    const v = typeof next === "function" ? next(zoomRef.current) : next;
+    zoomRef.current = v;
+    setZoomState(v);
+  }, []);
+  const setPan = useCallback(
+    (next: { x: number; y: number } | ((p: { x: number; y: number }) => { x: number; y: number })) => {
+      const v = typeof next === "function" ? next(panRef.current) : next;
+      panRef.current = v;
+      setPanState(v);
+    },
+    [],
+  );
   const [panning, setPanning] = useState<{ x: number; y: number } | null>(null);
   const [readings, setReadings] = useState<Map<string, number> | null>(null);
   const [status, setStatus] = useState<string>("Idle");
@@ -2848,7 +2869,13 @@ export function Editor() {
 
   function screenToWorld(clientX: number, clientY: number): { x: number; y: number } {
     const rect = svgRef.current!.getBoundingClientRect();
-    return screenToWorldPoint(clientX, clientY, rect, { pan, zoom, cellPx: CELL });
+    // Read the LIVE transform (refs) — during an imperative wheel/auto-pan
+    // gesture the state lags until the settle commit.
+    return screenToWorldPoint(clientX, clientY, rect, {
+      pan: panRef.current,
+      zoom: zoomRef.current,
+      cellPx: CELL,
+    });
   }
 
   // Dev-only test hook so the puppeteer QA harness can target world coordinates
@@ -2858,7 +2885,9 @@ export function Editor() {
     (window as unknown as { __qa?: unknown }).__qa = {
       worldToScreen: (wx: number, wy: number) => {
         const rect = svgRef.current!.getBoundingClientRect();
-        return { x: rect.left + pan.x + wx * CELL * zoom, y: rect.top + pan.y + wy * CELL * zoom };
+        const p = panRef.current;
+        const z = zoomRef.current;
+        return { x: rect.left + p.x + wx * CELL * z, y: rect.top + p.y + wy * CELL * z };
       },
       screenToWorld: (sx: number, sy: number) => screenToWorld(sx, sy),
       graphPage: () => currentPageGraph(graphDocRef.current),
@@ -3705,7 +3734,7 @@ export function Editor() {
     if (e.button === 1 || (e.button === 0 && (e.altKey || spacePanRef.current))) {
       e.preventDefault();
       capturePointer(e);
-      setPanning({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      setPanning({ x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y });
       return;
     }
     if (tool === "node") {
@@ -4138,11 +4167,15 @@ export function Editor() {
         // under the (possibly moved) current pinch center.
         const centerScreen = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
         const rect = svgRef.current!.getBoundingClientRect();
-        setZoom(newZoom);
-        setPan({
-          x: centerScreen.x - rect.left - pinch.centerWorld.x * CELL * newZoom,
-          y: centerScreen.y - rect.top - pinch.centerWorld.y * CELL * newZoom,
-        });
+        // Imperative per touchmove; one state commit when the pinch settles.
+        applyViewTransformImperative(
+          {
+            x: centerScreen.x - rect.left - pinch.centerWorld.x * CELL * newZoom,
+            y: centerScreen.y - rect.top - pinch.centerWorld.y * CELL * newZoom,
+          },
+          newZoom,
+        );
+        scheduleViewCommit();
         return;
       }
     }
@@ -5003,25 +5036,68 @@ export function Editor() {
   //   - ⌥-drag from earlier still works as an explicit pan fallback for mice.
   // Attached via a native listener so `passive: false` is honoured and the
   // browser's own page-zoom on pinch is properly suppressed inside the canvas.
-  const panRef = useRef(pan);
-  panRef.current = pan;
-  // Ref to the root <g> so an active pan can write the transform directly
-  // via DOM instead of triggering a React re-render of ~100 components per
-  // pointermove. We commit the final pan to React state on pointer-up so
-  // every other code path that reads `pan` from closure stays consistent.
+  // Ref to the root <g> so pans/zooms can write the transform directly via
+  // DOM instead of triggering a React re-render of ~100 components per event.
   const panGroupRef = useRef<SVGGElement | null>(null);
-  function applyPanTransformImperative(next: { x: number; y: number }) {
-    panRef.current = next;
+  // Pending debounced state commit for imperative wheel / auto-pan gestures.
+  const viewCommitTimerRef = useRef<number | null>(null);
+  /** Write the live view transform straight into the DOM: root group
+   *  transform + both grid patterns (tile origin/size track pan/zoom) + the
+   *  major grid's zoom fade. Render also reads panRef/zoomRef, so a React
+   *  render mid-gesture repaints the same values instead of clobbering. */
+  function applyViewTransformImperative(
+    nextPan: { x: number; y: number },
+    nextZoom: number = zoomRef.current,
+  ) {
+    panRef.current = nextPan;
+    zoomRef.current = nextZoom;
     const g = panGroupRef.current;
     if (g) {
       g.setAttribute(
         "transform",
-        `translate(${next.x} ${next.y}) scale(${CELL * zoomRef.current})`,
+        `translate(${nextPan.x} ${nextPan.y}) scale(${CELL * nextZoom})`,
       );
     }
+    const svg = svgRef.current;
+    if (!svg) return;
+    const cell = CELL * nextZoom;
+    const grid = svg.querySelector<SVGPatternElement>("#grid");
+    if (grid) {
+      grid.setAttribute("x", String(nextPan.x));
+      grid.setAttribute("y", String(nextPan.y));
+      grid.setAttribute("width", String(cell));
+      grid.setAttribute("height", String(cell));
+      grid.firstElementChild?.setAttribute("d", `M ${cell} 0 L 0 0 0 ${cell}`);
+    }
+    const major = svg.querySelector<SVGPatternElement>("#major-grid");
+    if (major) {
+      major.setAttribute("x", String(nextPan.x));
+      major.setAttribute("y", String(nextPan.y));
+      major.setAttribute("width", String(cell * 5));
+      major.setAttribute("height", String(cell * 5));
+      major.firstElementChild?.setAttribute("d", `M ${cell * 5} 0 L 0 0 0 ${cell * 5}`);
+    }
+    svg
+      .querySelector<SVGRectElement>(".grid-layer.major")
+      ?.setAttribute("opacity", nextZoom > 0.45 ? "1" : "0");
   }
-  const zoomRef = useRef(zoom);
-  zoomRef.current = zoom;
+  /** Commit the imperatively-applied transform to React state once the
+   *  gesture settles, so the HUD zoom % and any state readers catch up with
+   *  ONE re-render instead of one per wheel tick. */
+  const scheduleViewCommit = useCallback(() => {
+    if (viewCommitTimerRef.current !== null) {
+      window.clearTimeout(viewCommitTimerRef.current);
+    }
+    viewCommitTimerRef.current = window.setTimeout(() => {
+      viewCommitTimerRef.current = null;
+      setPan(panRef.current);
+      setZoom(zoomRef.current);
+    }, 140);
+  }, [setPan, setZoom]);
+  /** Legacy name used by the drag-pan pointermove path. */
+  function applyPanTransformImperative(next: { x: number; y: number }) {
+    applyViewTransformImperative(next);
+  }
   // Smart guides: centre alignments between the dragged components and the
   // stationary ones, recomputed per preview frame (cheap: components only).
   const dragAlignmentGuides = useMemo(() => {
@@ -5064,7 +5140,14 @@ export function Editor() {
         if (pt.y - r.top < MARGIN) dy = ease(pt.y - r.top);
         else if (r.bottom - pt.y < MARGIN) dy = -ease(r.bottom - pt.y);
         if (dx !== 0 || dy !== 0) {
-          setPan((p) => ({ x: p.x + dx, y: p.y + dy }));
+          // Imperative pan (no per-tick editor re-render); the synthetic
+          // pointermove below re-runs the gesture math, which reads the live
+          // panRef via screenToWorld.
+          applyViewTransformImperative({
+            x: panRef.current.x + dx,
+            y: panRef.current.y + dy,
+          });
+          scheduleViewCommit();
           el.dispatchEvent(
             new PointerEvent("pointermove", {
               bubbles: true,
@@ -5080,7 +5163,7 @@ export function Editor() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [edgeAutoPanActive]);
+  }, [edgeAutoPanActive, scheduleViewCommit]);
   // Keep the world point at the canvas centre fixed when the canvas resizes
   // (waveform panel opening/closing, window resize) — otherwise the schematic
   // slides under the HUD / off the edge as the panel takes the bottom half.
@@ -5098,7 +5181,7 @@ export function Editor() {
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [setPan]);
   useEffect(() => {
     const el = svgRef.current;
     if (!el) return;
@@ -5119,16 +5202,20 @@ export function Editor() {
           0.3,
           4,
         );
-        setPan(next.pan);
-        setZoom(next.zoom);
+        // Imperative DOM write per tick + ONE state commit when the stream
+        // settles — re-rendering the whole editor per wheel event was the
+        // scroll/zoom lag (profiled at ~25ms/event on a small schematic).
+        applyViewTransformImperative(next.pan, next.zoom);
+        scheduleViewCommit();
       } else {
         // Two-finger scroll -> pan using natural trackpad direction.
-        setPan(applyWheelPan(panRef.current, e.deltaX, e.deltaY));
+        applyViewTransformImperative(applyWheelPan(panRef.current, e.deltaX, e.deltaY));
+        scheduleViewCommit();
       }
     };
     el.addEventListener("wheel", handler, { passive: false });
     return () => el.removeEventListener("wheel", handler);
-  }, []);
+  }, [scheduleViewCommit]);
 
   // Rotate / mirror / flip all share the same wire- and probe-rerouting
   // machinery; they differ only in how each selected component is mutated.
@@ -8275,16 +8362,19 @@ export function Editor() {
           onContextMenu={onCanvasContextMenu}
         >
           <defs>
+            {/* Pattern geometry renders from the live refs so a React render
+                mid-wheel-gesture repaints the current transform instead of
+                clobbering the imperatively-written one. */}
             <pattern
               id="grid"
-              x={pan.x}
-              y={pan.y}
-              width={CELL * zoom}
-              height={CELL * zoom}
+              x={panRef.current.x}
+              y={panRef.current.y}
+              width={CELL * zoomRef.current}
+              height={CELL * zoomRef.current}
               patternUnits="userSpaceOnUse"
             >
               <path
-                d={`M ${CELL * zoom} 0 L 0 0 0 ${CELL * zoom}`}
+                d={`M ${CELL * zoomRef.current} 0 L 0 0 0 ${CELL * zoomRef.current}`}
                 fill="none"
                 stroke="var(--grid-dot)"
                 strokeWidth={1}
@@ -8292,14 +8382,14 @@ export function Editor() {
             </pattern>
             <pattern
               id="major-grid"
-              x={pan.x}
-              y={pan.y}
-              width={CELL * zoom * 5}
-              height={CELL * zoom * 5}
+              x={panRef.current.x}
+              y={panRef.current.y}
+              width={CELL * zoomRef.current * 5}
+              height={CELL * zoomRef.current * 5}
               patternUnits="userSpaceOnUse"
             >
               <path
-                d={`M ${CELL * zoom * 5} 0 L 0 0 0 ${CELL * zoom * 5}`}
+                d={`M ${CELL * zoomRef.current * 5} 0 L 0 0 0 ${CELL * zoomRef.current * 5}`}
                 fill="none"
                 stroke="var(--grid-major)"
                 strokeWidth={1}
@@ -8314,12 +8404,15 @@ export function Editor() {
                 width="100%"
                 height="100%"
                 fill="url(#major-grid)"
-                opacity={zoom > 0.45 ? 1 : 0}
+                opacity={zoomRef.current > 0.45 ? 1 : 0}
               />
             </>
           )}
 
-          <g ref={panGroupRef} transform={`translate(${pan.x} ${pan.y}) scale(${CELL * zoom})`}>
+          <g
+            ref={panGroupRef}
+            transform={`translate(${panRef.current.x} ${panRef.current.y}) scale(${CELL * zoomRef.current})`}
+          >
             {gridVisible && (
               <>
                 <line x1={-10000} y1={0} x2={10000} y2={0} className="canvas-axis" />
@@ -9160,10 +9253,10 @@ export function Editor() {
             const rect = svgRef.current?.getBoundingClientRect();
             if (!rect) return;
             const next = zoomAtViewportPoint(
-              pan,
-              zoom,
+              panRef.current,
+              zoomRef.current,
               { x: rect.width / 2, y: rect.height / 2 },
-              1 / zoom,
+              1 / zoomRef.current,
               0.05,
               8,
             );
