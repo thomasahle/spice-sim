@@ -296,46 +296,70 @@ export function splitEdgeAtPoint(
   return null;
 }
 
-/** After a selection drag, re-square the rubber-banded boundary wires
- *  (right-angle mode): a wire with exactly one endpoint on a moved node keeps
- *  its old bends, so the segment next to the moved end can come out diagonal.
- *  Insert one corner bend there, keeping the bend chain's existing axis where
- *  one exists so the wire turns at the bend instead of zig-zagging. */
-export function squareDraggedWireEnds(
+/** ONE rule for how wires follow a move of (dx,dy), applied identically to
+ *  the live drag preview, the drop, and arrow-key nudges (WYSIWYG):
+ *   - wire in `rigidWireIds` (explicitly selected): caller translates it;
+ *   - BOTH endpoints moved (wire internal to the moving group): bends
+ *     translate rigidly so the wire keeps its shape — without this, a
+ *     marquee group-drag froze every corner while the pins moved and the
+ *     circuit collapsed into diagonals;
+ *   - ONE endpoint moved (boundary wire): the wire re-routes as a fresh
+ *     stationary-end → moved-end "L", keeping the old departure axis at the
+ *     stationary end where one existed. Stale bends are DISCARDED — the old
+ *     behaviour of appending a squaring corner per drop accumulated a
+ *     staircase of every position the part had ever been dragged through;
+ *   - no endpoint moved: untouched.
+ *  With `orthogonal` false (diagonal-wires mode) boundary wires become
+ *  direct point-to-point segments. */
+export function reflowWiresAfterMove(
   page: SchematicPage,
   movedNodeIds: Set<NodeId>,
+  delta: { x: number; y: number },
+  rigidWireIds: Set<string>,
+  orthogonal: boolean,
+  // The live drag preview is idempotent (it recomputes from drag-start
+  // geometry every frame), so it passes the wires' DRAG-START bends here;
+  // page.wires may already hold a previous frame's reflow.
+  initialBendsById?: Map<string, [number, number][]>,
 ): SchematicPage {
+  if (movedNodeIds.size === 0) return page;
   const idx = pinNodeIndex(page);
+  const baseBends = (wire: Wire) => initialBendsById?.get(wire.id) ?? wire.bends;
+  const zero = delta.x === 0 && delta.y === 0;
   let changed = false;
   const wires = page.wires.map((wire) => {
+    if (rigidWireIds.has(wire.id)) return wire;
     const aMoved = movedNodeIds.has(wire.a);
     const bMoved = movedNodeIds.has(wire.b);
-    if (aMoved === bMoved) return wire; // untouched, or rigid internal wire
-    const poly = wirePolyline(page, wire, idx);
-    if (!poly || poly.length < 2) return wire;
-    // Work from the moved end: p = moved endpoint, q = its neighbour vertex.
-    const fromA = aMoved;
-    const p = fromA ? poly[0] : poly[poly.length - 1];
-    const q = fromA ? poly[1] : poly[poly.length - 2];
-    const diagonal = Math.abs(p[0] - q[0]) > 1e-6 && Math.abs(p[1] - q[1]) > 1e-6;
-    if (!diagonal) return wire;
-    // Preserve the axis of the segment arriving at q from the stationary side
-    // (if there is one and it is axis-aligned): the new corner extends q's
-    // perpendicular. Otherwise default to horizontal-then-vertical from q.
-    const qPrev = fromA ? poly[2] : poly[poly.length - 3];
-    let corner: [number, number];
-    if (qPrev && Math.abs(qPrev[1] - q[1]) < 1e-6) {
-      corner = [q[0], p[1]]; // arrive horizontal → leave vertical
-    } else if (qPrev && Math.abs(qPrev[0] - q[0]) < 1e-6) {
-      corner = [p[0], q[1]]; // arrive vertical → leave horizontal
-    } else {
-      corner = [p[0], q[1]];
-    }
+    if (!aMoved && !bMoved) return wire;
     changed = true;
-    return {
-      ...wire,
-      bends: fromA ? [corner, ...wire.bends] : [...wire.bends, corner],
-    };
+    const bends = baseBends(wire);
+    // Snapped back to the start: restore the original shape exactly.
+    if (zero) return { ...wire, bends };
+    if (aMoved && bMoved) {
+      return {
+        ...wire,
+        bends: bends.map(([x, y]) => [x + delta.x, y + delta.y] as [number, number]),
+      };
+    }
+    const fixedEnd = aMoved ? wire.b : wire.a;
+    const movedEnd = aMoved ? wire.a : wire.b;
+    const from = nodePos(page, fixedEnd, idx);
+    const to = nodePos(page, movedEnd, idx);
+    if (!from || !to) return wire;
+    if (!orthogonal || Math.abs(from.x - to.x) < 1e-6 || Math.abs(from.y - to.y) < 1e-6) {
+      return { ...wire, bends: [] };
+    }
+    // Keep the old departure axis at the stationary end: if the wire used to
+    // leave that end vertically, the new L leaves vertically too. For a
+    // previously-straight wire, derive the axis from the pre-move position
+    // of the moved endpoint instead.
+    const oldNeighbor = aMoved ? bends[bends.length - 1] : bends[0];
+    const verticalFirst = oldNeighbor
+      ? Math.abs(oldNeighbor[0] - from.x) < 1e-6
+      : Math.abs(to.x - delta.x - from.x) < 1e-6;
+    const corner: [number, number] = verticalFirst ? [from.x, to.y] : [to.x, from.y];
+    return { ...wire, bends: [corner] };
   });
   return changed ? { ...page, wires } : page;
 }

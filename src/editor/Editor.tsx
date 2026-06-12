@@ -233,7 +233,7 @@ import {
   geometryDocToGraph,
 } from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline, type Wire as GraphWire } from "./graphModel";
-import { applyArrangeGeometry, attachPinAtPoint, deleteNode as graphDeleteNode, detachComponentWires, segmentBetweenNodes, splicePinSpanIntoWire, splitEdgeAtPoint, splitEdgeAtSegment, squareDraggedWireEnds, uncrossTwoPinBoundaryWires } from "./graphEdit";
+import { applyArrangeGeometry, attachPinAtPoint, deleteNode as graphDeleteNode, detachComponentWires, reflowWiresAfterMove, segmentBetweenNodes, splicePinSpanIntoWire, splitEdgeAtPoint, splitEdgeAtSegment, uncrossTwoPinBoundaryWires } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -3393,14 +3393,29 @@ export function Editor() {
       const init = activeDrag.initial.get(pr.id);
       return init && pr.node == null ? { ...pr, ...move(init.x, init.y) } : pr;
     });
+    const movedPage: GraphPage = {
+      ...sourcePage,
+      components: nextComponents,
+      nodes: nextNodes,
+      wires: nextWires,
+      probes: nextProbes,
+    };
+    // Unselected wires touching the moving set follow ONE rule, identical in
+    // preview and drop (WYSIWYG): internal wires ride rigidly, boundary wires
+    // re-route as a clean L (see reflowWiresAfterMove).
+    const movedNodeIds = new Set<string>(movingNodeIds);
+    for (const c of movedPage.components) {
+      if (activeDrag.initial.has(c.id)) for (const pin of c.pins ?? []) movedNodeIds.add(pin);
+    }
     return {
-      page: {
-        ...sourcePage,
-        components: nextComponents,
-        nodes: nextNodes,
-        wires: nextWires,
-        probes: nextProbes,
-      },
+      page: reflowWiresAfterMove(
+        movedPage,
+        movedNodeIds,
+        { x: dx, y: dy },
+        activeDrag.selectedWireIds,
+        !diagonalWiresRef.current,
+        activeDrag.initialBends,
+      ),
       previewWireIds: [],
     };
   }
@@ -4563,29 +4578,14 @@ export function Editor() {
         const { x: dx, y: dy } = snap.delta;
         previewMutate((d) =>
           updateCurrentPageGraph(d, (p) => {
+            // The preview already reflowed the wires (rigid/internal vs
+            // re-routed boundary) — the drop commits exactly what was shown.
             const moved = applySelectionDragPreview(p, activeDrag, dx, dy).page;
             if (dx === 0 && dy === 0) return moved;
-            // Right-angle mode: settle the rubber-banded boundary wires back
-            // into Manhattan form instead of leaving the stretch diagonal.
-            const movedNodeIds = new Set<string>();
-            for (const c of moved.components) {
-              if (activeDrag.initial.has(c.id)) {
-                for (const pin of c.pins ?? []) movedNodeIds.add(pin);
-              }
-            }
-            for (const w of moved.wires) {
-              if (activeDrag.selectedWireIds.has(w.id)) {
-                movedNodeIds.add(w.a);
-                movedNodeIds.add(w.b);
-              }
-            }
-            const squared = diagonalWiresRef.current
-              ? moved
-              : squareDraggedWireEnds(moved, movedNodeIds);
             // Dropping a single 2-pin part with both (unwired) pins on the
             // same wire segment splices it inline — same rule as placing a
             // part onto a wire. Anything else stays unconnected (§16).
-            return spliceDroppedComponent(squared, activeDrag) ?? squared;
+            return spliceDroppedComponent(moved, activeDrag) ?? moved;
           }),
         );
       } else if (activeDrag.undoOnNoMove) {
@@ -5411,13 +5411,27 @@ export function Editor() {
         const nextProbes = page.probes.map((pr) =>
           selected.has(pr.id) && pr.node == null ? { ...pr, ...move(pr.x, pr.y) } : pr,
         );
-        return {
+        const movedPage = {
           ...page,
           components: nextComponents,
           nodes: nextNodes,
           wires: nextWires,
           probes: nextProbes,
         };
+        // Same wire-follow rule as drags: internal wires ride, boundary
+        // wires re-route (arrow-key nudges previously left bends behind).
+        const movedNodeIds = new Set<string>(movingNodeIds);
+        for (const c of movedPage.components) {
+          if (selected.has(c.id)) for (const pin of c.pins ?? []) movedNodeIds.add(pin);
+        }
+        const rigid = new Set(movedPage.wires.filter((w) => selected.has(w.id)).map((w) => w.id));
+        return reflowWiresAfterMove(
+          movedPage,
+          movedNodeIds,
+          { x: dx, y: dy },
+          rigid,
+          !diagonalWiresRef.current,
+        );
       }),
     );
   }
