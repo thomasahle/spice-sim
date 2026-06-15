@@ -678,6 +678,9 @@ type RegularComponentNodeProps = {
   /** "1"/"0" per pin index: pin node has a wire attached. A string (not an
    *  array) so the memo()'d node only re-renders when connectivity changes. */
   connectedPinsKey: string;
+  /** Voltage-heatmap colour per pin, `|`-joined ("" entries = no colour). A
+   *  string keeps the memo() stable; empty string means heatmap off. */
+  pinHeatKey: string;
   scheduleCanvasDoubleAction: (target: EventTarget | null) => boolean;
 };
 
@@ -703,8 +706,10 @@ const RegularComponentNode = memo(function RegularComponentNode({
   subxPinSides,
   subxPinLabelEditingIndex,
   connectedPinsKey,
+  pinHeatKey,
   scheduleCanvasDoubleAction,
 }: RegularComponentNodeProps) {
+  const pinHeatColors = pinHeatKey ? pinHeatKey.split("|") : [];
   const bounds = componentVisualBoundsFor(c, 0.16);
   const connectionToolActive = tool === "wire" || tool === "probe";
   const activeDevice = isActiveMultiPinKind(c.kind);
@@ -831,6 +836,39 @@ const RegularComponentNode = memo(function RegularComponentNode({
         })}
         {getPinLayout(c).map((p, i) => (
           <g key={i}>
+            {/* Voltage heatmap: extend the net colour from the wire into the
+                component lead + pin so the potential map is continuous instead
+                of being broken by black component bodies. */}
+            {pinHeatColors[i] && (() => {
+              const dist = Math.hypot(p.x, p.y);
+              const len = Math.min(0.6, dist * 0.45);
+              const dot = (
+                <circle
+                  key="heatdot"
+                  cx={p.x}
+                  cy={p.y}
+                  r={0.17}
+                  fill={pinHeatColors[i]}
+                  stroke="none"
+                  pointerEvents="none"
+                />
+              );
+              if (len < 1e-3) return dot;
+              return (
+                <g key="heatlead" pointerEvents="none">
+                  <line
+                    x1={p.x}
+                    y1={p.y}
+                    x2={p.x - (p.x / dist) * len}
+                    y2={p.y - (p.y / dist) * len}
+                    stroke={pinHeatColors[i]}
+                    strokeWidth={defaultStroke * 1.5}
+                    strokeLinecap="round"
+                  />
+                  {dot}
+                </g>
+              );
+            })()}
             {/* GND's only pin sits inside its own body, so a quick-wire hit
                 circle there would blanket the symbol and steal the grab/move
                 cursor (starting a wire instead of a move). Drop it for GND so
@@ -9099,6 +9137,19 @@ export function Editor() {
                   connectedPinsKey={(c.pins ?? [])
                     .map((id) => (wiredNodeIds.has(id) ? "1" : "0"))
                     .join("")}
+                  pinHeatKey={
+                    heatmapActive
+                      ? getPinLayout(c)
+                          .map((_, i) => {
+                            const wp = pinWorldPos(c, i);
+                            const node = pinAnnotations.nodes.posToNode.get(
+                              `${coordKey(wp.x)},${coordKey(wp.y)}`,
+                            );
+                            return voltageColorForNode(heatmapData, node) ?? "";
+                          })
+                          .join("|")
+                      : ""
+                  }
                   scheduleCanvasDoubleAction={scheduleCanvasDoubleActionStable}
                 />
               );
