@@ -1151,9 +1151,11 @@ const WireNode = memo(function WireNode({
           sel || hovered ? "var(--accent)" : heatColor ?? "var(--ink)"
         }
         strokeWidth={
-          // Heatmap wires read better a touch thicker so the colour band is
-          // legible at a glance.
-          sel ? selectedStroke : hovered ? hoveredStroke : heatColor ? defaultStroke * 1.5 : defaultStroke
+          // Heatmap wires are drawn noticeably thicker: the colour band is
+          // legible at a glance, AND it stays wider than the white flow dashes
+          // (max ~1.45× defaultStroke) so the dashes ride INSIDE the coloured
+          // wire instead of spilling onto the light canvas.
+          sel ? selectedStroke : hovered ? hoveredStroke : heatColor ? defaultStroke * 2.4 : defaultStroke
         }
         strokeLinecap="round"
         strokeLinejoin="round"

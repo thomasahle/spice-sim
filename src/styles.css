@@ -4096,17 +4096,24 @@ button[disabled] {
   stroke: var(--accent);
 }
 /* With the voltage heatmap on, the wire stroke already carries the net's
-   colour — render the current flow as bright moving highlights over it
-   (and drop the light casing that would wash the colour out) so both read
-   at once instead of the blue flow masking the heatmap. */
+   colour — render the current flow as bold WHITE moving dashes over it so
+   both read at once (the blue flow would mask the heatmap, and faint white
+   was too subtle). A thin dark casing gives the white dashes contrast on the
+   lighter mid-range (yellow/green) nets; CSS beats the inline stroke so we
+   also widen + fully opacify the dashes regardless of current intensity. */
 .canvas.heatmap-on .wire-live-overlay.ngspice,
 .canvas.heatmap-on .component-live-overlay.ngspice {
-  color: rgba(255, 255, 255, 0.92);
-  stroke: rgba(255, 255, 255, 0.92);
+  color: #ffffff;
+  stroke: #ffffff;
+  opacity: 1 !important;
 }
+/* Casing is a CONTINUOUS stroke, so darkening it would hide the heat colour
+   between dashes — keep it invisible and let the white dashes (kept NARROWER
+   than the widened heat base, see WireNode) carry the flow INSIDE the
+   coloured wire so they never blend into the light canvas. */
 .canvas.heatmap-on .wire-live-casing,
 .canvas.heatmap-on .component-live-casing {
-  opacity: 0.18;
+  opacity: 0;
 }
 .component-live {
   stroke-dasharray: var(--flow-dash, 0.18) var(--flow-gap, 0.54);
