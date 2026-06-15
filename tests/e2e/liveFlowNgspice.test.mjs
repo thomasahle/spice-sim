@@ -890,8 +890,15 @@ test("Live Flow animates only ngspice current-vector samples after a real transi
       `expected grounded ngspice wire currents to animate through the ground symbols: ${JSON.stringify(state, null, 2)}`,
     );
     assert.ok(
-      groundSegments.every((detail) => detail.direction === "1" && detail.animationName === "wire-flow"),
-      `ground body flow should always move down into the ground symbol: ${JSON.stringify(state, null, 2)}`,
+      // Ground flow shows the REAL signed direction now (+1 = into the ground
+      // bars, −1 = out of them) — current can flow either way through a ground
+      // node, so it is no longer forced downward.
+      groundSegments.every(
+        (detail) =>
+          (detail.direction === "1" && detail.animationName === "wire-flow") ||
+          (detail.direction === "-1" && detail.animationName === "wire-flow-reverse"),
+      ),
+      `ground body flow should animate with a real signed direction: ${JSON.stringify(state, null, 2)}`,
     );
     assert.ok(
       groundSegments.every((detail) => !/[ACQ]/.test(detail.pathD) && /L/.test(detail.pathD)),

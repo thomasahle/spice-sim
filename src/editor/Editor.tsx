@@ -823,13 +823,20 @@ const RegularComponentNode = memo(function RegularComponentNode({
         })}
         {getPinLayout(c).map((p, i) => (
           <g key={i}>
-            <circle
-              cx={p.x}
-              cy={p.y}
-              r={0.42}
-              className="component-pin-hit"
-              data-connection-handle="true"
-            />
+            {/* GND's only pin sits inside its own body, so a quick-wire hit
+                circle there would blanket the symbol and steal the grab/move
+                cursor (starting a wire instead of a move). Drop it for GND so
+                the whole symbol is grab-to-move; the Wire tool still snaps to
+                the ground pin geometrically. */}
+            {c.kind !== "GND" && (
+              <circle
+                cx={p.x}
+                cy={p.y}
+                r={0.42}
+                className="component-pin-hit"
+                data-connection-handle="true"
+              />
+            )}
             {showPinTargets && (
               <circle
                 cx={p.x}
@@ -978,12 +985,11 @@ function ComponentLiveFlowGlyph({
   if (paths.length === 0) return null;
   const phase = liveFlowPhaseForId(`component:${component.id}`);
   const flowStyle = liveFlowAnimationStyle(flow, phase) as CSSProperties;
-  // V sources animate their lead stubs with the real current direction (the
-  // stubs are a continuous pin→pin path, so a discharging battery animates
-  // bottom→top internally, matching the wires at both pins). Grounds keep a
-  // fixed direction; their single stub reads as "connected to reference"
-  // rather than directional flow.
-  const flowDirection = component.kind === "GND" ? 1 : flow.direction;
+  // Every part (grounds included) animates its lead stubs with the real
+  // current direction. The GND sample is signed as current-into-ground, whose
+  // glyph path runs pin→bars (downward), so +1 reads as flowing into ground
+  // and −1 as flowing out of it.
+  const flowDirection = flow.direction;
   return (
     <g
       className="component-live-group"

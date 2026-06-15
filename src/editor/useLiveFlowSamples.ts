@@ -172,21 +172,31 @@ export function useLiveFlowSamples({
     for (const c of page.components) {
       if (c.kind === "GND") {
         const p = pinWorldPos(c, 0);
-        let strongest: LiveFlowSample | null = null;
+        // Signed current INTO the ground pin (positive = flowing into ground,
+        // which the GND glyph animates downward toward the reference bars).
+        // Current can also flow OUT of a ground, so don't force a sign.
+        let strongestIntoGround: number | null = null;
         for (const w of page.wires) {
           const wireSample = wireFlowSamples.get(w.id);
           if (!wireSample || wireSample.source !== "ngspice") continue;
           const poly = wirePolyline(page, w, pinIdx);
-          if (!poly || !wireFlowAttachmentForPoint(poly, p)) continue;
+          if (!poly) continue;
+          const attachment = wireFlowAttachmentForPoint(poly, p);
+          if (!attachment) continue;
+          // Wire signedCurrent runs start→end; current toward the ground pin is
+          // -signed when the pin is at the start, +signed when at the end.
+          const intoGround = attachment.attachedAtStart
+            ? -wireSample.signedCurrent
+            : wireSample.signedCurrent;
           if (
-            strongest === null ||
-            Math.abs(wireSample.signedCurrent) > Math.abs(strongest.signedCurrent)
+            strongestIntoGround === null ||
+            Math.abs(intoGround) > Math.abs(strongestIntoGround)
           ) {
-            strongest = wireSample;
+            strongestIntoGround = intoGround;
           }
         }
-        if (strongest) {
-          raw.set(c.id, { current: Math.abs(strongest.signedCurrent), source: "ngspice" });
+        if (strongestIntoGround !== null) {
+          raw.set(c.id, { current: strongestIntoGround, source: "ngspice" });
         }
         continue;
       }
