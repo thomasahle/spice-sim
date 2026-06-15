@@ -771,6 +771,43 @@ const RegularComponentNode = memo(function RegularComponentNode({
         />
       )}
       <g transform={`translate(${c.x} ${c.y}) rotate(${c.rotation})`}>
+        {/* Voltage drops LINEARLY across a resistor, so draw a heat-gradient
+            band from one pin to the other behind the zigzag — a continuous
+            potential map through the part rather than two flat-coloured ends. */}
+        {(() => {
+          if (c.kind !== "R") return null;
+          const layout = getPinLayout(c);
+          const a = pinHeatColors[0];
+          const b = pinHeatColors[1];
+          if (layout.length !== 2 || !a || !b) return null;
+          const gradId = `heat-grad-${c.id}`;
+          return (
+            <g pointerEvents="none">
+              <defs>
+                <linearGradient
+                  id={gradId}
+                  gradientUnits="userSpaceOnUse"
+                  x1={layout[0].x}
+                  y1={layout[0].y}
+                  x2={layout[1].x}
+                  y2={layout[1].y}
+                >
+                  <stop offset="0" stopColor={a} />
+                  <stop offset="1" stopColor={b} />
+                </linearGradient>
+              </defs>
+              <line
+                x1={layout[0].x}
+                y1={layout[0].y}
+                x2={layout[1].x}
+                y2={layout[1].y}
+                stroke={`url(#${gradId})`}
+                strokeWidth={defaultStroke * 2.4}
+                strokeLinecap="round"
+              />
+            </g>
+          );
+        })()}
         <ComponentGlyph
           kind={c.kind}
           selected={sel}
@@ -853,7 +890,9 @@ const RegularComponentNode = memo(function RegularComponentNode({
                   pointerEvents="none"
                 />
               );
-              if (len < 1e-3) return dot;
+              // The resistor draws a full pin-to-pin gradient band already, so
+              // skip the solid lead stub there (it would truncate the gradient).
+              if (len < 1e-3 || c.kind === "R") return dot;
               return (
                 <g key="heatlead" pointerEvents="none">
                   <line
