@@ -241,7 +241,7 @@ import {
   geometryDocToGraph,
 } from "./graphConvert";
 import { allNodeIds, nodePos, pinNodeIndex, makeNodeId, makeWireId, wirePolyline, type Wire as GraphWire } from "./graphModel";
-import { applyArrangeGeometry, attachPinAtPoint, deleteNode as graphDeleteNode, detachComponentWires, reflowWiresAfterMove, segmentBetweenNodes, splicePinSpanIntoWire, splitEdgeAtPoint, splitEdgeAtSegment, uncrossTwoPinBoundaryWires } from "./graphEdit";
+import { applyArrangeGeometry, attachPinAtPoint, deleteNode as graphDeleteNode, detachComponentWires, reflowWiresAfterMove, rerouteBoundaryWires, segmentBetweenNodes, splicePinSpanIntoWire, splitEdgeAtPoint, splitEdgeAtSegment, uncrossTwoPinBoundaryWires } from "./graphEdit";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ComponentHelp } from "./ComponentHelp";
 import {
@@ -5269,7 +5269,7 @@ export function Editor() {
     // (by node id) and rubber-band — no pin-contact rewiring, no auto-connect.
     commit((d) =>
       updateCurrentPageGraph(d, (p) => {
-        const next = {
+        let next = {
           ...p,
           components: p.components.map((c) => (selected.has(c.id) ? mutate(c) : c)),
         };
@@ -5283,14 +5283,35 @@ export function Editor() {
           if (c && pins.length === 2) {
             const p0 = pinWorldPos(c, 0);
             const p1 = pinWorldPos(c, 1);
-            return uncrossTwoPinBoundaryWires(
+            next = uncrossTwoPinBoundaryWires(
               next,
               { id: pins[0], x: p0.x, y: p0.y },
               { id: pins[1], x: p1.x, y: p1.y },
             );
           }
         }
-        return next;
+        // Re-orienting a part moves its pins, so attached wires can now cut
+        // through the turned body — re-route them around it like drawn wires.
+        return rerouteTransformedBoundaryWires(next, selected);
+      }),
+    );
+  }
+
+  /** After a rotate/flip, re-route the wires attached to the transformed
+   *  components' pins with the obstacle-avoiding router (same as the move
+   *  path), so they don't slice through the re-oriented body. */
+  function rerouteTransformedBoundaryWires(page: GraphPage, selected: Set<string>): GraphPage {
+    const movedNodeIds = new Set<string>();
+    for (const c of page.components) {
+      if (selected.has(c.id)) for (const pin of c.pins ?? []) movedNodeIds.add(pin);
+    }
+    if (movedNodeIds.size === 0) return page;
+    const routeWires = projectWirePolylines(page);
+    return rerouteBoundaryWires(page, movedNodeIds, (from, to, wireId) =>
+      routeWireSegmentAvoiding(from, to, !diagonalWiresRef.current, {
+        components: page.components,
+        wires: routeWires,
+        ignoreWireIds: new Set([wireId]),
       }),
     );
   }
@@ -5386,13 +5407,16 @@ export function Editor() {
         const nextProbes = p.probes.map((pr) =>
           selected.has(pr.id) && pr.node == null ? { ...pr, ...xform(pr.x, pr.y) } : pr,
         );
-        return {
-          ...p,
-          components: nextComponents,
-          nodes: nextNodes,
-          wires: nextWires,
-          probes: nextProbes,
-        };
+        return rerouteTransformedBoundaryWires(
+          {
+            ...p,
+            components: nextComponents,
+            nodes: nextNodes,
+            wires: nextWires,
+            probes: nextProbes,
+          },
+          selected,
+        );
       }),
     );
   }

@@ -645,3 +645,38 @@ export function detachComponentWires(
   }
   return { ...page, wires, nodes, probes };
 }
+
+/** Re-route every wire with exactly one endpoint on a moved node, using the
+ *  obstacle-avoiding router. Used after rotate/flip, where pins move
+ *  non-uniformly (so the single-delta {@link reflowWiresAfterMove} can't apply)
+ *  yet boundary wires can still end up crossing the re-oriented body. Wires
+ *  with both endpoints moved (rigid/internal) and untouched wires are left
+ *  alone. Bends store a→b, so a route fixed-end→moved-end is reversed when the
+ *  moved end is `a`. */
+export function rerouteBoundaryWires(
+  page: SchematicPage,
+  movedNodeIds: Set<NodeId>,
+  routeSegment: (
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    wireId: string,
+  ) => [number, number][] | null,
+): SchematicPage {
+  if (movedNodeIds.size === 0) return page;
+  const idx = pinNodeIndex(page);
+  let changed = false;
+  const wires = page.wires.map((wire) => {
+    const aMoved = movedNodeIds.has(wire.a);
+    const bMoved = movedNodeIds.has(wire.b);
+    if (aMoved === bMoved) return wire;
+    const from = nodePos(page, aMoved ? wire.b : wire.a, idx);
+    const to = nodePos(page, aMoved ? wire.a : wire.b, idx);
+    if (!from || !to) return wire;
+    const route = routeSegment(from, to, wire.id);
+    if (!route || route.length < 2) return wire;
+    const interior = route.slice(1, -1).map(([x, y]) => [x, y] as [number, number]);
+    changed = true;
+    return { ...wire, bends: aMoved ? interior.reverse() : interior };
+  });
+  return changed ? { ...page, wires } : page;
+}
