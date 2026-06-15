@@ -262,13 +262,16 @@ export function WaveformViewer({
     selectedTraces.size === 0 || !hasSelectedVisibleTrace ? true : selectedTraces.has(t.name),
   );
   const selectedVisibleTraceCount = traces.filter((trace) => selectedTraces.has(trace.name)).length;
-  // An AC run where every trace is numerically zero almost always means no
-  // source carries an AC stimulus — point at the fix instead of plotting a
-  // silent flat line.
-  const acAllZero =
-    isAc &&
+  // All-zero results usually mean the source isn't driving this analysis:
+  //  - AC run with no AC-stimulus source, or
+  //  - transient run whose source uses an AC (small-signal) waveform, which is
+  //    inactive in the time domain.
+  // Point at the fix instead of plotting a silent flat line.
+  const allTracesZero =
     visibleTraces.length > 0 &&
     visibleTraces.every((t) => t.data.every((v) => !Number.isFinite(v) || Math.abs(v) < 1e-12));
+  const acAllZero = isAc && allTracesZero;
+  const tranAllZero = isTran && allTracesZero;
   const xyTraceNames = useMemo(
     () => selectableXyTraceNames(rawTraces.map((trace) => trace.name), userTraceNameSet),
     [rawTraces, userTraceNameSet],
@@ -678,6 +681,13 @@ export function WaveformViewer({
           <div className="wf-zero-stimulus-hint" role="status">
             All AC traces are zero — no source in the circuit has an AC stimulus.
             Select a source and click <strong>Set AC 1</strong> in the inspector, then run again.
+          </div>
+        )}
+        {!acAllZero && tranAllZero && (
+          <div className="wf-zero-stimulus-hint" role="status">
+            Every trace is flat at 0. An <strong>AC</strong> source waveform is small-signal
+            only — it does nothing in a transient run. Switch the source to a{" "}
+            <strong>SIN</strong> (or PULSE) waveform for a time-domain signal, or run AC analysis.
           </div>
         )}
         <svg

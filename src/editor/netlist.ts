@@ -30,7 +30,7 @@ import {
   normalizePassiveValue,
   normalizeSourceValue,
 } from "./valueExpressions.ts";
-import { isAcStimulus } from "./sourceValues.ts";
+import { isAcStimulus, isTransientSilentSource } from "./sourceValues.ts";
 import { netLabelNearMisses, type NetLabelNearMiss } from "./netLabelConnections.ts";
 import {
   modelTypesForKind,
@@ -266,6 +266,19 @@ export function buildNetlistGraph(
     warnings.push(
       "AC sweep has no AC source. Set a voltage or current source waveform to AC so the sweep has a stimulus.",
     );
+  }
+  if (doc.analysis.kind === "tran" || doc.analysis.kind === "op") {
+    const silent = root.components.filter(
+      (c) => (c.kind === "V" || c.kind === "I") && isTransientSilentSource(c.value),
+    );
+    if (silent.length > 0) {
+      const names = silent.map((c) => rootBuild.refdes.get(c.id) ?? c.id).join(", ");
+      const kindLabel = doc.analysis.kind === "tran" ? "transient" : "operating-point";
+      const verb = silent.length === 1 ? "has an AC (small-signal) waveform that is" : "have AC (small-signal) waveforms that are";
+      warnings.push(
+        `${names} ${verb} inactive in a ${kindLabel} run — small-signal AC only drives AC analysis. Use the SIN preset for a time-domain sine, or switch analysis to AC.`,
+      );
+    }
   }
   if (doc.analysis.kind === "dc") {
     const sourceWarning = sweepSourceWarning(root, rootBuild.refdes, doc.analysis.src, "DC sweep");
