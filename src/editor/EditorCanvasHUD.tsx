@@ -11,6 +11,8 @@ interface EditorCanvasHUDProps {
   onToggleSnap: () => void;
   diagonalWires: boolean;
   onToggleDiagonal: () => void;
+  voltageHeatmap: boolean;
+  onToggleHeatmap: () => void;
   autoRun: boolean;
   onToggleAutoRun: () => void;
   autoRunUi: ReturnType<typeof describeAutoRunStatus>;
@@ -33,6 +35,8 @@ export function EditorCanvasHUD({
   onToggleSnap,
   diagonalWires,
   onToggleDiagonal,
+  voltageHeatmap,
+  onToggleHeatmap,
   autoRun,
   onToggleAutoRun,
   autoRunUi,
@@ -73,6 +77,16 @@ export function EditorCanvasHUD({
         aria-pressed={diagonalWires}
       >
         Wires: {diagonalWires ? "Diagonal" : "Right-angle"}
+      </button>
+      <button
+        type="button"
+        className={voltageHeatmap ? "active" : ""}
+        onClick={onToggleHeatmap}
+        title="Colour wires by node voltage (potential heatmap) at the current playback time"
+        aria-label="Toggle voltage heatmap"
+        aria-pressed={voltageHeatmap}
+      >
+        Heatmap: {voltageHeatmap ? "On" : "Off"}
       </button>
       <button
         type="button"

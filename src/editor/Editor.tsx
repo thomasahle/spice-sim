@@ -207,6 +207,14 @@ import { usePinAnnotations } from "./usePinAnnotations";
 import { useProbeScopes, type ProbeScopePlacement } from "./useProbeScopes";
 import { useLiveFlowSamples } from "./useLiveFlowSamples";
 import { findTimeIndex } from "./simSampleTime";
+import {
+  buildVoltageHeatmap,
+  emptyVoltageHeatmap,
+  formatHeatmapVoltage,
+  heatColor,
+  voltageColorForNode,
+  voltageHeatmapGlobalRange,
+} from "./voltageHeatmap";
 import { useAutoRunSimulation } from "./useAutoRunSimulation";
 import { useDocHistory } from "./useDocHistory";
 import {
@@ -1048,6 +1056,8 @@ type WireNodeProps = {
   selectedStroke: number;
   hoveredStroke: number;
   defaultStroke: number;
+  /** Voltage-heatmap colour for this wire's net, or null when off. */
+  heatColor: string | null;
 };
 
 const WireNode = memo(function WireNode({
@@ -1062,6 +1072,7 @@ const WireNode = memo(function WireNode({
   selectedStroke,
   hoveredStroke,
   defaultStroke,
+  heatColor,
 }: WireNodeProps) {
   const flow = liveActive ? liveFlowVisualFromSample(flowSample) : null;
   const wireFlowActive = Boolean(flow?.active);
@@ -1098,8 +1109,14 @@ const WireNode = memo(function WireNode({
       <polyline
         points={polyPoints}
         fill="none"
-        stroke={sel || hovered ? "var(--accent)" : "var(--ink)"}
-        strokeWidth={sel ? selectedStroke : hovered ? hoveredStroke : defaultStroke}
+        stroke={
+          sel || hovered ? "var(--accent)" : heatColor ?? "var(--ink)"
+        }
+        strokeWidth={
+          // Heatmap wires read better a touch thicker so the colour band is
+          // legible at a glance.
+          sel ? selectedStroke : hovered ? hoveredStroke : heatColor ? defaultStroke * 1.5 : defaultStroke
+        }
         strokeLinecap="round"
         strokeLinejoin="round"
         data-wire-id={w.id}
@@ -1504,6 +1521,9 @@ export function Editor() {
   // (Manhattan) routing always — turning snap off no longer silently switches to
   // diagonal wires. Toggle on for diagonal/direct routing.
   const [diagonalWires, setDiagonalWires] = useState(() => readStoredBoolean("spicesim.diagonalWires", false));
+  // Voltage heatmap: colour wires by their net's potential at the current
+  // playback time (complementary to live-flow's current animation).
+  const [voltageHeatmap, setVoltageHeatmap] = useState(() => readStoredBoolean("spicesim.voltageHeatmap", false));
   const [gridVisible, setGridVisible] = useState(() => readStoredBoolean("spicesim.gridVisible", true));
   const [netlistOpen, setNetlistOpen] = useState(false);
   const [importNetlistOpen, setImportNetlistOpen] = useState(false);
@@ -1567,6 +1587,9 @@ export function Editor() {
   useEffect(() => {
     writeStoredBoolean("spicesim.diagonalWires", diagonalWires);
   }, [diagonalWires]);
+  useEffect(() => {
+    writeStoredBoolean("spicesim.voltageHeatmap", voltageHeatmap);
+  }, [voltageHeatmap]);
   useEffect(() => {
     writeStoredBoolean("spicesim.gridVisible", gridVisible);
   }, [gridVisible]);
@@ -6917,6 +6940,35 @@ export function Editor() {
     && (autoRun || !simulationStale)
     && liveFlow
     && runFloatingPins.length === 0;
+  // Voltage heatmap sampled at the current playback time (transient) or the
+  // final operating point (static analyses). Independent of live-flow so you
+  // can show potential without current animation.
+  // Whole-run voltage extent — memoized on the result alone so scrubbing
+  // playback doesn't rescale the heatmap (colours stay comparable over time).
+  const heatmapRange = useMemo(() => {
+    if (!voltageHeatmap || !simResult) return null;
+    return voltageHeatmapGlobalRange(
+      simResult.vectors,
+      pinAnnotations.nodes.rootToName.values(),
+      simResult.plot,
+    );
+  }, [voltageHeatmap, simResult, pinAnnotations.nodes.rootToName]);
+  const heatmapData = useMemo(() => {
+    if (!voltageHeatmap || !simResult || (simulationStale && !autoRun)) {
+      return emptyVoltageHeatmap();
+    }
+    const scale = simResult.vectors.find((v) => v.is_scale);
+    const sampleIndex =
+      scale && isTransient ? findTimeIndex(scale.data, playTime) : Number.MAX_SAFE_INTEGER;
+    return buildVoltageHeatmap(
+      simResult.vectors,
+      pinAnnotations.nodes.rootToName.values(),
+      simResult.plot,
+      sampleIndex,
+      heatmapRange ?? undefined,
+    );
+  }, [voltageHeatmap, simResult, isTransient, playTime, pinAnnotations.nodes.rootToName, simulationStale, autoRun, heatmapRange]);
+  const heatmapActive = voltageHeatmap && heatmapData.ready;
   const nodeDisplayLabels = useMemo(() => {
     const labels = new Map<string, string>();
     for (const c of page.components) {
@@ -8458,6 +8510,15 @@ export function Editor() {
             {(() => {
               const placedFlowReadouts: Array<ReturnType<typeof liveFlowReadoutBounds>> = [];
               const idx = pinNodeIndex(page);
+              const posToNode = pinAnnotations.nodes.posToNode;
+              const heatColorForPoly = (poly: [number, number][]): string | null => {
+                if (!heatmapActive) return null;
+                for (const [x, y] of poly) {
+                  const node = posToNode.get(`${coordKey(x)},${coordKey(y)}`);
+                  if (node) return voltageColorForNode(heatmapData, node);
+                }
+                return null;
+              };
               return page.wires.map((w) => {
                 const poly = wirePolyline(page, w, idx);
                 if (!poly) return null;
@@ -8503,6 +8564,7 @@ export function Editor() {
                     selectedStroke={selectedSchematicStrokeWidth}
                     hoveredStroke={hoveredSchematicStrokeWidth}
                     defaultStroke={schematicStrokeWidth}
+                    heatColor={heatColorForPoly(poly)}
                   />
                 );
               });
@@ -9271,6 +9333,18 @@ export function Editor() {
             )}
           </div>
         )}
+        {heatmapActive && (
+          <div className="heatmap-legend" aria-label="Voltage heatmap scale">
+            <span className="heatmap-legend-label">{formatHeatmapVoltage(heatmapData.min)}</span>
+            <span
+              className="heatmap-legend-bar"
+              style={{
+                background: `linear-gradient(to right, ${heatColor(0)}, ${heatColor(0.25)}, ${heatColor(0.5)}, ${heatColor(0.75)}, ${heatColor(1)})`,
+              }}
+            />
+            <span className="heatmap-legend-label">{formatHeatmapVoltage(heatmapData.max)}</span>
+          </div>
+        )}
         <EditorCanvasHUD
           gridVisible={gridVisible}
           onToggleGrid={() => setGridVisible((v) => !v)}
@@ -9278,6 +9352,8 @@ export function Editor() {
           onToggleSnap={() => setSnapToGrid((v) => !v)}
           diagonalWires={diagonalWires}
           onToggleDiagonal={() => setDiagonalWires((v) => !v)}
+          voltageHeatmap={voltageHeatmap}
+          onToggleHeatmap={() => setVoltageHeatmap((v) => !v)}
           onShowShortcuts={() => setShortcutsOpen(true)}
           autoRun={autoRun}
           onToggleAutoRun={() => setAutoRun((v) => !v)}

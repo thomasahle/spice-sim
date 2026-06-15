@@ -3463,6 +3463,38 @@ button[disabled] {
   padding-left: 8px;
   border-left: 1px solid var(--hairline);
 }
+/* Voltage-heatmap legend — a min→max gradient strip, bottom-left so it
+   stays clear of the bottom-right HUD. */
+.heatmap-legend {
+  position: absolute;
+  left: 14px;
+  bottom: 12px;
+  z-index: 11;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--bg-glass);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  box-shadow: var(--shadow-soft);
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-family: var(--mono);
+  pointer-events: none;
+}
+.heatmap-legend-bar {
+  width: 96px;
+  height: 8px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline);
+}
+.heatmap-legend-label {
+  font-variant-numeric: tabular-nums;
+}
+
 /* Cursor grid-coordinate readout — fixed width so the HUD doesn't jitter
    as digits change under the moving pointer. */
 .canvas-hud .hud-coords {
