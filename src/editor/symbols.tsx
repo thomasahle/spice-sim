@@ -10,6 +10,9 @@ interface Props {
   strokeWidth?: number;
   palette?: boolean;
   mirrored?: boolean;
+  /** Override the symbol stroke (e.g. a voltage-heatmap gradient `url(#…)`).
+   *  Selection still wins so a selected part stays accent-highlighted. */
+  strokeOverride?: string;
   /** SUBX-only: actual pin positions resolved from getPinLayout(component). */
   subxPins?: { x: number; y: number }[];
   /** SUBX-only: subcircuit name to render in the body label. */
@@ -22,8 +25,8 @@ interface Props {
 
 const SW = 0.12; // line width in cell units
 
-export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = false, mirrored = false, subxPins, subxLabel, subxPinLabels, subxPinSides }: Props) {
-  const stroke = selected ? "var(--accent)" : "var(--ink)";
+export function ComponentGlyph({ kind, selected, strokeWidth = SW, palette = false, mirrored = false, strokeOverride, subxPins, subxLabel, subxPinLabels, subxPinSides }: Props) {
+  const stroke = selected ? "var(--accent)" : strokeOverride ?? "var(--ink)";
   const lead = palette ? 1.45 : 2;
   // Larger symbols on the canvas: bodies extend toward the pins so the
   // visible "tail" between body and wire is short — but not so large the

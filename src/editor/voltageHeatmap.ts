@@ -96,16 +96,13 @@ export function voltageColorForNode(
   return t === null ? null : heatColor(t);
 }
 
-/** Thermal scale: low potential = cool blue, high = warm red. A hue sweep
- *  240°→0° (blue→cyan→green→yellow→red) reads intuitively as "voltage rises"
- *  and stays distinguishable across the whole range on the light canvas. */
+/** Diverging cool→warm scale: low potential = blue, mid = magenta/purple,
+ *  high = red. The hue arc 240°→360° skips the garish green/yellow of a full
+ *  rainbow, matching the conventional voltage-heatmap look (blue→purple→red). */
 export function heatColor(t: number): string {
   const c = Math.max(0, Math.min(1, t));
-  const hue = 240 * (1 - c);
-  // Dip lightness through the bright green/yellow middle so mid-range nets
-  // don't wash out against the canvas.
-  const light = 46 - 8 * Math.sin(Math.PI * c);
-  return `hsl(${hue.toFixed(1)} 80% ${light.toFixed(1)}%)`;
+  const hue = 240 + 120 * c;
+  return `hsl(${hue.toFixed(1)} 90% 55%)`;
 }
 
 /** Format a voltage for the heatmap legend (compact engineering form). */

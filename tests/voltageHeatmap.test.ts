@@ -51,14 +51,15 @@ test("voltageFraction maps a node's voltage into [0,1] of the range", () => {
   assert.equal(voltageFraction(hm, "missing"), null);
 });
 
-test("heatColor runs cool→warm: ground blue, peak red", () => {
-  assert.match(heatColor(0), /hsl\(240/);
-  assert.match(heatColor(1), /hsl\(0\.0/);
+test("heatColor runs cool→warm: ground blue, peak red (via magenta)", () => {
+  assert.match(heatColor(0), /hsl\(240/); // low = blue
+  assert.match(heatColor(0.5), /hsl\(300/); // mid = magenta
+  assert.match(heatColor(1), /hsl\(360/); // high = red
   const color = voltageColorForNode(
     buildVoltageHeatmap(vectors, ["in"], "tran", 1, { min: 0, max: 5 }),
     "in",
   );
-  assert.match(color ?? "", /hsl\(0\.0/);
+  assert.match(color ?? "", /hsl\(360/);
 });
 
 test("an empty result is not ready and produces no colours", () => {

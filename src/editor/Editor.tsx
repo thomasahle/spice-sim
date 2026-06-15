@@ -710,6 +710,18 @@ const RegularComponentNode = memo(function RegularComponentNode({
   scheduleCanvasDoubleAction,
 }: RegularComponentNodeProps) {
   const pinHeatColors = pinHeatKey ? pinHeatKey.split("|") : [];
+  // A resistor's potential drops LINEARLY along it, so colour the symbol
+  // itself with a pin-to-pin heat gradient (blue→…→red) rather than two flat
+  // ends. Other parts keep per-pin dots/leads.
+  const resistorHeatGrad =
+    c.kind === "R" && pinHeatColors[0] && pinHeatColors[1]
+      ? {
+          id: `heat-grad-${c.id}`,
+          layout: getPinLayout(c),
+          a: pinHeatColors[0],
+          b: pinHeatColors[1],
+        }
+      : null;
   const bounds = componentVisualBoundsFor(c, 0.16);
   const connectionToolActive = tool === "wire" || tool === "probe";
   const activeDevice = isActiveMultiPinKind(c.kind);
@@ -771,47 +783,34 @@ const RegularComponentNode = memo(function RegularComponentNode({
         />
       )}
       <g transform={`translate(${c.x} ${c.y}) rotate(${c.rotation})`}>
-        {/* Voltage drops LINEARLY across a resistor, so draw a heat-gradient
-            band from one pin to the other behind the zigzag — a continuous
-            potential map through the part rather than two flat-coloured ends. */}
-        {(() => {
-          if (c.kind !== "R") return null;
-          const layout = getPinLayout(c);
-          const a = pinHeatColors[0];
-          const b = pinHeatColors[1];
-          if (layout.length !== 2 || !a || !b) return null;
-          const gradId = `heat-grad-${c.id}`;
-          return (
-            <g pointerEvents="none">
-              <defs>
-                <linearGradient
-                  id={gradId}
-                  gradientUnits="userSpaceOnUse"
-                  x1={layout[0].x}
-                  y1={layout[0].y}
-                  x2={layout[1].x}
-                  y2={layout[1].y}
-                >
-                  <stop offset="0" stopColor={a} />
-                  <stop offset="1" stopColor={b} />
-                </linearGradient>
-              </defs>
-              <line
-                x1={layout[0].x}
-                y1={layout[0].y}
-                x2={layout[1].x}
-                y2={layout[1].y}
-                stroke={`url(#${gradId})`}
-                strokeWidth={defaultStroke * 2.4}
-                strokeLinecap="round"
-              />
-            </g>
-          );
-        })()}
+        {/* The resistor's potential gradient is applied as the SYMBOL stroke
+            (see strokeOverride below); this just defines it. */}
+        {resistorHeatGrad && (
+          <defs>
+            <linearGradient
+              id={resistorHeatGrad.id}
+              gradientUnits="userSpaceOnUse"
+              x1={resistorHeatGrad.layout[0].x}
+              y1={resistorHeatGrad.layout[0].y}
+              x2={resistorHeatGrad.layout[1].x}
+              y2={resistorHeatGrad.layout[1].y}
+            >
+              <stop offset="0" stopColor={resistorHeatGrad.a} />
+              <stop offset="1" stopColor={resistorHeatGrad.b} />
+            </linearGradient>
+          </defs>
+        )}
         <ComponentGlyph
           kind={c.kind}
           selected={sel}
-          strokeWidth={sel ? selectedStroke : defaultStroke}
+          strokeWidth={
+            resistorHeatGrad && !sel
+              ? defaultStroke * 1.7
+              : sel
+                ? selectedStroke
+                : defaultStroke
+          }
+          strokeOverride={resistorHeatGrad && !sel ? `url(#${resistorHeatGrad.id})` : undefined}
           mirrored={c.mirrored}
           subxPins={c.kind === "SUBX" ? getPinLayout(c) : undefined}
           subxLabel={c.kind === "SUBX" ? (c.value || "X") : undefined}
@@ -875,8 +874,9 @@ const RegularComponentNode = memo(function RegularComponentNode({
           <g key={i}>
             {/* Voltage heatmap: extend the net colour from the wire into the
                 component lead + pin so the potential map is continuous instead
-                of being broken by black component bodies. */}
-            {pinHeatColors[i] && (() => {
+                of being broken by black component bodies. Resistors are handled
+                by the symbol gradient above, so skip their per-pin overlay. */}
+            {c.kind !== "R" && pinHeatColors[i] && (() => {
               const dist = Math.hypot(p.x, p.y);
               const len = Math.min(0.6, dist * 0.45);
               const dot = (
@@ -890,9 +890,7 @@ const RegularComponentNode = memo(function RegularComponentNode({
                   pointerEvents="none"
                 />
               );
-              // The resistor draws a full pin-to-pin gradient band already, so
-              // skip the solid lead stub there (it would truncate the gradient).
-              if (len < 1e-3 || c.kind === "R") return dot;
+              if (len < 1e-3) return dot;
               return (
                 <g key="heatlead" pointerEvents="none">
                   <line
