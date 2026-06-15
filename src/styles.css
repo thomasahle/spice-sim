@@ -4095,6 +4095,19 @@ button[disabled] {
   color: var(--accent);
   stroke: var(--accent);
 }
+/* With the voltage heatmap on, the wire stroke already carries the net's
+   colour — render the current flow as bright moving highlights over it
+   (and drop the light casing that would wash the colour out) so both read
+   at once instead of the blue flow masking the heatmap. */
+.canvas.heatmap-on .wire-live-overlay.ngspice,
+.canvas.heatmap-on .component-live-overlay.ngspice {
+  color: rgba(255, 255, 255, 0.92);
+  stroke: rgba(255, 255, 255, 0.92);
+}
+.canvas.heatmap-on .wire-live-casing,
+.canvas.heatmap-on .component-live-casing {
+  opacity: 0.18;
+}
 .component-live {
   stroke-dasharray: var(--flow-dash, 0.18) var(--flow-gap, 0.54);
   stroke-dashoffset: calc(var(--flow-offset, 0) * 1px);

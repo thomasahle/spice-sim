@@ -8454,7 +8454,7 @@ export function Editor() {
         />
         <svg
           ref={svgRef}
-          className={`canvas ${
+          className={`canvas ${heatmapActive ? "heatmap-on " : ""}${
             panning
               ? "is-panning"
               : spacePanArmed
